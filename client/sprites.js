@@ -230,6 +230,36 @@ const SPR = {
     '...rr...',
     '........',
   ],
+  hammer: [ // paladin: heavy war hammer
+    '........',
+    '..tttt..',
+    '.tttttt.',
+    '.tttttt.',
+    '..nnnn..',
+    '...nn...',
+    '...nn...',
+    '........',
+  ],
+  dagger: [ // ranger: quick thrown blade
+    '........',
+    '.....t..',
+    '....tt..',
+    '...tt...',
+    '..tt....',
+    '.nn.....',
+    '.n......',
+    '........',
+  ],
+  skull: [ // necromancer: bone bolt
+    '........',
+    '..pppp..',
+    '.pppppp.',
+    '.pkppkp.',
+    '.pppppp.',
+    '..pppp..',
+    '.p.pp.p.',
+    '........',
+  ],
 };
 
 const cache = new Map();
@@ -254,4 +284,4 @@ export function sprite(name, tint = null, scale = 2) {
 
 export const GEN_TINT = { g: '#c97b3a', h: '#f4f4f4', m: '#e03c31' };
 export const TILE_SPRITE = { '#': 'wall', '.': 'floor', 'D': 'door', 'K': 'key', 'F': 'food', 'P': 'potion', 'T': 'treasure', 'E': 'exit', 'S': 'floor', 'W': 'trap' };
-export const SHOT_SPRITE = { w: 'axe', v: 'sword', z: 'fireball', e: 'arrow', d: 'dfire' };
+export const SHOT_SPRITE = { w: 'axe', v: 'sword', z: 'fireball', e: 'arrow', d: 'dfire', p: 'hammer', r: 'dagger', n: 'skull' };

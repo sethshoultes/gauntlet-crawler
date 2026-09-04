@@ -231,6 +231,56 @@ test('intermission timeout auto-picks for anyone who has not chosen, including a
   } finally { room.close(); }
 });
 
+test('a locked hero request falls back to warrior and the player is told why', () => {
+  const room = makeRoom({ id: 'locked-1' });
+  try {
+    const ws = fakeWs();
+    // A logged-in user with no stats/achievements at all — rank 1, paladin needs rank 5.
+    const user = { id: 999001, username: 'Newbie' };
+    const c = room.join(ws, { pid: 'a', user, name: 'Newbie', cls: 'paladin' });
+    assert.equal(c.cls, 'warrior', 'paladin is locked for a fresh account, so it falls back to warrior');
+    const err = ws.sent.find((m) => m.t === 'error');
+    assert.ok(err, 'an error message is sent to the client');
+    assert.match(err.error, /locked/i);
+    assert.match(err.error, /rank/i, 'the error names the actual requirement');
+  } finally { room.close(); }
+});
+
+test('a locked palette request is dropped (no palette) with an error, while an unlocked one sticks', () => {
+  const room = makeRoom({ id: 'locked-2' });
+  try {
+    const ws = fakeWs();
+    const user = { id: 999002, username: 'Newbie2' };
+    const c = room.join(ws, { pid: 'a', user, name: 'Newbie2', cls: 'warrior', palette: 'warrior_gold' });
+    assert.equal(c.cls, 'warrior');
+    assert.equal(c.palette, null, 'warrior_gold requires rank 3 or an achievement neither of which this fresh account has');
+    assert.ok(ws.sent.find((m) => m.t === 'error' && /locked/i.test(m.error)));
+  } finally { room.close(); }
+});
+
+test('setHero also enforces unlocks for an in-lobby hero switch', () => {
+  const room = makeRoom({ id: 'locked-3' });
+  try {
+    const ws = fakeWs();
+    const user = { id: 999003, username: 'Newbie3' };
+    room.join(ws, { pid: 'a', user, name: 'Newbie3', cls: 'warrior' });
+    room.setHero('a', 'necromancer');
+    const c = room.clients.get('a');
+    assert.equal(c.cls, 'warrior', 'necromancer (rank 8 or reaper_reaped) stays locked');
+    assert.ok(ws.sent.some((m) => m.t === 'error' && /locked/i.test(m.error)));
+  } finally { room.close(); }
+});
+
+test('a guest (no user) can never carry a palette — palettes require an account', () => {
+  const room = makeRoom({ id: 'locked-4' });
+  try {
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: null, name: 'Guest', cls: 'warrior', palette: 'warrior_classic' });
+    assert.equal(c.cls, 'warrior');
+    assert.equal(c.palette, null);
+  } finally { room.close(); }
+});
+
 test('kick removes the player and records a fresh sim state should they somehow rejoin', () => {
   const room = makeRoom();
   try {

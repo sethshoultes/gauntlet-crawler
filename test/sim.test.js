@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Sim } from '../server/game/sim.js';
-import { START_HEALTH, DT } from '../shared/constants.js';
+import { CLASSES, START_HEALTH, DT } from '../shared/constants.js';
 
 const ARENA = {
   name: 'arena',
@@ -126,6 +126,45 @@ test('addPlayer perks are optional (backward compatible) and apply speed/health/
   const baseDamage = START_HEALTH - base.hp;
   const perkedDamage = perked.maxHealth - perked.hp;
   assert.ok(perkedDamage < baseDamage, 'perked player takes less damage from the same hit');
+});
+
+test('new hero archetypes spawn with their own stat blocks and distinct shot sprite keys', () => {
+  const sim = new Sim(ARENA);
+  const pal = sim.addPlayer('a', { name: 'A', cls: 'paladin' });
+  assert.equal(pal.cls, 'paladin');
+  assert.ok(CLASSES.paladin.armor < CLASSES.warrior.armor, 'paladin has heavier armor than warrior');
+  sim.addPlayer('b', { name: 'B', cls: 'ranger' });
+  assert.ok(CLASSES.ranger.shotCooldown < CLASSES.elf.shotCooldown, 'ranger fires faster than elf');
+  const necro = sim.addPlayer('c', { name: 'C', cls: 'necromancer' });
+  assert.equal(necro.cls, 'necromancer');
+  assert.ok(CLASSES.necromancer.potionRadiusMul > 1, 'necromancer potions reach further');
+  // sim falls back to warrior for an unknown class, same as before these archetypes existed
+  const unknown = sim.addPlayer('d', { name: 'D', cls: 'not_a_class' });
+  assert.equal(unknown.cls, 'warrior');
+  // every class's shot sprite key (see snapshot() and client/sprites.js SHOT_SPRITE) is distinct
+  const keys = Object.values(CLASSES).map((c) => c.shotKey);
+  assert.equal(new Set(keys).size, keys.length, 'no two classes share a shot key');
+});
+
+test('a player\'s palette id travels into playerInfo() so other clients can render the tint', () => {
+  const sim = new Sim(ARENA);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior', palette: 'warrior_gold' });
+  assert.equal(p.palette, 'warrior_gold');
+  const info = sim.playerInfo().find((i) => i.id === 'a');
+  assert.equal(info.palette, 'warrior_gold');
+  const noPalette = sim.addPlayer('b', { name: 'B', cls: 'elf' });
+  assert.equal(noPalette.palette, null);
+});
+
+test('necromancer\'s wider potion radius reaches monsters a normal potion would miss', () => {
+  const sim = new Sim(ARENA);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'necromancer' });
+  p.x = 1.5; p.y = 1.5; p.potions = 1;
+  // 8.4 tiles away: outside the base 7.5 radius but inside necromancer's boosted 7.5*1.3=9.75
+  sim.spawnMonster('ghost', 1.5, 9.9);
+  sim.setInput('a', { potion: true });
+  run(sim, 1);
+  assert.equal(sim.monsters.size, 0, "necromancer's wider potion radius reached the distant ghost");
 });
 
 test('snapshot is compact and level packet round-trips', () => {

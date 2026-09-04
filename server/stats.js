@@ -43,6 +43,12 @@ export function getStats(userId) {
   return Object.fromEntries(rows.map((r) => [r.key, r.value]));
 }
 
+/** Set of achievement ids this user currently holds — used by shared/unlocks.js requirement checks. */
+export function getAchievementIds(userId) {
+  if (!userId) return new Set();
+  return new Set(unlockedStmt.all(userId).map((r) => r.ach_id));
+}
+
 export function getAchievements(userId) {
   const unlocked = Object.fromEntries(db.prepare('SELECT ach_id, unlocked_at FROM achievements WHERE user_id = ?').all(userId).map((r) => [r.ach_id, r.unlocked_at]));
   const stats = getStats(userId);

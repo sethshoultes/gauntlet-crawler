@@ -44,5 +44,6 @@ th { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spa
 .modal label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; }
 .modal input { width: 100%; }
 .cls-warrior { color: var(--red); } .cls-valkyrie { color: var(--blue); } .cls-wizard { color: var(--yellow); } .cls-elf { color: var(--green); }
+.cls-paladin { color: #e8a33d; } .cls-ranger { color: #0fb8a5; } .cls-necromancer { color: #8b3fd1; }
 .pixel { image-rendering: pixelated; image-rendering: crisp-edges; }
 footer { text-align: center; color: var(--muted); font-size: 11px; padding: 12px; }

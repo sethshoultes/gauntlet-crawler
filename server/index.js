@@ -12,6 +12,8 @@ import { generateFromPrompt, aiAvailable } from './ai/levelgen.js';
 import { validateLevel, parseLevel } from '../shared/level.js';
 import { CLASSES } from '../shared/constants.js';
 import { generateLevel } from '../shared/procgen.js';
+import { rankForXp } from '../shared/progression.js';
+import { unlockedFor, catalogueFor } from '../shared/unlocks.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
@@ -65,8 +67,15 @@ async function api(req, res, url) {
   if (m === 'POST' && url.pathname === '/api/login') { const b = await readBody(req); return json(res, 200, auth.login(b.username, b.password)); }
   if (m === 'POST' && url.pathname === '/api/logout') { auth.logout(auth.bearer(req)); return json(res, 200, { ok: true }); }
   if (m === 'GET' && url.pathname === '/api/me') {
-    if (!user) return json(res, 200, { user: null });
-    return json(res, 200, { user, stats: stats.getStats(user.id), achievements: stats.getAchievements(user.id), runs: stats.recentRuns(user.id) });
+    if (!user) return json(res, 200, { user: null, unlocks: { classes: [...unlockedFor(null).classes], palettes: [] }, catalogue: catalogueFor(null) });
+    const s = stats.getStats(user.id);
+    const profile = { stats: s, achievements: stats.getAchievementIds(user.id), rank: rankForXp(s.xp || 0) };
+    const unlocked = unlockedFor(profile);
+    return json(res, 200, {
+      user, stats: s, achievements: stats.getAchievements(user.id), runs: stats.recentRuns(user.id),
+      unlocks: { classes: [...unlocked.classes], palettes: [...unlocked.palettes] },
+      catalogue: catalogueFor(profile),
+    });
   }
   if (m === 'GET' && url.pathname === '/api/leaderboard') return json(res, 200, stats.leaderboard(20));
   if (m === 'GET' && url.pathname === '/api/rooms') return json(res, 200, { rooms: lobby.list() });
@@ -197,7 +206,7 @@ wss.on('connection', (ws, req) => {
             if (resumed) { pid = resumed.pid; room = target; break; }
           }
           if (!target) target = msg.create ? lobby.create({ name: msg.roomName, isPublic: msg.public !== false }) : lobby.quick();
-          target.join(ws, { pid, user, name, cls });
+          target.join(ws, { pid, user, name, cls, palette: msg.palette || null });
           room = target;
           break;
         }
@@ -210,7 +219,7 @@ wss.on('connection', (ws, req) => {
           if (process.env.GAUNTLET_DEBUG === '1' && room) room.debugAction(msg.action);
           break;
         case 'ready': if (room) room.setReady(pid, !!msg.ready); break;
-        case 'hero': if (room) room.setHero(pid, msg.cls); break;
+        case 'hero': if (room) room.setHero(pid, msg.cls, msg.palette || null); break;
         case 'settings': if (room) room.setSettings(pid, msg); break;
         case 'start': if (room) room.start(pid); break;
         case 'kick': if (room) room.kick(pid, msg.pid); break;

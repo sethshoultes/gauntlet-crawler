@@ -2,6 +2,7 @@
 export const TOKEN_KEY = 'gc_token';
 export const NAME_KEY = 'gc_guest_name';
 export const CLASS_KEY = 'gc_class';
+export const PALETTE_KEY = 'gc_palette';
 
 export function token() { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } }
 export function setToken(t) { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} }

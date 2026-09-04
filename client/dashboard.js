@@ -53,6 +53,12 @@ async function main() {
     $('#achs').innerHTML = achs.map((a) => `<div class="ach ${a.unlocked ? 'on' : ''}" title="${esc(a.desc)}"><div class="i">${a.icon}</div><div style="flex:1"><div class="n">${esc(a.name)}</div><div class="d">${esc(a.desc)}</div>
       ${a.unlocked ? `<div class="d" style="color:var(--yellow)">Unlocked ${ago(a.unlocked)}</div>` : `<div class="p"><div style="width:${Math.round(100 * a.progress / a.threshold)}%"></div></div><div class="d">${a.progress.toLocaleString()} / ${a.threshold.toLocaleString()}</div>`}
     </div></div>`).join('');
+    const cat = (m.catalogue || []).slice().sort((a, b) => (b.unlocked ? 1 : 0) - (a.unlocked ? 1 : 0));
+    $('#unlock-count').textContent = `${cat.filter((c) => c.unlocked).length} / ${cat.length}`;
+    $('#unlocks').innerHTML = cat.map((it) => `<div class="unlock ${it.unlocked ? 'on' : ''}"><div class="sw" style="background:${it.color}"></div><div style="flex:1">
+      <div class="n">${esc(it.name)} <span class="tag">${it.type === 'hero' ? 'Hero' : 'Palette'}</span></div>
+      <div class="d">${it.unlocked ? 'Unlocked' : esc(it.requirement)}</div>
+    </div></div>`).join('');
     const runs = m.runs || [];
     $('#runs').innerHTML = `<tr><th>Hero</th><th>Score</th><th>Level</th><th>Kills</th><th>Time</th><th>When</th></tr>` + (runs.length ? runs.map((r) => `<tr><td class="cls-${r.class}">${CLASSES[r.class]?.name || r.class}</td><td>${r.score.toLocaleString()}</td><td>${r.level_reached}</td><td>${r.kills}</td><td>${fmtTime(r.seconds)}</td><td class="muted">${ago(r.ended_at)}</td></tr>`).join('') : '<tr><td colspan="6" class="muted">No runs yet. Go play!</td></tr>');
     const { levels } = await api('/api/levels/mine').catch(() => ({ levels: [] }));

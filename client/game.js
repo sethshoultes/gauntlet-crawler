@@ -1,6 +1,7 @@
-import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY } from './common.js';
+import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
 import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS } from '/shared/constants.js';
+import { PALETTES, requirementText } from '/shared/unlocks.js';
 import { BOOST_ICONS } from '/shared/chests.js';
 const RESUME_KEY = 'gc_resume';
 
@@ -10,18 +11,73 @@ const ZOOM = 2;                  // 16px tiles -> 32px on the 640x480 canvas => 
 const VIEW_W = 640, VIEW_H = 480;
 
 // ---------------- lobby ----------------
+// `unlocked` starts out base-classes-only (a guest's baseline) and is replaced once /api/me
+// resolves with the server's real answer for this account — the server is authoritative; this
+// is purely what the picker renders before that arrives.
 let selectedClass = localStorage.getItem(CLASS_KEY) || 'warrior';
-const heroes = $('#heroes');
-for (const id of CLASS_IDS) {
-  const c = CLASSES[id];
-  const el = document.createElement('div');
-  el.className = 'hero' + (id === selectedClass ? ' sel' : '');
-  el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n cls-${id}">${c.name}</div><div class="s">${c.hero}</div>
-    <div class="s">Speed ${'★'.repeat(Math.round((c.speed - 4) * 1.5))}<br>Shot ${'★'.repeat(c.shotDamage)}<br>Armor ${'★'.repeat(Math.round((1.1 - c.armor) * 10))}<br>Magic ${'★'.repeat(Math.round(c.magic))}</div>`;
-  el.querySelector('canvas').getContext('2d').drawImage(sprite('hero', c.color), 0, 0);
-  el.onclick = () => { selectedClass = id; localStorage.setItem(CLASS_KEY, id); document.querySelectorAll('.hero').forEach((h) => h.classList.remove('sel')); el.classList.add('sel'); };
-  heroes.appendChild(el);
+let selectedPalette = localStorage.getItem(PALETTE_KEY) || '';
+let unlocked = { classes: new Set(CLASS_IDS.filter((id) => !CLASSES[id].locked)), palettes: new Set() };
+
+/** The tint color to draw `clsId` with, honoring `selectedPalette` only when it's this class's
+ *  own and actually unlocked. */
+function colorFor(clsId, paletteId) {
+  if (paletteId && unlocked.palettes.has(paletteId)) {
+    const p = PALETTES.find((pp) => pp.id === paletteId && pp.cls === clsId);
+    if (p) return p.color;
+  }
+  return CLASSES[clsId].color;
 }
+/** The color to render a *room-mate's* hero with, from the {cls, palette} the server sent us
+ *  (their palette was already unlock-checked server-side, so no local re-check needed here). */
+function playerColor(info) {
+  if (!info) return CLASSES.warrior.color;
+  const cls = CLASSES[info.cls] ? info.cls : 'warrior';
+  if (info.palette) {
+    const p = PALETTES.find((pp) => pp.id === info.palette && pp.cls === cls);
+    if (p) return p.color;
+  }
+  return CLASSES[cls].color;
+}
+
+const heroes = $('#heroes');
+function paletteRow(id) {
+  const opts = [{ id: '', name: 'Default', color: CLASSES[id].color, locked: false },
+    ...PALETTES.filter((p) => p.cls === id).map((p) => ({ id: p.id, name: p.name, color: p.color, locked: !unlocked.palettes.has(p.id) }))];
+  return `<div class="swatches">${opts.map((o) => `<span class="swatch ${o.id === selectedPalette ? 'sel' : ''} ${o.locked ? 'locked' : ''}" data-palette="${o.id}" title="${esc(o.name)}${o.locked ? ' (locked)' : ''}" style="background:${o.color}"></span>`).join('')}</div>`;
+}
+function renderHeroPicker() {
+  heroes.innerHTML = '';
+  for (const id of CLASS_IDS) {
+    const c = CLASSES[id];
+    const isUnlocked = unlocked.classes.has(id);
+    const el = document.createElement('div');
+    el.className = 'hero' + (id === selectedClass ? ' sel' : '') + (isUnlocked ? '' : ' locked');
+    const color = colorFor(id, id === selectedClass ? selectedPalette : '');
+    el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n cls-${id}">${c.name}</div><div class="s">${c.hero}</div>
+      <div class="s">Speed ${'★'.repeat(Math.max(0, Math.round((c.speed - 4) * 1.5)))}<br>Shot ${'★'.repeat(c.shotDamage)}<br>Armor ${'★'.repeat(Math.max(0, Math.round((1.1 - c.armor) * 10)))}<br>Magic ${'★'.repeat(Math.round(c.magic))}</div>
+      ${isUnlocked ? paletteRow(id) : `<div class="lock">🔒 ${esc(requirementText({ requires: c.requires }))}</div>`}`;
+    el.querySelector('canvas').getContext('2d').drawImage(sprite('hero', color), 0, 0);
+    if (isUnlocked) {
+      el.onclick = () => {
+        selectedClass = id; localStorage.setItem(CLASS_KEY, id);
+        if (!PALETTES.some((p) => p.id === selectedPalette && p.cls === id)) { selectedPalette = ''; localStorage.removeItem(PALETTE_KEY); }
+        renderHeroPicker();
+        rebuildHeroSelect();
+      };
+      el.querySelectorAll('[data-palette]').forEach((sw) => sw.onclick = (ev) => {
+        ev.stopPropagation();
+        const pid = sw.dataset.palette;
+        if (pid && !unlocked.palettes.has(pid)) return;
+        selectedClass = id; localStorage.setItem(CLASS_KEY, id);
+        selectedPalette = pid; if (pid) localStorage.setItem(PALETTE_KEY, pid); else localStorage.removeItem(PALETTE_KEY);
+        renderHeroPicker();
+        rebuildHeroSelect();
+      });
+    }
+    heroes.appendChild(el);
+  }
+}
+renderHeroPicker();
 $('#gname').value = localStorage.getItem(NAME_KEY) || '';
 $('#gname').oninput = () => localStorage.setItem(NAME_KEY, $('#gname').value);
 
@@ -43,6 +99,14 @@ renderNav('play').then(async () => {
   if (m.user) { $('#gname').value = m.user.username; $('#gname').disabled = true; $('#gname-note').textContent = '(your account name)'; }
   else $('#gname-note').innerHTML = 'Guests keep no stats. <a href="#" id="loginlink">Log in</a> to earn achievements.';
   $('#loginlink')?.addEventListener('click', (e) => { e.preventDefault(); authModal().then((ok) => ok && location.reload()); });
+  unlocked = {
+    classes: new Set(m.unlocks?.classes || CLASS_IDS.filter((id) => !CLASSES[id].locked)),
+    palettes: new Set(m.unlocks?.palettes || []),
+  };
+  if (!unlocked.classes.has(selectedClass)) { selectedClass = 'warrior'; localStorage.setItem(CLASS_KEY, selectedClass); }
+  if (selectedPalette && !unlocked.palettes.has(selectedPalette)) { selectedPalette = ''; localStorage.removeItem(PALETTE_KEY); }
+  renderHeroPicker();
+  rebuildHeroSelect();
 });
 loadRooms();
 setInterval(() => { if (!G.ws) loadRooms(); }, 5000);
@@ -60,7 +124,7 @@ const G = {
 window.__gc = { reconnectNow: () => attemptReconnect() };
 
 function saveResume(room, pid, resume) {
-  try { sessionStorage.setItem(RESUME_KEY, JSON.stringify({ roomId: room.id, pid, resume, name: $('#gname').value.trim() || 'Guest', cls: selectedClass })); } catch {}
+  try { sessionStorage.setItem(RESUME_KEY, JSON.stringify({ roomId: room.id, pid, resume, name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null })); } catch {}
 }
 function loadResume() {
   try { return JSON.parse(sessionStorage.getItem(RESUME_KEY) || 'null'); } catch { return null; }
@@ -72,7 +136,7 @@ function joinGame(opts) {
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
   ws.onopen = () => {
-    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, ...opts }));
+    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, ...opts }));
   };
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
@@ -95,7 +159,7 @@ function attemptReconnect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null }));
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
   ws.onerror = () => {};
@@ -161,6 +225,10 @@ function onMessage(m) {
     case 'chat': log(`<span class="c"><b>${esc(m.from)}:</b> ${esc(m.text)}</span>`); break;
     case 'ach': toast(`${m.ach.icon} Achievement: ${m.ach.name}`, m.ach.desc); sfx('ach'); break;
     case 'rankup': toast(`⭐ Rank Up!`, `You are now Rank ${m.rank}: ${m.title}`); sfx('ach'); break;
+    case 'unlock':
+      toast(m.item.type === 'hero' ? `🔓 New hero unlocked!` : `🎨 New palette unlocked!`, m.item.name);
+      sfx('ach');
+      break;
     case 'levelclear':
       G.overlay = { kind: 'clear', title: 'LEVEL CLEARED', sub: `${m.by} found the exit in ${m.time}s`, until: performance.now() + 2500 };
       sfx('clear'); break;
@@ -221,12 +289,37 @@ function log(html) {
 
 // ---------------- room (pre-game) screen ----------------
 const heroSelect = $('#rs-hero');
-for (const id of CLASS_IDS) {
-  const o = document.createElement('option'); o.value = id; o.textContent = CLASSES[id].name; heroSelect.appendChild(o);
+const paletteSelect = $('#rs-palette');
+function rebuildHeroSelect() {
+  heroSelect.innerHTML = CLASS_IDS.map((id) => {
+    const locked = !unlocked.classes.has(id);
+    return `<option value="${id}" ${locked ? 'disabled' : ''}>${esc(CLASSES[id].name)}${locked ? ' (locked)' : ''}</option>`;
+  }).join('');
+  heroSelect.value = unlocked.classes.has(selectedClass) ? selectedClass : 'warrior';
+  rebuildPaletteSelect();
+}
+function rebuildPaletteSelect() {
+  const opts = [{ id: '', name: 'Default' }, ...PALETTES.filter((p) => p.cls === selectedClass)];
+  paletteSelect.innerHTML = opts.map((o) => {
+    const locked = o.id && !unlocked.palettes.has(o.id);
+    return `<option value="${o.id}" ${locked ? 'disabled' : ''}>${esc(o.name)}${locked ? ' (locked)' : ''}</option>`;
+  }).join('');
+  paletteSelect.value = selectedPalette && unlocked.palettes.has(selectedPalette) ? selectedPalette : '';
+}
+rebuildHeroSelect();
+function sendHeroChange() {
+  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'hero', cls: selectedClass, palette: selectedPalette || null }));
 }
 heroSelect.onchange = () => {
   selectedClass = heroSelect.value; localStorage.setItem(CLASS_KEY, selectedClass);
-  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'hero', cls: selectedClass }));
+  if (!PALETTES.some((p) => p.id === selectedPalette && p.cls === selectedClass)) selectedPalette = '';
+  rebuildPaletteSelect();
+  sendHeroChange();
+};
+paletteSelect.onchange = () => {
+  selectedPalette = paletteSelect.value;
+  if (selectedPalette) localStorage.setItem(PALETTE_KEY, selectedPalette); else localStorage.removeItem(PALETTE_KEY);
+  sendHeroChange();
 };
 let selfReady = false;
 $('#rs-ready').onclick = () => {
@@ -435,13 +528,13 @@ function frame(now) {
   }
   // players
   for (const p of snap.p) {
-    const info = G.players.get(p[0]); const cls = CLASSES[info?.cls || 'warrior'];
+    const info = G.players.get(p[0]); const color = playerColor(info);
     if (p[8]) { ctx.globalAlpha = 0.35; }
     const bob = (Math.floor(now / 120) % 2) * 1;
-    drawEntity(sprite('hero', cls.color), p[1], p[2], p[3], p[8] ? 0 : bob, true);
+    drawEntity(sprite('hero', color), p[1], p[2], p[3], p[8] ? 0 : bob, true);
     ctx.globalAlpha = 1;
     // name tag
-    ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = cls.color;
+    ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = color;
     ctx.fillText((info?.name || '').toUpperCase(), p[1] * TS, p[2] * TS - TS / 2 - 3);
   }
   // fx
@@ -575,9 +668,9 @@ function drawEntity(img, x, y, dir, bob = 0, isHero = false) {
 function renderHud() {
   const hud = $('#hud');
   hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => `
-    <div class="pp ${p.away ? 'away' : ''}" data-pid="${p.id}" style="border-color:${CLASSES[p.cls].color}">
-      <div class="nm" style="color:${CLASSES[p.cls].color}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}${p.away ? ' <span class="muted">(away)</span>' : ''}</div>
-      <div class="muted" style="font-size:11px">${CLASSES[p.cls].name}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
+    <div class="pp ${p.away ? 'away' : ''}" data-pid="${p.id}" style="border-color:${playerColor(p)}">
+      <div class="nm" style="color:${playerColor(p)}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}${p.away ? ' <span class="muted">(away)</span>' : ''}</div>
+      <div class="muted" style="font-size:11px">${CLASSES[p.cls]?.name || p.cls}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
       <div>HEALTH <span class="hp">0</span></div>
       <div>SCORE <span class="sc">0</span></div>
       <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>

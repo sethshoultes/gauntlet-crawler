@@ -43,11 +43,29 @@ export const GENERATOR_TILES = new Set([T.GEN_GRUNT, T.GEN_GHOST, T.GEN_DEMON]);
 export const MONSTER_TILES = new Set([T.GHOST, T.GRUNT, T.DEMON, T.DEATH]);
 export const ALL_TILES = new Set(Object.values(T));
 
+// `shotKey` picks the shot sprite/snapshot letter for a class (see server/game/sim.js snapshot()
+// and client/sprites.js SHOT_SPRITE) — kept explicit so classes whose names share a first letter
+// (warrior/wizard both start with 'w') never collide.
+// `locked` + `requires` gate a hero archetype behind shared/unlocks.js (see isClassUnlocked);
+// omitted (or falsy) means always playable, including by guests.
 export const CLASSES = {
-  warrior:  { name: 'Warrior',  hero: 'Thor',    color: '#e03c31', speed: 4.6, shotDamage: 3, shotCooldown: 0.32, armor: 0.7, magic: 1,   weapon: 'axe' },
-  valkyrie: { name: 'Valkyrie', hero: 'Thyra',   color: '#3b7dff', speed: 5.0, shotDamage: 2, shotCooldown: 0.28, armor: 0.8, magic: 1.5, weapon: 'sword' },
-  wizard:   { name: 'Wizard',   hero: 'Merlin',  color: '#f2c400', speed: 5.4, shotDamage: 2, shotCooldown: 0.26, armor: 1.0, magic: 3,   weapon: 'fireball' },
-  elf:      { name: 'Elf',      hero: 'Questor', color: '#2ecc40', speed: 6.4, shotDamage: 1, shotCooldown: 0.16, armor: 0.9, magic: 1.5, weapon: 'arrow' },
+  warrior:  { name: 'Warrior',  hero: 'Thor',    color: '#e03c31', speed: 4.6, shotDamage: 3, shotCooldown: 0.32, armor: 0.7, magic: 1,   weapon: 'axe',      shotKey: 'w' },
+  valkyrie: { name: 'Valkyrie', hero: 'Thyra',   color: '#3b7dff', speed: 5.0, shotDamage: 2, shotCooldown: 0.28, armor: 0.8, magic: 1.5, weapon: 'sword',    shotKey: 'v' },
+  wizard:   { name: 'Wizard',   hero: 'Merlin',  color: '#f2c400', speed: 5.4, shotDamage: 2, shotCooldown: 0.26, armor: 1.0, magic: 3,   weapon: 'fireball', shotKey: 'z' },
+  elf:      { name: 'Elf',      hero: 'Questor', color: '#2ecc40', speed: 6.4, shotDamage: 1, shotCooldown: 0.16, armor: 0.9, magic: 1.5, weapon: 'arrow',    shotKey: 'e' },
+  // ---- unlockable archetypes (shared/unlocks.js HERO_UNLOCKS mirrors these) ----
+  paladin: {
+    name: 'Paladin', hero: 'Aldric', color: '#e8a33d', speed: 3.9, shotDamage: 3, shotCooldown: 0.42, armor: 0.55, magic: 2,
+    weapon: 'hammer', shotKey: 'p', locked: true, requires: { rank: 5 },
+  },
+  ranger: {
+    name: 'Ranger', hero: 'Sable', color: '#0fb8a5', speed: 7.0, shotDamage: 1, shotCooldown: 0.12, armor: 1.0, magic: 1,
+    weapon: 'dagger', shotKey: 'r', locked: true, requires: { all: [{ stat: { key: 'class_elf', min: 1 } }, { achievement: 'ghostbuster' }] },
+  },
+  necromancer: {
+    name: 'Necromancer', hero: 'Mordant', color: '#8b3fd1', speed: 5.0, shotDamage: 1, shotCooldown: 0.3, armor: 1.1, magic: 4,
+    weapon: 'skull', shotKey: 'n', potionRadiusMul: 1.3, locked: true, requires: { any: [{ achievement: 'reaper_reaped' }, { rank: 8 }] },
+  },
 };
 export const CLASS_IDS = Object.keys(CLASSES);
 

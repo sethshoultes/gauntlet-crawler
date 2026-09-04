@@ -65,12 +65,12 @@ export class Sim {
   }
 
   // ---------- players ----------
-  addPlayer(id, { name, cls, userId = null, perks = null, rank = null, title = null }) {
+  addPlayer(id, { name, cls, userId = null, perks = null, rank = null, title = null, palette = null }) {
     if (!CLASSES[cls]) cls = 'warrior';
     const mergedPerks = { ...DEFAULT_PERKS, ...(perks || {}) };
     const maxHealth = START_HEALTH + mergedPerks.maxHealthBonus;
     const p = {
-      id, name: String(name).slice(0, 16), cls, userId,
+      id, name: String(name).slice(0, 16), cls, userId, palette: palette || null,
       x: 1.5, y: 1.5, dir: 4, hp: maxHealth, maxHealth, keys: 0, potions: 0, score: 0,
       dead: false, shotCd: 0, kills: 0, levelKills: 0, deaths: 0, levelDeaths: 0, coins: 0,
       input: { dx: 0, dy: 0, fire: false, potion: false, respawn: false },
@@ -261,7 +261,7 @@ export class Sim {
       }
       if (inp.potion) {
         inp.potion = false;
-        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic + p.perks.magicAdd); }
+        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic + p.perks.magicAdd, 7.5 * (c.potionRadiusMul || 1)); }
       }
     }
   }
@@ -407,12 +407,12 @@ export class Sim {
       p: [...this.players.values()].map((p) => [p.id, r2(p.x), r2(p.y), p.dir, Math.round(p.hp), p.keys, p.potions, p.score, p.dead ? 1 : 0]),
       m: [...this.monsters.values()].map((m) => [m.id, m.type[0], r2(m.x), r2(m.y), m.dir]),
       g: [...this.generators.values()].map((g) => [g.x, g.y, g.hp]),
-      b: [...this.shots.values()].map((s) => [s.id, r2(s.x), r2(s.y), s.dir, s.hostile ? 'd' : s.cls[0]]),
+      b: [...this.shots.values()].map((s) => [s.id, r2(s.x), r2(s.y), s.dir, s.hostile ? 'd' : (CLASSES[s.cls]?.shotKey || s.cls[0])]),
     };
   }
   playerInfo() {
     return [...this.players.values()].map((p) => ({
-      id: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills, dead: p.dead, rank: p.rank, title: p.title,
+      id: p.id, name: p.name, cls: p.cls, palette: p.palette || null, score: p.score, kills: p.kills, dead: p.dead, rank: p.rank, title: p.title,
       boosts: p.boosts && Object.keys(p.boosts).length ? Object.keys(p.boosts) : undefined,
     }));
   }

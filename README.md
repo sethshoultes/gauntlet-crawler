@@ -83,6 +83,15 @@ Optional environment variables:
   speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
   round ends early once all connected players have chosen (or auto-picks at the timeout), and boosts stack with hero
   perks for the following level, shown as small icons in the HUD, before clearing.
+- **Character unlocks** (`shared/unlocks.js`): 8 alternate palettes (a "classic" recolor per class at rank 2, plus
+  harder-earned skins gated on a specific achievement or deeper rank) and 3 locked hero archetypes — **Paladin**
+  (heavy armor, unlocks at rank 5), **Ranger** (fast, rapid-fire, unlocks after playing Elf and earning *Ghostbuster*),
+  and **Necromancer** (frail but magic-heavy with wider potion blasts, unlocks via *Reaper Reaped* or rank 8).
+  Requirements are evaluated server-side from real stats/achievements/rank; a locked hero or palette request silently
+  falls back to Warrior/default with an error toast. The hero picker greys out locked cards with their requirement
+  text and shows palette swatches under unlocked classes; other players in the room see your chosen skin. Newly
+  opened unlocks push an in-game toast the moment an achievement or rank-up earns them, and the dashboard lists the
+  whole catalogue with locked/unlocked state.
 
 ## Level format
 
@@ -112,15 +121,17 @@ shared/            code used by both server and browser
   achievements.js  achievement definitions
   progression.js   XP curve, rank titles/thresholds, perk caps — shared by server and dashboard/HUD
   chests.js        intermission chest pool, seeded rolling, and applying picked chests to a player
+  unlocks.js       palette + hero-archetype unlock catalogue, requirement evaluation, dashboard catalogue
 client/            static browser app (no build step): game, dashboard, editor, sprites, audio
 test/              node:test suites
 ```
 
 ## Roadmap
 
-Tracked as GitHub issues: character unlocks (#1), hero level-ups (#2), and Endless / Death mode with rank-gated
-level caps (#4). The full pre-game lobby with ready-up, private rooms and reconnect (#5), and the chest selection
-intermission between levels (#3), are implemented above; a real Death mode is still coming.
+Tracked as GitHub issues: hero level-ups (#2), and Endless / Death mode with rank-gated level caps (#4). The full
+pre-game lobby with ready-up, private rooms and reconnect (#5), the chest selection intermission between levels (#3),
+and character unlocks — alternate palettes and new hero archetypes (#1) — are implemented above; a real Death mode
+is still coming.
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.
 

@@ -14,6 +14,13 @@
   .hero canvas { width: 64px; height: 64px; }
   .hero .n { font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-top: 6px; }
   .hero .s { font-size: 11px; color: var(--muted); }
+  .hero.locked { opacity: .45; cursor: not-allowed; }
+  .hero.locked canvas { filter: grayscale(1); }
+  .hero .lock { font-size: 11px; color: var(--red); margin-top: 8px; }
+  .hero .swatches { display: flex; gap: 4px; justify-content: center; margin-top: 8px; flex-wrap: wrap; }
+  .hero .swatch { width: 16px; height: 16px; border: 1px solid var(--line); cursor: pointer; display: inline-block; }
+  .hero .swatch.sel { border-color: var(--yellow); box-shadow: 0 0 0 2px #000, 0 0 0 3px var(--yellow); }
+  .hero .swatch.locked { opacity: .3; cursor: not-allowed; }
   .rooms .r { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
   #session { display: none; flex-direction: column; align-items: center; gap: 8px; }
   #session.on { display: flex; }
@@ -108,6 +115,7 @@
             <div class="row" style="margin-top:12px">
               <label class="muted" style="font-size:12px">Hero</label>
               <select id="rs-hero"></select>
+              <select id="rs-palette"></select>
               <button class="primary" id="rs-ready">Ready</button>
               <button id="rs-start" style="display:none">Start</button>
             </div>

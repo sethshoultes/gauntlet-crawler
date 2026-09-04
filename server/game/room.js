@@ -6,6 +6,7 @@ import { TICK_RATE, DT, MAX_PLAYERS, CLASSES } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
 import { rollChests, applyChest } from '../../shared/chests.js';
+import { isClassUnlocked, isPaletteUnlocked, unlockedFor, requirementText, PALETTE_BY_ID } from '../../shared/unlocks.js';
 import * as stats from '../stats.js';
 import { db } from '../db.js';
 
@@ -75,8 +76,58 @@ export class Room {
     return { t: 'players', list: this.sim.playerInfo().map((p) => ({ ...p, away: !!this.clients.get(p.id)?.away })) };
   }
 
+  // ---------- character unlocks (shared/unlocks.js) ----------
+  /** This user's unlock-evaluation profile (stats/achievements/rank). Guests get null, which
+   *  shared/unlocks.js treats as base-classes-only, no palettes. */
+  profileFor(user) {
+    if (!user) return null;
+    const s = stats.getStats(user.id);
+    return { stats: s, achievements: stats.getAchievementIds(user.id), rank: rankForXp(s.xp || 0) };
+  }
+
+  /** Validate a requested hero/palette against what `user` has actually unlocked. Anything
+   *  locked (or an unknown class) silently falls back to warrior/no-palette, and `error` carries
+   *  a human message for the client toast — same rule for `join` and the in-lobby `hero` switch. */
+  pickHero(user, cls, palette) {
+    const profile = this.profileFor(user);
+    const requestedCls = CLASSES[cls] ? cls : 'warrior';
+    let outCls = requestedCls, error = null;
+    if (!isClassUnlocked(requestedCls, profile)) {
+      error = `That hero is locked: ${requirementText({ requires: CLASSES[requestedCls].requires })}`;
+      outCls = 'warrior';
+    }
+    const outPalette = this.resolvePalette(profile, outCls, palette);
+    if (palette && !outPalette && !error) {
+      const p = PALETTE_BY_ID[palette];
+      if (p) error = `That palette is locked: ${requirementText({ requires: p.requires })}`;
+    }
+    return { cls: outCls, palette: outPalette, error };
+  }
+
+  resolvePalette(profile, cls, palette) {
+    if (!palette) return null;
+    const p = PALETTE_BY_ID[palette];
+    if (!p || p.cls !== cls) return null;
+    return isPaletteUnlocked(palette, profile) ? palette : null;
+  }
+
+  /** Catalogue items newly present in `after` but not `before` (see unlockedFor) — used to push
+   *  `{t:'unlock'}` toasts when an achievement or rank-up opens something new mid-session. */
+  diffUnlocks(before, after) {
+    const out = [];
+    for (const id of after.classes) if (!before.classes.has(id)) {
+      const c = CLASSES[id];
+      out.push({ type: 'hero', id, cls: id, name: c.hero, color: c.color });
+    }
+    for (const id of after.palettes) if (!before.palettes.has(id)) {
+      const p = PALETTE_BY_ID[id];
+      out.push({ type: 'palette', id, cls: p.cls, name: p.name, color: p.color });
+    }
+    return out;
+  }
+
   // ---------- joining / reconnecting ----------
-  join(ws, { pid, user, name, cls, resume }) {
+  join(ws, { pid, user, name, cls, resume, palette }) {
     if (resume) {
       const c = this.resume(ws, resume);
       if (c) return c;
@@ -89,8 +140,9 @@ export class Room {
       title = rankTitle(rank);
       perks = perksForRank(rank);
     }
+    const picked = this.pickHero(user, cls, palette);
     const c = {
-      ws, pid, user, name, cls, joinedAt: Date.now(), streak: 0, rank, title, perks,
+      ws, pid, user, name, cls: picked.cls, palette: picked.palette, joinedAt: Date.now(), streak: 0, rank, title, perks,
       ready: false, away: false, awaySince: null, awayTimer: null, resume: crypto.randomBytes(8).toString('hex'),
     };
     this.clients.set(pid, c);
@@ -98,10 +150,11 @@ export class Room {
     this.emptySince = null;
     if (this.state !== 'lobby') this.enterGame(c);
     this.send(c, { t: 'welcome', pid, resume: c.resume, room: this.info() });
+    if (picked.error) this.send(c, { t: 'error', error: picked.error });
     if (this.state !== 'lobby') this.send(c, this.sim.levelPacket());
     this.broadcastRoom();
     if (this.state !== 'lobby') this.broadcast(this.playersPacket());
-    this.broadcast({ t: 'notice', text: `${name} the ${cap(cls)} enters the dungeon` });
+    this.broadcast({ t: 'notice', text: `${name} the ${cap(picked.cls)} enters the dungeon` });
     this.checkAutoStart();
     return c;
   }
@@ -140,7 +193,7 @@ export class Room {
 
   /** Move a lobby client into the running sim (on start, or on late join into a live room). */
   enterGame(c) {
-    this.sim.addPlayer(c.pid, { name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title });
+    this.sim.addPlayer(c.pid, { name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title, palette: c.palette });
     if (c.user) {
       const fresh = stats.raise(c.user.id, `class_${c.cls}`, 1);
       const played = db.prepare("SELECT COUNT(*) AS n FROM stats WHERE user_id = ? AND key LIKE 'class_%' AND value > 0").get(c.user.id).n;
@@ -158,10 +211,12 @@ export class Room {
     this.checkAutoStart();
   }
 
-  setHero(pid, cls) {
+  setHero(pid, cls, palette) {
     const c = this.clients.get(pid);
-    if (!c || this.state !== 'lobby' || !CLASSES[cls]) return;
-    c.cls = cls;
+    if (!c || this.state !== 'lobby') return;
+    const picked = this.pickHero(c.user, cls, palette);
+    c.cls = picked.cls; c.palette = picked.palette;
+    if (picked.error) this.send(c, { t: 'error', error: picked.error });
     this.broadcastRoom();
   }
 
@@ -279,14 +334,28 @@ export class Room {
     for (const c of this.clients.values()) if (c.user) this.unlock(c, stats.bump(c.user.id, 'seconds_played', 30));
   }
 
+  /** Announce freshly-awarded achievements, then diff unlockedFor() before/after them to push
+   *  any newly-opened hero/palette as a `{t:'unlock'}` toast. */
   unlock(c, fresh) {
+    if (!fresh.length) return;
+    let diff = [];
+    if (c.user) {
+      const profile = this.profileFor(c.user);
+      const freshIds = new Set(fresh.map((a) => a.id));
+      const beforeAch = new Set([...profile.achievements].filter((id) => !freshIds.has(id)));
+      const before = unlockedFor({ ...profile, achievements: beforeAch });
+      const after = unlockedFor(profile);
+      diff = this.diffUnlocks(before, after);
+    }
     for (const a of fresh) {
       this.send(c, { t: 'ach', ach: { id: a.id, name: a.name, icon: a.icon, desc: a.desc } });
       this.broadcast({ t: 'notice', text: `${c.name} unlocked ${a.icon} ${a.name}` });
     }
+    for (const item of diff) this.send(c, { t: 'unlock', item });
   }
 
-  /** Award XP to a logged-in client and announce a rank-up if it just happened. Guests earn nothing. */
+  /** Award XP to a logged-in client and announce a rank-up if it just happened. Guests earn
+   *  nothing. A rank-up is also diffed through unlockedFor() for rank-gated unlocks. */
   awardXp(c, userId, amount) {
     if (!c || !userId || !amount) return;
     const { value, fresh } = stats.bumpXp(userId, amount);
@@ -301,6 +370,10 @@ export class Room {
       this.send(c, { t: 'rankup', rank: newRank, title });
       this.broadcast({ t: 'notice', text: `${c.name} reached Rank ${newRank}: ${title}!` });
       this.broadcast(this.playersPacket());
+      const profile = this.profileFor(c.user);
+      const before = unlockedFor({ ...profile, rank: oldRank });
+      const after = unlockedFor({ ...profile, rank: newRank });
+      for (const item of this.diffUnlocks(before, after)) this.send(c, { t: 'unlock', item });
     }
   }
 

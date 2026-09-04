@@ -32,6 +32,15 @@
   .prog-next { font-size: 12px; color: var(--muted); margin-top: 6px; }
   .perks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .perk { background: #000; border: 2px solid var(--line); padding: 4px 10px; font-size: 11px; }
+  .unlocks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .unlock { display: flex; gap: 10px; background: #000; border: 2px solid var(--line); padding: 10px; align-items: center; opacity: .55; }
+  .unlock.on { border-color: var(--yellow); opacity: 1; }
+  .unlock .sw { width: 28px; height: 28px; flex: none; border: 2px solid var(--line); filter: grayscale(1); }
+  .unlock.on .sw { filter: none; }
+  .unlock .n { font-weight: bold; font-size: 13px; }
+  .unlock .n .tag { font-weight: normal; }
+  .unlock .d { font-size: 11px; color: var(--muted); }
+  .unlock.on .d { color: var(--yellow); }
 </style>
 </head>
 <body>
@@ -53,6 +62,7 @@
     </div>
     <div class="panel" style="margin-top:18px"><h2>Career</h2><div class="stats" id="stats"></div></div>
     <div class="panel" style="margin-top:18px"><h2>Achievements <span class="muted" id="ach-count" style="font-size:12px;letter-spacing:0"></span></h2><div class="achs" id="achs"></div></div>
+    <div class="panel" style="margin-top:18px"><h2>Unlocks <span class="muted" id="unlock-count" style="font-size:12px;letter-spacing:0"></span></h2><p class="muted" style="font-size:12px;margin:0 0 10px">Alternate palettes and new hero archetypes, earned by rank or achievement.</p><div class="unlocks" id="unlocks"></div></div>
     <div class="grid2" style="margin-top:18px">
       <div class="panel"><h2>Recent runs</h2><table id="runs"></table></div>
       <div class="panel"><h2>My levels</h2><table id="mylevels"></table><p class="muted" style="font-size:12px">Build more in the <a href="/editor.html">Level Builder</a>.</p></div>
