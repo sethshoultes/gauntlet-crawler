@@ -72,6 +72,14 @@ test('static file traversal is blocked; legitimate /shared and /client files sti
       assert.ok(res.status === 403 || res.status === 404, `${p} should be blocked, got HTTP ${res.status}`);
     }
 
+    // Hostile paths must never crash the process: a NUL byte used to make fs.readFile throw
+    // synchronously inside the request handler, taking the whole server down with a 000 response.
+    for (const p of ['/%00', '/style.css%00.png', '/shared/%00constants.js', '/%zz']) {
+      const res = await fetch(baseUrl + p);
+      assert.ok([400, 403, 404].includes(res.status), `${p} should be rejected, got HTTP ${res.status}`);
+    }
+    assert.equal(server.exitCode, null, 'server must still be running after hostile paths');
+
     // The fix must not break legitimate access to shared/ and client/ files.
     const shared = await fetch(baseUrl + '/shared/constants.js');
     assert.equal(shared.status, 200, 'GET /shared/constants.js should still succeed');

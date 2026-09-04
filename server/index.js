@@ -53,6 +53,8 @@ setInterval(() => {
 function serveStatic(req, res, urlPath) {
   let rel;
   try { rel = decodeURIComponent(urlPath); } catch { res.writeHead(400); return res.end(); }
+  // A NUL byte makes fs.readFile throw synchronously; refuse it before it can reach the filesystem layer.
+  if (rel.includes('\0')) { res.writeHead(400); return res.end(); }
   if (rel === '/') rel = '/index.html';
   // NOTE: `rel` is decoded *after* Node's URL parsing already collapsed literal ".." segments,
   // so an encoded traversal (e.g. "/shared/..%2f..%2fdata/gauntlet.sqlite") would otherwise slip
@@ -188,13 +190,20 @@ async function api(req, res, url) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  if (url.pathname.startsWith('/api/')) {
-    try { await api(req, res, url); }
-    catch (e) { json(res, e.status || 400, { error: e.message }); }
-    return;
+  // Nothing a single request does may take the whole server (and every room in it) down.
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    if (url.pathname.startsWith('/api/')) {
+      try { await api(req, res, url); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+      return;
+    }
+    serveStatic(req, res, url.pathname);
+  } catch (e) {
+    console.error('[http] request failed:', req.url, e);
+    if (!res.headersSent) { try { res.writeHead(500); } catch {} }
+    try { res.end(); } catch {}
   }
-  serveStatic(req, res, url.pathname);
 });
 
 // ---------- WebSocket game protocol ----------
