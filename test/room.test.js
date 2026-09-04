@@ -293,4 +293,44 @@ test('kick removes the player and records a fresh sim state should they somehow 
   } finally { room.close(); }
 });
 
+test('tick() contains an exception from the sim instead of letting it crash the process', () => {
+  const room = makeRoom({ id: 'tick-crash' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    assert.equal(room.state, 'playing');
+
+    const realStep = room.sim.step.bind(room.sim);
+    room.sim.step = () => { throw new Error('boom: simulated sim failure'); };
+    const realError = console.error;
+    const logged = [];
+    console.error = (...args) => logged.push(args);
+    try {
+      assert.doesNotThrow(() => room.tick(), 'tick() must catch and log, never throw out of the interval callback');
+    } finally { console.error = realError; }
+    assert.ok(logged.length >= 1, 'the failure was logged');
+    assert.match(String(logged[0][0]), /tick\(\) failed/);
+
+    // The room survives the failed tick and keeps working once the sim is healthy again.
+    room.sim.step = realStep;
+    assert.doesNotThrow(() => room.tick());
+    assert.equal(room.state, 'playing');
+  } finally { room.close(); }
+});
+
+test('a timer callback (e.g. the countdown tick) that throws is contained, not fatal to the room', () => {
+  const room = makeRoom({ id: 'timer-crash' });
+  try {
+    const realError = console.error;
+    const logged = [];
+    console.error = (...args) => logged.push(args);
+    const boom = room.guard('unit-test label', () => { throw new Error('boom'); });
+    try {
+      assert.doesNotThrow(() => boom(), 'a guarded callback must never throw');
+    } finally { console.error = realError; }
+    assert.ok(logged.length >= 1);
+    assert.match(String(logged[0][0]), /unit-test label failed/);
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });

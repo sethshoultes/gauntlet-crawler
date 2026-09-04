@@ -43,12 +43,27 @@ function rateLimit(key, max, windowMs) {
   if (recent.length >= max) { buckets.set(key, recent); return false; }
   recent.push(t); buckets.set(key, recent); return true;
 }
+// `buckets` otherwise keeps one Map entry forever per distinct user/IP that ever hit a
+// rate-limited endpoint, even long after their recent-request window has emptied out. Sweep
+// stale entries periodically so a long-running server doesn't accumulate them without bound.
+setInterval(() => {
+  const t = Date.now();
+  for (const [key, times] of buckets) if (!times.length || t - times[times.length - 1] > 10 * 60_000) buckets.delete(key);
+}, 5 * 60_000).unref();
 function serveStatic(req, res, urlPath) {
-  let rel = decodeURIComponent(urlPath);
+  let rel;
+  try { rel = decodeURIComponent(urlPath); } catch { res.writeHead(400); return res.end(); }
   if (rel === '/') rel = '/index.html';
-  const base = rel.startsWith('/shared/') ? ROOT : path.join(ROOT, 'client');
-  const file = path.normalize(path.join(base, rel.startsWith('/shared/') ? rel : rel));
-  if (!file.startsWith(base)) { res.writeHead(403); return res.end(); }
+  // NOTE: `rel` is decoded *after* Node's URL parsing already collapsed literal ".." segments,
+  // so an encoded traversal (e.g. "/shared/..%2f..%2fdata/gauntlet.sqlite") would otherwise slip
+  // past a startsWith() check — decode first, then verify the resolved file with path.relative()
+  // so no encoding trick can escape the intended directory.
+  const isShared = rel.startsWith('/shared/');
+  const base = isShared ? path.join(ROOT, 'shared') : path.join(ROOT, 'client');
+  const subPath = isShared ? rel.slice('/shared'.length) : rel;
+  const file = path.normalize(path.join(base, subPath));
+  const relToBase = path.relative(base, file);
+  if (relToBase.startsWith('..') || path.isAbsolute(relToBase)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });

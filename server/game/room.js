@@ -49,9 +49,18 @@ export class Room {
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
     this.sim = new Sim(this.levelFor(1), { levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign' });
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
-    this.secondsTimer = setInterval(() => this.creditTime(), 30000);
+    this.secondsTimer = setInterval(this.guard('creditTime', () => this.creditTime()), 30000);
     this.changing = false;
     this.emptySince = null;
+  }
+
+  /** Wrap a timer callback so an uncaught exception inside it is logged and contained instead of
+   *  crashing the whole process (every setInterval/setTimeout in this class other than the main
+   *  tick loop, which guards itself directly, goes through this). */
+  guard(label, fn) {
+    return (...args) => {
+      try { fn(...args); } catch (e) { console.error(`[room ${this.id}] ${label} failed:`, e); }
+    };
   }
 
   levelFor(n) {
@@ -215,7 +224,7 @@ export class Room {
     this.broadcastRoom();
     if (this.state !== 'lobby') this.broadcast(this.playersPacket());
     if (this.state === 'intermission') this.checkIntermissionDone();
-    c.awayTimer = setTimeout(() => this.leave(pid), AWAY_GRACE_MS);
+    c.awayTimer = setTimeout(this.guard('away-timeout leave', () => this.leave(pid)), AWAY_GRACE_MS);
   }
 
   /** Move a lobby client into the running sim (on start, or on late join into a live room). */
@@ -298,11 +307,11 @@ export class Room {
   beginCountdown() {
     this.countdownSeconds = COUNTDOWN_SECONDS;
     this.broadcast({ t: 'countdown', seconds: this.countdownSeconds });
-    this.countdownTimer = setInterval(() => {
+    this.countdownTimer = setInterval(this.guard('countdown tick', () => {
       this.countdownSeconds--;
       if (this.countdownSeconds <= 0) { clearInterval(this.countdownTimer); this.countdownTimer = null; this.beginPlay(); return; }
       this.broadcast({ t: 'countdown', seconds: this.countdownSeconds });
-    }, 1000);
+    }), 1000);
   }
 
   cancelCountdown() {
@@ -470,10 +479,10 @@ export class Room {
     // Death mode: clearing the rank-gated cap level ends the run (victory) instead of continuing
     // into another intermission/level — skip the chest pick entirely.
     const atCap = this.source.type === 'death' && this.levelIndex >= this.computeDeathCap();
-    this.levelChangeTimer = setTimeout(() => {
+    this.levelChangeTimer = setTimeout(this.guard('level change', () => {
       this.levelChangeTimer = null;
       if (atCap) this.endRun('cap'); else this.startIntermission();
-    }, LEVEL_CHANGE_DELAY_MS);
+    }), LEVEL_CHANGE_DELAY_MS);
   }
 
   // ---------- chest intermission ----------
@@ -494,14 +503,14 @@ export class Room {
     }
     this.broadcastRoom();
     this.intermissionSeconds = INTERMISSION_SECONDS;
-    this.intermissionTimer = setInterval(() => {
+    this.intermissionTimer = setInterval(this.guard('intermission tick', () => {
       this.intermissionSeconds--;
       if (this.intermissionSeconds <= 0) {
         clearInterval(this.intermissionTimer); this.intermissionTimer = null;
         this.autoPickRemaining();
         this.finishIntermissionSoon();
       }
-    }, 1000);
+    }), 1000);
   }
 
   /** Client -> server chest pick. Rejects a second pick or an id not in that player's own offer. */
@@ -548,7 +557,7 @@ export class Room {
     if (this.intermissionEnding) return;
     this.intermissionEnding = true;
     if (this.intermissionTimer) { clearInterval(this.intermissionTimer); this.intermissionTimer = null; }
-    this.intermissionEndTimer = setTimeout(() => this.finishIntermission(), INTERMISSION_REVEAL_MS);
+    this.intermissionEndTimer = setTimeout(this.guard('finishIntermission', () => this.finishIntermission()), INTERMISSION_REVEAL_MS);
   }
 
   /** Apply every picked chest, then load the next level. Exposed directly for tests. */
@@ -592,7 +601,7 @@ export class Room {
     this.waveNum++;
     if (this.waveNum > this.waveCount) { this.finishWaves(); return; }
     this.broadcast({ t: 'wave', n: this.waveNum, total: this.waveCount, seconds: WAVE_BANNER_SECONDS });
-    this.waveBannerTimer = setTimeout(() => { this.waveBannerTimer = null; this.spawnWave(); }, WAVE_BANNER_SECONDS * 1000);
+    this.waveBannerTimer = setTimeout(this.guard('spawnWave', () => { this.waveBannerTimer = null; this.spawnWave(); }), WAVE_BANNER_SECONDS * 1000);
   }
 
   /** Spawn this wave's monsters (mix shifts ghost -> grunt -> demon with depth; a Death appears
@@ -613,7 +622,7 @@ export class Room {
       if (spot) { const m = this.sim.spawnMonster('death', spot[0] + 0.5, spot[1] + 0.5); if (m) ids.add(m.id); }
     }
     this.waveMonsterIds = ids;
-    this.waveTimer = setTimeout(() => this.checkWaveAdvance(true), WAVE_TIMEOUT_MS);
+    this.waveTimer = setTimeout(this.guard('checkWaveAdvance', () => this.checkWaveAdvance(true)), WAVE_TIMEOUT_MS);
   }
 
   /** A random floor tile at least WAVE_SPAWN_MIN_DIST tiles (Manhattan) from every player. */
@@ -687,16 +696,23 @@ export class Room {
   }
 
   tick() {
-    if (this.clients.size === 0) {
-      if (this.emptySince && Date.now() - this.emptySince > 30000) this.close();
-      return;
+    // This runs off a raw setInterval (see the constructor) with nothing else between it and the
+    // Node event loop: an uncaught exception here would crash the whole process, taking down
+    // every room, not just this one. Contain it and keep the room alive for the next tick instead.
+    try {
+      if (this.clients.size === 0) {
+        if (this.emptySince && Date.now() - this.emptySince > 30000) this.close();
+        return;
+      }
+      if (this.state !== 'playing') return; // lobby: frozen, nothing to simulate yet
+      this.sim.step(DT);
+      if (this.source.type === 'death') { this.checkWaveAdvance(false); this.checkWipe(); }
+      const snap = this.sim.snapshot();
+      if (this.pendingEvents.length) { snap.e = this.pendingEvents; this.pendingEvents = []; }
+      this.broadcast(snap);
+    } catch (e) {
+      console.error(`[room ${this.id}] tick() failed:`, e);
     }
-    if (this.state !== 'playing') return; // lobby: frozen, nothing to simulate yet
-    this.sim.step(DT);
-    if (this.source.type === 'death') { this.checkWaveAdvance(false); this.checkWipe(); }
-    const snap = this.sim.snapshot();
-    if (this.pendingEvents.length) { snap.e = this.pendingEvents; this.pendingEvents = []; }
-    this.broadcast(snap);
   }
 
   close() {
