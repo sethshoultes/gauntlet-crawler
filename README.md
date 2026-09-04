@@ -78,6 +78,11 @@ Optional environment variables:
   test-play instantly, save, publish to the community list, and play other people's levels.
 - **AI generator**: describe a dungeon, pick difficulty and size. With an Anthropic key the server asks Claude for a level
   as structured JSON, validates and auto-repairs it, and falls back to the procedural generator if anything is off.
+- **Chest intermission** (`shared/chests.js`): after clearing a level, a 15s pick window opens where every player is
+  offered three hidden chests rolled from a seeded RNG (potions, keys, health, temporary next-level-only boosts like
+  speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
+  round ends early once all connected players have chosen (or auto-picks at the timeout), and boosts stack with hero
+  perks for the following level, shown as small icons in the HUD, before clearing.
 
 ## Level format
 
@@ -106,14 +111,15 @@ shared/            code used by both server and browser
   levels/level1.js the hand-built opener
   achievements.js  achievement definitions
   progression.js   XP curve, rank titles/thresholds, perk caps — shared by server and dashboard/HUD
+  chests.js        intermission chest pool, seeded rolling, and applying picked chests to a player
 client/            static browser app (no build step): game, dashboard, editor, sprites, audio
 test/              node:test suites
 ```
 
 ## Roadmap
 
-Tracked as GitHub issues: character unlocks (#1), hero level-ups (#2), chest selection between levels (#3), and
-Endless / Death mode with rank-gated level caps (#4). The full pre-game lobby with ready-up, private rooms and
-reconnect (#5) is implemented above; a real Death mode is still coming.
+Tracked as GitHub issues: character unlocks (#1), hero level-ups (#2), and Endless / Death mode with rank-gated
+level caps (#4). The full pre-game lobby with ready-up, private rooms and reconnect (#5), and the chest selection
+intermission between levels (#3), are implemented above; a real Death mode is still coming.
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.

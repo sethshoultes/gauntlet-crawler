@@ -203,6 +203,12 @@ wss.on('connection', (ws, req) => {
         }
         case 'input': if (room) room.handleInput(pid, msg); break;
         case 'chat': if (room) room.chat(pid, msg.text); break;
+        case 'pick': if (room) room.pick(pid, msg.id); break;
+        case 'debug':
+          // Test-only hook so E2E/manual scripts can force a level clear without playing the
+          // whole level. Never wired up unless the server is explicitly started with this flag.
+          if (process.env.GAUNTLET_DEBUG === '1' && room) room.debugAction(msg.action);
+          break;
         case 'ready': if (room) room.setReady(pid, !!msg.ready); break;
         case 'hero': if (room) room.setHero(pid, msg.cls); break;
         case 'settings': if (room) room.setSettings(pid, msg); break;

@@ -1,6 +1,7 @@
 import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
 import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS } from '/shared/constants.js';
+import { BOOST_ICONS } from '/shared/chests.js';
 const RESUME_KEY = 'gc_resume';
 
 const $ = (s) => document.querySelector(s);
@@ -53,6 +54,7 @@ const G = {
   input: { dx: 0, dy: 0, fire: false }, lastSent: '', camX: 0, camY: 0, overlay: null, muted: localStorage.getItem('gc_mute') === '1', narrate: localStorage.getItem('gc_narrate') !== '0',
   followId: null, lastFood: 0, shake: 0,
   inRoom: false, reconnecting: false, reconnectAttempts: 0, reconnectTimer: null,
+  intermission: null, // { seconds, startedAt, totalMs, chests, picks:Map<pid,chest>, myPick, rects[] }
 };
 // exposed for manual/E2E debugging only — not used by the game itself
 window.__gc = { reconnectNow: () => attemptReconnect() };
@@ -162,6 +164,22 @@ function onMessage(m) {
     case 'levelclear':
       G.overlay = { kind: 'clear', title: 'LEVEL CLEARED', sub: `${m.by} found the exit in ${m.time}s`, until: performance.now() + 2500 };
       sfx('clear'); break;
+    case 'chests':
+      G.intermission = {
+        startedAt: performance.now(), totalMs: m.seconds * 1000,
+        chests: m.chests, picks: new Map(), myPick: null, pickSent: false, rects: [],
+      };
+      log('<span class="n">Choose a chest for the next level…</span>');
+      break;
+    case 'chestpick': {
+      if (!G.intermission) break;
+      G.intermission.picks.set(m.pid, m.chest);
+      if (m.pid === G.pid) { G.intermission.myPick = m.chest; sfx(m.chest.cursed ? 'bad' : 'coin'); }
+      const nm = G.players.get(m.pid)?.name || 'Someone';
+      log(`<span class="n">${esc(nm)} opened ${esc(m.chest.icon)} ${esc(m.chest.label)}</span>`);
+      break;
+    }
+    case 'chestsdone': G.intermission = null; break;
     case 'error':
       toast('Error', m.error, 'err');
       if (G.reconnecting || !G.inRoom) leaveGame();
@@ -281,6 +299,11 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { chat.value = ''; chat.blur(); }
     return;
   }
+  if (G.intermission && !G.intermission.pickSent && ['1', '2', '3'].includes(e.key)) {
+    const chest = G.intermission.chests[Number(e.key) - 1];
+    if (chest) pickChest(chest.id);
+    return;
+  }
   if (e.key === 't' || e.key === 'T') { e.preventDefault(); chat.focus(); return; }
   if (e.key === 'm' || e.key === 'M') { G.muted = !G.muted; localStorage.setItem('gc_mute', G.muted ? '1' : '0'); toast(G.muted ? 'Sound off' : 'Sound on'); return; }
   if (e.key === 'n' || e.key === 'N') { G.narrate = !G.narrate; localStorage.setItem('gc_narrate', G.narrate ? '1' : '0'); toast(G.narrate ? 'Narrator on' : 'Narrator off'); return; }
@@ -318,9 +341,26 @@ function sendInput(extra = {}) {
 }
 setInterval(() => sendInput(), 50);
 
+function pickChest(id) {
+  if (!G.intermission || G.intermission.pickSent) return;
+  if (!G.ws || G.ws.readyState !== 1) return;
+  G.intermission.pickSent = true;
+  G.ws.send(JSON.stringify({ t: 'pick', id }));
+}
+
 // ---------------- rendering ----------------
 const cv = $('#cv'); const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = false;
 const TS = TILE * ZOOM; // 32 screen px per tile
+
+cv.addEventListener('click', (ev) => {
+  if (!G.intermission || G.intermission.pickSent) return;
+  const rect = cv.getBoundingClientRect();
+  const x = (ev.clientX - rect.left) * (VIEW_W / rect.width);
+  const y = (ev.clientY - rect.top) * (VIEW_H / rect.height);
+  for (const r of G.intermission.rects) {
+    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { pickChest(r.id); break; }
+  }
+});
 
 function lerpSnap(now) {
   if (!G.cur) return null;
@@ -437,9 +477,85 @@ function frame(now) {
   } else if (mine && mine[4] < LOW_HEALTH && now - G.lastFood > 12000) {
     G.lastFood = now; say(`${CLASSES[G.players.get(G.pid)?.cls]?.name || 'Hero'} needs food badly`);
   }
+  if (G.intermission) drawIntermission(now);
   updateHudValues(G.cur);
 }
 requestAnimationFrame(frame);
+
+function wrapText(text, x, y, maxWidth, lineHeight = 14) {
+  const words = text.split(' ');
+  let line = '', ly = y;
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxWidth && line) { ctx.fillText(line, x, ly); line = w; ly += lineHeight; }
+    else line = test;
+  }
+  if (line) ctx.fillText(line, x, ly);
+  return ly;
+}
+
+function drawIntermission(now) {
+  const iv = G.intermission;
+  const remain = Math.max(0, iv.totalMs - (now - iv.startedAt));
+  ctx.fillStyle = 'rgba(6,6,10,0.86)'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#f2c400'; ctx.font = 'bold 22px monospace';
+  ctx.fillText(iv.pickSent ? 'YOUR REWARD' : 'CHOOSE A CHEST', VIEW_W / 2, 34);
+
+  // countdown bar
+  const barW = 320, barX = VIEW_W / 2 - barW / 2, barY = 44;
+  ctx.strokeStyle = '#2b2b3d'; ctx.lineWidth = 1; ctx.strokeRect(barX, barY, barW, 8);
+  ctx.fillStyle = remain < 4000 ? '#e03c31' : '#2ecc40';
+  ctx.fillRect(barX + 1, barY + 1, Math.max(0, (barW - 2) * Math.min(1, remain / iv.totalMs)), 6);
+
+  const n = iv.chests.length;
+  const boxW = 150, boxH = 148, gap = 22;
+  const totalW = n * boxW + (n - 1) * gap;
+  const startX = VIEW_W / 2 - totalW / 2;
+  const boxY = 66;
+  iv.rects = [];
+  for (let i = 0; i < n; i++) {
+    const chest = iv.chests[i];
+    const picked = iv.myPick && iv.myPick.id === chest.id;
+    const x = startX + i * (boxW + gap);
+    if (!iv.pickSent) iv.rects.push({ x, y: boxY, w: boxW, h: boxH, id: chest.id });
+    ctx.fillStyle = picked ? '#1d1d2b' : '#15151f';
+    ctx.strokeStyle = picked ? (iv.myPick.cursed ? '#e03c31' : '#f2c400') : '#2b2b3d';
+    ctx.lineWidth = picked ? 3 : 2;
+    ctx.fillRect(x, boxY, boxW, boxH); ctx.strokeRect(x, boxY, boxW, boxH);
+    if (iv.pickSent && !picked) ctx.globalAlpha = 0.35;
+    ctx.save(); ctx.translate(x + boxW / 2, boxY + 56);
+    const bob = iv.pickSent ? 0 : Math.sin(now / 260 + i) * 3;
+    ctx.drawImage(sprite('treasure', null, 8), -32, -32 + bob, 64, 64);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#8e8ca0'; ctx.font = '12px monospace';
+    ctx.fillText(`[${i + 1}]`, x + boxW / 2, boxY + 100);
+    ctx.font = '12px monospace';
+    if (picked) {
+      ctx.fillStyle = iv.myPick.cursed ? '#e03c31' : '#f2c400';
+      wrapText(`${iv.myPick.icon} ${iv.myPick.label}`, x + boxW / 2, boxY + 118, boxW - 10);
+    } else if (!iv.pickSent) {
+      ctx.fillStyle = '#e8e6d8'; ctx.fillText('???', x + boxW / 2, boxY + 118);
+    }
+  }
+  if (!iv.pickSent) {
+    ctx.fillStyle = '#8e8ca0'; ctx.font = '12px monospace';
+    ctx.fillText('Click a chest or press 1 / 2 / 3', VIEW_W / 2, boxY + boxH + 22);
+  }
+
+  // roster of picks so far
+  ctx.textAlign = 'left'; ctx.font = '13px monospace';
+  let ry = boxY + boxH + 42;
+  for (const p of G.players.values()) {
+    const pick = iv.picks.get(p.id);
+    ctx.fillStyle = pick ? (pick.cursed ? '#e03c31' : '#2ecc40') : '#8e8ca0';
+    const what = pick ? `${pick.icon} ${pick.label}` : 'choosing…';
+    ctx.fillText(`${(p.name || '?').toUpperCase()}${p.id === G.pid ? ' (you)' : ''}: ${what}`, VIEW_W / 2 - 150, ry);
+    ry += 17;
+    if (ry > VIEW_H - 10) break;
+  }
+}
 
 function drawEntity(img, x, y, dir, bob = 0, isHero = false) {
   const px = x * TS, py = y * TS + bob;
@@ -465,6 +581,7 @@ function renderHud() {
       <div>HEALTH <span class="hp">0</span></div>
       <div>SCORE <span class="sc">0</span></div>
       <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>
+      ${p.boosts?.length ? `<div class="boosts" title="Active chest boosts this level">${p.boosts.map((b) => BOOST_ICONS[b] || '✨').join(' ')}</div>` : ''}
     </div>`).join('') + `<div class="muted" style="font-size:11px;text-align:center;margin-top:auto" id="hud-time"></div>`;
 }
 function updateHudValues(s) {

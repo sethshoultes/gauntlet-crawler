@@ -4,6 +4,8 @@ import { LEVEL1 } from '../../shared/levels/level1.js';
 import { generateLevel } from '../../shared/procgen.js';
 import { TICK_RATE, DT, MAX_PLAYERS, CLASSES } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
+import { makeRng } from '../../shared/rng.js';
+import { rollChests, applyChest } from '../../shared/chests.js';
 import * as stats from '../stats.js';
 import { db } from '../db.js';
 
@@ -11,6 +13,8 @@ const SPEEDRUN_SECONDS = 45;
 const LEVEL_CHANGE_DELAY_MS = 2500;
 const AWAY_GRACE_MS = 30000;    // how long a disconnected player's slot is held before a real leave
 const COUNTDOWN_SECONDS = 5;    // auto-start countdown once everyone is ready
+const INTERMISSION_SECONDS = 15; // how long players get to pick a chest before auto-pick
+const INTERMISSION_REVEAL_MS = 2000; // grace period after everyone has picked, before the next level loads
 
 export class Room {
   constructor({ id, name, seed, source = { type: 'campaign' }, isPublic = true, onEmpty }) {
@@ -20,11 +24,18 @@ export class Room {
     this.levelIndex = 1;
     this.pendingEvents = [];
     this.createdAt = Date.now();
-    this.state = 'lobby'; // 'lobby' | 'playing'
+    this.state = 'lobby'; // 'lobby' | 'playing' | 'intermission'
     this.hostPid = null;
     this.kickedIds = new Set(); // 'u<userId>' for logged-in players kicked from this room
     this.countdownTimer = null;
     this.countdownSeconds = 0;
+    this.levelChangeTimer = null;    // level-clear celebration delay, before intermission opens
+    this.intermissionTimer = null;   // per-second countdown ticker
+    this.intermissionEndTimer = null; // the reveal-then-advance timeout
+    this.intermissionSeconds = 0;
+    this.intermissionEnding = false;
+    this.chestOffers = new Map(); // pid -> chest[] offered this intermission (hidden contents)
+    this.chestPicks = new Map();  // pid -> chest picked this intermission
     this.sim = new Sim(this.levelFor(1), { levelIndex: 1, onEvent: (e) => this.onEvent(e) });
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
     this.secondsTimer = setInterval(() => this.creditTime(), 30000);
@@ -85,11 +96,11 @@ export class Room {
     this.clients.set(pid, c);
     if (!this.hostPid) this.hostPid = pid;
     this.emptySince = null;
-    if (this.state === 'playing') this.enterGame(c);
+    if (this.state !== 'lobby') this.enterGame(c);
     this.send(c, { t: 'welcome', pid, resume: c.resume, room: this.info() });
-    if (this.state === 'playing') this.send(c, this.sim.levelPacket());
+    if (this.state !== 'lobby') this.send(c, this.sim.levelPacket());
     this.broadcastRoom();
-    if (this.state === 'playing') this.broadcast(this.playersPacket());
+    if (this.state !== 'lobby') this.broadcast(this.playersPacket());
     this.broadcast({ t: 'notice', text: `${name} the ${cap(cls)} enters the dungeon` });
     this.checkAutoStart();
     return c;
@@ -102,9 +113,13 @@ export class Room {
         if (c.awayTimer) { clearTimeout(c.awayTimer); c.awayTimer = null; }
         c.ws = ws; c.away = false; c.awaySince = null;
         this.send(c, { t: 'welcome', pid: c.pid, resume: c.resume, room: this.info(), resumed: true });
-        if (this.state === 'playing') this.send(c, this.sim.levelPacket());
+        if (this.state !== 'lobby') this.send(c, this.sim.levelPacket());
+        if (this.state === 'intermission' && !this.chestPicks.has(c.pid)) {
+          const chests = this.chestOffers.get(c.pid);
+          if (chests) this.send(c, { t: 'chests', seconds: this.intermissionSeconds, chests: chests.map((ch) => ({ id: ch.id, label: '???', icon: '📦' })) });
+        }
         this.broadcastRoom();
-        if (this.state === 'playing') this.broadcast(this.playersPacket());
+        if (this.state !== 'lobby') this.broadcast(this.playersPacket());
         this.broadcast({ t: 'notice', text: `${c.name} reconnected` });
         return c;
       }
@@ -118,7 +133,8 @@ export class Room {
     if (!c || c.away) return;
     c.ws = null; c.away = true; c.awaySince = Date.now();
     this.broadcastRoom();
-    if (this.state === 'playing') this.broadcast(this.playersPacket());
+    if (this.state !== 'lobby') this.broadcast(this.playersPacket());
+    if (this.state === 'intermission') this.checkIntermissionDone();
     c.awayTimer = setTimeout(() => this.leave(pid), AWAY_GRACE_MS);
   }
 
@@ -240,10 +256,18 @@ export class Room {
     this.broadcast(this.playersPacket());
     this.broadcast({ t: 'notice', text: `${c.name} has left` });
     if (this.clients.size === 0) this.emptySince = Date.now();
-    else this.checkAutoStart();
+    else { this.checkAutoStart(); if (this.state === 'intermission') this.checkIntermissionDone(); }
   }
 
   handleInput(pid, input) { this.sim.setInput(pid, input); }
+
+  /** Test/manual-verification only, gated behind GAUNTLET_DEBUG=1 in server/index.js. */
+  debugAction(action) {
+    if (action === 'clear' && this.state === 'playing') {
+      const anyPid = [...this.sim.players.keys()][0];
+      if (anyPid != null) this.onEvent({ type: 'exit', pid: anyPid, levelTime: this.sim.levelTime });
+    }
+  }
 
   chat(pid, text) {
     const c = this.clients.get(pid);
@@ -333,13 +357,102 @@ export class Room {
     }
     const who = this.clients.get(e.pid);
     this.broadcast({ t: 'levelclear', by: who?.name || '?', level: this.levelIndex, time: Math.round(e.levelTime), next: this.levelIndex + 1 });
-    setTimeout(() => {
-      this.levelIndex++;
-      this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex);
-      this.broadcast(this.sim.levelPacket());
-      this.broadcast(this.playersPacket());
-      this.changing = false;
-    }, LEVEL_CHANGE_DELAY_MS);
+    this.levelChangeTimer = setTimeout(() => { this.levelChangeTimer = null; this.startIntermission(); }, LEVEL_CHANGE_DELAY_MS);
+  }
+
+  // ---------- chest intermission ----------
+  /** Roll three hidden chest offers per player and open the pick window. */
+  startIntermission() {
+    if (this.levelChangeTimer) { clearTimeout(this.levelChangeTimer); this.levelChangeTimer = null; }
+    this.state = 'intermission';
+    this.intermissionEnding = false;
+    this.chestOffers = new Map();
+    this.chestPicks = new Map();
+    for (const c of this.clients.values()) {
+      const p = this.sim.players.get(c.pid);
+      if (!p) continue;
+      const rng = makeRng(`${this.seed}|${this.levelIndex}|${c.pid}`);
+      const chests = rollChests(rng, this.levelIndex);
+      this.chestOffers.set(c.pid, chests);
+      this.send(c, { t: 'chests', seconds: INTERMISSION_SECONDS, chests: chests.map((ch) => ({ id: ch.id, label: '???', icon: '📦' })) });
+    }
+    this.broadcastRoom();
+    this.intermissionSeconds = INTERMISSION_SECONDS;
+    this.intermissionTimer = setInterval(() => {
+      this.intermissionSeconds--;
+      if (this.intermissionSeconds <= 0) {
+        clearInterval(this.intermissionTimer); this.intermissionTimer = null;
+        this.autoPickRemaining();
+        this.finishIntermissionSoon();
+      }
+    }, 1000);
+  }
+
+  /** Client -> server chest pick. Rejects a second pick or an id not in that player's own offer. */
+  pick(pid, id) {
+    if (this.state !== 'intermission' || this.intermissionEnding) return;
+    if (this.chestPicks.has(pid)) return;
+    const offers = this.chestOffers.get(pid);
+    if (!offers) return;
+    const chest = offers.find((ch) => ch.id === id);
+    if (!chest) return;
+    this.commitPick(pid, chest);
+  }
+
+  /** Auto-pick a random offered chest for anyone (away or just slow) who hasn't chosen yet. */
+  autoPickRemaining() {
+    for (const c of this.clients.values()) {
+      if (this.chestPicks.has(c.pid)) continue;
+      const offers = this.chestOffers.get(c.pid);
+      if (!offers || !offers.length) continue;
+      this.commitPick(c.pid, offers[Math.floor(Math.random() * offers.length)]);
+    }
+  }
+
+  commitPick(pid, chest) {
+    this.chestPicks.set(pid, chest);
+    const c = this.clients.get(pid);
+    this.broadcast({ t: 'chestpick', pid, chest: { id: chest.id, kind: chest.kind, label: chest.label, icon: chest.icon, cursed: !!chest.cursed } });
+    if (c?.user) {
+      const fresh = [...stats.bump(c.user.id, 'chests_opened'), ...(chest.cursed ? stats.bump(c.user.id, 'cursed_chests') : [])];
+      this.unlock(c, fresh);
+    }
+    this.checkIntermissionDone();
+  }
+
+  /** If every still-connected player has picked, end the intermission early after a short reveal. */
+  checkIntermissionDone() {
+    if (this.state !== 'intermission' || this.intermissionEnding) return;
+    const connected = [...this.clients.values()].filter((cc) => !cc.away);
+    if (connected.length > 0 && connected.every((cc) => this.chestPicks.has(cc.pid))) this.finishIntermissionSoon();
+  }
+
+  /** Everyone (connected) has picked — end the intermission early after a short reveal beat. */
+  finishIntermissionSoon() {
+    if (this.intermissionEnding) return;
+    this.intermissionEnding = true;
+    if (this.intermissionTimer) { clearInterval(this.intermissionTimer); this.intermissionTimer = null; }
+    this.intermissionEndTimer = setTimeout(() => this.finishIntermission(), INTERMISSION_REVEAL_MS);
+  }
+
+  /** Apply every picked chest, then load the next level. Exposed directly for tests. */
+  finishIntermission() {
+    if (this.state !== 'intermission') return;
+    if (this.intermissionTimer) { clearInterval(this.intermissionTimer); this.intermissionTimer = null; }
+    if (this.intermissionEndTimer) { clearTimeout(this.intermissionEndTimer); this.intermissionEndTimer = null; }
+    for (const [pid, chest] of this.chestPicks) {
+      const p = this.sim.players.get(pid);
+      if (p) applyChest(p, chest);
+    }
+    this.broadcast({ t: 'chestsdone' });
+    this.chestOffers = new Map(); this.chestPicks = new Map();
+    this.levelIndex++;
+    this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex);
+    this.state = 'playing';
+    this.changing = false;
+    this.broadcast(this.sim.levelPacket());
+    this.broadcast(this.playersPacket());
+    this.broadcastRoom();
   }
 
   tick() {
@@ -357,6 +470,9 @@ export class Room {
   close() {
     clearInterval(this.timer); clearInterval(this.secondsTimer);
     this.cancelCountdown();
+    if (this.levelChangeTimer) clearTimeout(this.levelChangeTimer);
+    if (this.intermissionTimer) clearInterval(this.intermissionTimer);
+    if (this.intermissionEndTimer) clearTimeout(this.intermissionEndTimer);
     for (const c of this.clients.values()) { if (c.awayTimer) clearTimeout(c.awayTimer); this.send(c, { t: 'kicked', reason: 'Room closed' }); }
     this.onEmpty?.(this);
   }

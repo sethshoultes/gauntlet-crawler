@@ -47,6 +47,16 @@ export class Sim {
       this.placeAtStart(p);
       p.levelKills = 0; p.levelDeaths = 0;
       p.shotCd = 0;
+      // Chest boosts picked in the just-finished intermission activate for this level only —
+      // whatever was active for the level that just ended is discarded here.
+      p.boosts = p.pendingBoosts || {};
+      p.pendingBoosts = null;
+      if (p.pendingCurse === 'spawn') {
+        const type = ['ghost', 'grunt', 'demon'][Math.floor(Math.random() * 3)];
+        const side = Math.random() < 0.5 ? -1 : 1;
+        this.spawnMonster(type, Math.min(this.w - 1.5, Math.max(0.5, p.x + side)), p.y);
+      }
+      p.pendingCurse = null;
     }
   }
 
@@ -65,6 +75,7 @@ export class Sim {
       dead: false, shotCd: 0, kills: 0, levelKills: 0, deaths: 0, levelDeaths: 0, coins: 0,
       input: { dx: 0, dy: 0, fire: false, potion: false, respawn: false },
       lastPotion: 0, stats: {}, perks: mergedPerks, rank, title,
+      boosts: {}, pendingBoosts: null, pendingCurse: null, // temporary chest effects, see shared/chests.js
     };
     this.players.set(id, p);
     this.placeAtStart(p);
@@ -148,7 +159,7 @@ export class Sim {
   }
   hurtPlayer(p, amount, source) {
     if (p.dead) return;
-    p.hp -= amount * CLASSES[p.cls].armor * p.perks.damageTakenMul;
+    p.hp -= amount * CLASSES[p.cls].armor * p.perks.damageTakenMul * (p.boosts?.damageTakenMul || 1);
     if (p.hp <= 0) {
       p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++;
       this.onEvent({ type: 'death', pid: p.id, source });
@@ -200,8 +211,8 @@ export class Sim {
       }
       inp.respawn = false;
       const c = cls(p);
-      // health drain — the clock is always ticking
-      p.hp -= HEALTH_DRAIN_PER_SEC * dt;
+      // health drain — the clock is always ticking (a cursed chest can double this for the level)
+      p.hp -= HEALTH_DRAIN_PER_SEC * dt * (p.boosts?.drainMul || 1);
       if (p.hp <= 0) { p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++; this.onEvent({ type: 'death', pid: p.id, source: 'hunger' }); continue; }
 
       const moving = inp.dx !== 0 || inp.dy !== 0;
@@ -213,13 +224,14 @@ export class Sim {
           const [dx, dy] = DIRS[p.dir];
           const len = Math.hypot(dx, dy);
           const sid = uid();
-          this.shots.set(sid, { id: sid, owner: p.id, cls: p.cls, x: p.x + dx * 0.5, y: p.y + dy * 0.5, vx: dx / len * SHOT_SPEED, vy: dy / len * SHOT_SPEED, dmg: c.shotDamage + p.perks.shotDamageAdd, dir: p.dir, hostile: false, life: 3 });
-          p.shotCd = c.shotCooldown;
+          const dmg = c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0);
+          this.shots.set(sid, { id: sid, owner: p.id, cls: p.cls, x: p.x + dx * 0.5, y: p.y + dy * 0.5, vx: dx / len * SHOT_SPEED, vy: dy / len * SHOT_SPEED, dmg, dir: p.dir, hostile: false, life: 3 });
+          p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1);
           this.onEvent({ type: 'sound', name: 'shoot_' + p.cls, x: p.x, y: p.y });
         }
       } else if (moving) {
         const len = Math.hypot(inp.dx, inp.dy);
-        const speed = c.speed * p.perks.speedMul;
+        const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1);
         const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
         for (const [tx, ty, tc] of touched) {
           if (tc === T.DOOR && p.keys > 0) {
@@ -399,6 +411,9 @@ export class Sim {
     };
   }
   playerInfo() {
-    return [...this.players.values()].map((p) => ({ id: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills, dead: p.dead, rank: p.rank, title: p.title }));
+    return [...this.players.values()].map((p) => ({
+      id: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills, dead: p.dead, rank: p.rank, title: p.title,
+      boosts: p.boosts && Object.keys(p.boosts).length ? Object.keys(p.boosts) : undefined,
+    }));
   }
 }

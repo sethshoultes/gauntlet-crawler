@@ -33,6 +33,8 @@ export const ACHIEVEMENTS = [
   { id: 'crowd_pleaser',    name: 'Crowd Pleaser',          icon: '🎉', stat: 'level_plays',        threshold: 25,   desc: 'Your custom levels are played 25 times by others.' },
   { id: 'high_score',       name: 'High Score',             icon: '🏆', stat: 'best_score',         threshold: 10000, desc: 'Score 10,000 in one run.' },
   { id: 'marathon',         name: 'Marathon',               icon: '🏃', stat: 'seconds_played',     threshold: 3600, desc: 'Play for a total of one hour.' },
+  { id: 'lucky_dip',        name: 'Lucky Dip',              icon: '🎁', stat: 'chests_opened',      threshold: 25,   desc: 'Open 25 intermission chests.' },
+  { id: 'cursed',           name: 'Cursed',                 icon: '💀', stat: 'cursed_chests',      threshold: 5,    desc: 'Open 5 cursed chests.' },
 ];
 
 export const ACHIEVEMENT_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));

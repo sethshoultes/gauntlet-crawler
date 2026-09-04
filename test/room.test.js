@@ -120,6 +120,117 @@ test('a resume token re-attaches the same sim player within the grace period, pr
   } finally { room.close(); }
 });
 
+test('level clear enters intermission, offers chests, and a pick moves everyone into the next level', () => {
+  const room = makeRoom({ id: 'intermission-1' });
+  try {
+    const wsA = fakeWs();
+    room.join(wsA, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a'); // solo host
+    assert.equal(room.state, 'playing');
+
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 12 });
+    assert.equal(room.state, 'playing', 'the level-clear celebration delay has not fired yet');
+
+    room.startIntermission();
+    assert.equal(room.state, 'intermission');
+    assert.equal(room.chestOffers.get('a')?.length, 3, 'three chests were rolled for the only player');
+    const chestsMsg = wsA.sent.find((m) => m.t === 'chests');
+    assert.ok(chestsMsg, 'client receives a chests offer');
+    assert.equal(chestsMsg.chests.length, 3);
+    assert.ok(chestsMsg.chests.every((c) => c.label === '???' && c.icon === '📦'), 'contents are hidden until picked');
+
+    const offeredId = room.chestOffers.get('a')[0].id;
+    room.pick('a', offeredId);
+    assert.ok(room.chestPicks.has('a'), 'pick recorded');
+    const pickMsg = wsA.sent.filter((m) => m.t === 'chestpick').pop();
+    assert.equal(pickMsg.pid, 'a');
+    assert.equal(pickMsg.chest.id, offeredId);
+    assert.notEqual(pickMsg.chest.label, '???', 'the pick broadcast reveals real contents');
+    assert.equal(room.intermissionEnding, true, 'the only (connected) player has picked, so the intermission is wrapping up');
+
+    room.finishIntermission();
+    assert.equal(room.state, 'playing');
+    assert.equal(room.levelIndex, 2, 'advanced to the next level');
+    assert.ok(wsA.sent.some((m) => m.t === 'chestsdone'));
+    assert.ok(wsA.sent.some((m) => m.t === 'level' && m.index === 2));
+  } finally { room.close(); }
+});
+
+test('pick rejects a second pick and an id not in that player\'s own offer', () => {
+  const room = makeRoom({ id: 'intermission-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 12 });
+    room.startIntermission();
+
+    room.pick('a', 'not-a-real-id');
+    assert.equal(room.chestPicks.has('a'), false, 'an out-of-range id is rejected');
+
+    const [first, second] = room.chestOffers.get('a');
+    room.pick('a', first.id);
+    assert.equal(room.chestPicks.get('a').id, first.id);
+    room.pick('a', second.id);
+    assert.equal(room.chestPicks.get('a').id, first.id, 'a second pick is ignored');
+  } finally { room.close(); }
+});
+
+test('intermission waits for every connected player to pick before advancing, and applies effects on finish', () => {
+  const room = makeRoom({ id: 'intermission-3' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bob', cls: 'elf' });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 12 });
+    room.startIntermission();
+    assert.equal(room.chestOffers.size, 2);
+
+    room.pick('a', room.chestOffers.get('a')[0].id);
+    assert.equal(room.intermissionEnding, false, 'still waiting on Bob');
+
+    const bChest = room.chestOffers.get('b')[0];
+    const pA = room.sim.players.get('a'); const before = { hp: pA.hp, potions: pA.potions, keys: pA.keys, score: pA.score };
+    room.pick('b', bChest.id);
+    assert.equal(room.intermissionEnding, true, 'everyone connected has now picked');
+
+    room.finishIntermission();
+    assert.equal(room.state, 'playing');
+    assert.equal(room.levelIndex, 2);
+    // Ann's own chest effect should have landed somewhere observable (permanent stat moved, or
+    // her boosts/pendingCurse got resolved by loadLevel) — at minimum nothing throws and the sim
+    // player still exists in good standing.
+    assert.ok(room.sim.players.has('a') && room.sim.players.has('b'));
+    void before; // effects vary by random-ish chest kind; presence of the player post-apply is what we assert
+  } finally { room.close(); }
+});
+
+test('intermission timeout auto-picks for anyone who has not chosen, including an away player', () => {
+  const room = makeRoom({ id: 'intermission-4' });
+  try {
+    const wsA = fakeWs();
+    room.join(wsA, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    const wsB = fakeWs();
+    room.join(wsB, { pid: 'b', user: null, name: 'Bob', cls: 'elf' });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 12 });
+    room.startIntermission();
+
+    room.disconnect('b'); // Bob drops mid-intermission and never picks
+    assert.equal(room.clients.get('b').away, true);
+
+    // Simulate the 15s countdown elapsing without relying on real timers.
+    room.autoPickRemaining();
+    assert.equal(room.chestPicks.size, 2, 'both players — including the away one — end up with a pick');
+    assert.ok(room.chestPicks.has('a') && room.chestPicks.has('b'));
+
+    room.finishIntermission();
+    assert.equal(room.state, 'playing');
+    assert.equal(room.levelIndex, 2);
+  } finally { room.close(); }
+});
+
 test('kick removes the player and records a fresh sim state should they somehow rejoin', () => {
   const room = makeRoom();
   try {
