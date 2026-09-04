@@ -7,12 +7,16 @@
   "scripts": {
     "start": "node --no-warnings=ExperimentalWarning server/index.js",
     "dev": "node --no-warnings=ExperimentalWarning --watch server/index.js",
-    "test": "node --no-warnings=ExperimentalWarning --test \"test/**/*.test.js\""
+    "test": "node --no-warnings=ExperimentalWarning --test \"test/**/*.test.js\"",
+    "smoke": "node test/smoke.mjs"
   },
   "engines": { "node": ">=22.5" },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0"
   },
   "license": "MIT"
 }

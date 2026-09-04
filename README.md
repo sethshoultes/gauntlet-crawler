@@ -20,6 +20,12 @@ npm test             # unit tests (level format, procgen, simulation, achievemen
 
 Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/gauntlet.sqlite`.
 
+## Development
+
+`npm test` runs the unit tests (`test/**/*.test.js`) with `node --test`. `npm run smoke` boots the
+real server, drives it end-to-end in a real browser via Playwright (needs `npx playwright install --with-deps chromium`
+once), and checks the level generation API; CI (`.github/workflows/ci.yml`) runs both on every push and pull request.
+
 Optional environment variables:
 
 | Variable | Purpose |
