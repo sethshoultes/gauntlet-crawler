@@ -122,16 +122,18 @@
           </div>
           <div id="settingspanel">
             <h3>Settings <span class="muted" id="rs-settings-note" style="font-size:11px"></span></h3>
-            <label>Mode</label>
+            <label>Mode <span class="muted" id="rs-cap" style="font-size:11px"></span></label>
             <select id="rs-mode">
               <option value="campaign">Campaign</option>
               <option value="custom">Custom level</option>
-              <option value="death" disabled>Death mode (coming soon)</option>
+              <option value="death">Death mode</option>
             </select>
             <div id="rs-customwrap" style="display:none">
               <label>Custom level</label>
               <select id="rs-customlevel"></select>
             </div>
+            <p class="help" id="rs-death-help" style="display:none">Endless arena waves against the clock. Every level seals the exit until you clear all its
+              waves; the level cap depends on the highest rank in the room.</p>
             <label><input type="checkbox" id="rs-private" /> Private room (hidden from the public list)</label>
           </div>
         </div>

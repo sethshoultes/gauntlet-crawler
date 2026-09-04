@@ -61,13 +61,14 @@ export function getAchievements(userId) {
 
 export function recordRun(userId, run) {
   if (!userId) return;
-  db.prepare('INSERT INTO runs (user_id, class, score, level_reached, kills, seconds, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(userId, run.cls, run.score, run.level, run.kills, run.seconds, now());
+  db.prepare('INSERT INTO runs (user_id, class, score, level_reached, kills, seconds, ended_at, mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(userId, run.cls, run.score, run.level, run.kills, run.seconds, now(), run.mode || 'campaign');
 }
 
 export function leaderboard(limit = 20) {
   return {
-    scores: db.prepare(`SELECT u.username, r.class, r.score, r.level_reached, r.kills, r.ended_at FROM runs r JOIN users u ON u.id = r.user_id ORDER BY r.score DESC LIMIT ?`).all(limit),
+    scores: db.prepare(`SELECT u.username, r.class, r.score, r.level_reached, r.kills, r.ended_at FROM runs r JOIN users u ON u.id = r.user_id WHERE r.mode = 'campaign' ORDER BY r.score DESC LIMIT ?`).all(limit),
+    death: db.prepare(`SELECT u.username, r.class, r.score, r.level_reached, r.kills, r.ended_at FROM runs r JOIN users u ON u.id = r.user_id WHERE r.mode = 'death' ORDER BY r.score DESC LIMIT ?`).all(limit),
     depth: db.prepare(`SELECT u.username, MAX(s.value) AS deepest FROM stats s JOIN users u ON u.id = s.user_id WHERE s.key = 'deepest_level' GROUP BY u.id ORDER BY deepest DESC LIMIT ?`).all(limit),
     kills: db.prepare(`SELECT u.username, s.value AS kills FROM stats s JOIN users u ON u.id = s.user_id WHERE s.key = 'kills' ORDER BY s.value DESC LIMIT ?`).all(limit),
     achievements: db.prepare(`SELECT u.username, COUNT(*) AS n FROM achievements a JOIN users u ON u.id = a.user_id GROUP BY u.id ORDER BY n DESC LIMIT ?`).all(limit),

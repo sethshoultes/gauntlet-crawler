@@ -60,4 +60,9 @@ CREATE INDEX IF NOT EXISTS runs_score ON runs(score DESC);
 CREATE INDEX IF NOT EXISTS levels_pub ON levels(published, plays DESC);
 `);
 
+// Idempotent migration: older databases predate the Death mode leaderboard split.
+const runsCols = db.prepare('PRAGMA table_info(runs)').all().map((r) => r.name);
+if (!runsCols.includes('mode')) db.exec("ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'campaign'");
+db.exec('CREATE INDEX IF NOT EXISTS runs_mode_score ON runs(mode, score DESC);');
+
 export const now = () => Math.floor(Date.now() / 1000);

@@ -85,7 +85,7 @@ async function loadRooms() {
   const { rooms } = await api('/api/rooms').catch(() => ({ rooms: [] }));
   const box = $('#rooms');
   if (!rooms.length) { box.innerHTML = '<span class="muted">No open dungeons. Start one!</span>'; return; }
-  box.innerHTML = rooms.map((r) => `<div class="r"><div><b>${esc(r.name)}</b> <span class="tag">${r.source === 'custom' ? 'custom: ' + esc(r.customName || '') : 'campaign'}</span> <span class="tag">${r.state === 'lobby' ? 'In lobby' : 'Level ' + r.level}</span><br>
+  box.innerHTML = rooms.map((r) => `<div class="r"><div><b>${esc(r.name)}</b> <span class="tag">${r.mode === 'death' ? `Death mode · cap ${r.deathCap != null ? r.deathCap : '∞'}` : r.source === 'custom' ? 'custom: ' + esc(r.customName || '') : 'campaign'}</span> <span class="tag">${r.state === 'lobby' ? 'In lobby' : 'Level ' + r.level}</span><br>
     <span class="muted" style="font-size:12px">${esc(r.levelName)} · ${r.roster.map((p) => `<span class="cls-${p.cls}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
     <button data-join="${r.id}" ${r.players >= r.max ? 'disabled' : ''}>${r.players}/${r.max} Join</button></div>`).join('');
   box.querySelectorAll('[data-join]').forEach((b) => b.onclick = () => joinGame({ roomId: b.dataset.join }));
@@ -119,9 +119,13 @@ const G = {
   followId: null, lastFood: 0, shake: 0,
   inRoom: false, reconnecting: false, reconnectAttempts: 0, reconnectTimer: null,
   intermission: null, // { seconds, startedAt, totalMs, chests, picks:Map<pid,chest>, myPick, rects[] }
+  sealed: false, // Death mode: exit tile is impassable-for-completion until all of a level's waves clear
 };
 // exposed for manual/E2E debugging only — not used by the game itself
-window.__gc = { reconnectNow: () => attemptReconnect() };
+window.__gc = {
+  reconnectNow: () => attemptReconnect(),
+  send: (msg) => { if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify(msg)); },
+};
 
 function saveResume(room, pid, resume) {
   try { sessionStorage.setItem(RESUME_KEY, JSON.stringify({ roomId: room.id, pid, resume, name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null })); } catch {}
@@ -207,12 +211,37 @@ function onMessage(m) {
       break;
     case 'level':
       G.level = m; G.grid = m.rows.map((r) => r.split(''));
-      G.prev = G.cur = null; G.fx = [];
+      G.prev = G.cur = null; G.fx = []; G.sealed = !!m.sealed;
       G.overlay = { kind: 'level', title: `LEVEL ${m.index}`, sub: m.name, until: performance.now() + 2500 };
       log(`<span class="n">Level ${m.index}: ${esc(m.name)}</span> <span class="muted">${esc(m.description || '')}</span>`);
       if (m.index > 1) say(`Let's see how you do in level ${m.index}`);
       sfx('level');
       break;
+    case 'wave':
+      G.overlay = { kind: 'wave', title: `WAVE ${m.n} / ${m.total}`, sub: 'Survive!', until: performance.now() + m.seconds * 1000 };
+      log(`<span class="n">Wave ${m.n} of ${m.total} incoming…</span>`);
+      say(`Wave ${m.n}`);
+      sfx('level');
+      break;
+    case 'exitopen':
+      G.sealed = false;
+      log('<span class="n">All waves cleared — the exit has opened!</span>');
+      sfx('clear');
+      break;
+    case 'gameover': {
+      const sorted = [...m.scores].sort((a, b) => b.score - a.score);
+      const lines = sorted.map((s, i) => `${i + 1}. ${esc(s.name)} ${s.score.toLocaleString()}`).join('  ·  ');
+      const capTxt = Number.isFinite(m.cap) ? m.cap : '∞';
+      const title = m.reason === 'cap' ? 'LEVEL CAP REACHED!' : 'PARTY WIPED';
+      G.overlay = { kind: 'gameover', title, sub: `Level ${m.level} / cap ${capTxt}`, until: performance.now() + 6000 };
+      log(`<span class="n">${title} — reached level ${m.level}. ${lines}</span>`);
+      sfx(m.reason === 'cap' ? 'clear' : 'death');
+      setTimeout(() => {
+        $('#game').classList.remove('on'); $('#roomscreen').classList.add('on'); $('#touch').classList.remove('on');
+        if (G.room) renderRoomScreen(G.room);
+      }, 6000);
+      break;
+    }
     case 'players':
       G.players = new Map(m.list.map((p) => [p.id, p]));
       renderHud();
@@ -330,6 +359,7 @@ $('#rs-start').onclick = () => { if (G.ws && G.ws.readyState === 1) G.ws.send(JS
 $('#rs-mode').onchange = () => {
   const mode = $('#rs-mode').value;
   $('#rs-customwrap').style.display = mode === 'custom' ? '' : 'none';
+  $('#rs-death-help').style.display = mode === 'death' ? '' : 'none';
   if (G.ws && G.ws.readyState === 1 && mode !== 'custom') G.ws.send(JSON.stringify({ t: 'settings', mode }));
 };
 $('#rs-customlevel').onchange = () => {
@@ -362,11 +392,13 @@ function renderRoomScreen(room) {
   $('#rs-start').disabled = !allReady;
   $('#settingspanel').style.display = isHost ? '' : 'none';
   if (isHost) {
-    $('#rs-mode').value = room.mode === 'custom' ? 'custom' : 'campaign';
+    $('#rs-mode').value = room.mode === 'custom' ? 'custom' : room.mode === 'death' ? 'death' : 'campaign';
     $('#rs-customwrap').style.display = room.mode === 'custom' ? '' : 'none';
+    $('#rs-death-help').style.display = room.mode === 'death' ? '' : 'none';
     if (room.mode === 'custom' && room.customLevel) $('#rs-customlevel').value = String(room.customLevel.id || '');
     $('#rs-private').checked = !room.public;
   }
+  $('#rs-cap').textContent = room.mode === 'death' ? `· cap ${room.deathCap != null ? room.deathCap : '∞'}` : '';
   $('#rs-roster').innerHTML = room.roster.map((p) => `
     <div class="row2 ${p.away ? 'away' : ''}">
       <div class="who"><span class="nm cls-${p.cls}">${esc(p.name)}${p.pid === G.pid ? ' (you)' : ''}</span> ${p.title ? `<span class="muted" style="font-size:11px">${esc(p.title)}</span>` : ''}</div>
@@ -509,7 +541,13 @@ function frame(now) {
     }
     ctx.drawImage(sprite(name), x * TS, y * TS, TS, TS);
   }
-  // exits glow
+  // Death mode: pulse the exit red while it's sealed behind uncleared waves
+  if (G.sealed) {
+    ctx.fillStyle = `rgba(224,60,49,${0.3 + 0.15 * Math.sin(now / 220)})`;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      if (G.grid[y][x] === 'E') ctx.fillRect(x * TS, y * TS, TS, TS);
+    }
+  }
   // shots
   for (const b of snap.b) {
     const name = SHOT_SPRITE[b[4]] || 'fireball';
@@ -679,7 +717,11 @@ function renderHud() {
 }
 function updateHudValues(s) {
   if (!s) return;
-  const lvl = $('#hud-lvl'); if (lvl && G.level) lvl.textContent = `Level ${G.level.index}`;
+  const lvl = $('#hud-lvl');
+  if (lvl && G.level) {
+    const cap = G.room?.mode === 'death' ? (G.room.deathCap != null ? G.room.deathCap : '∞') : null;
+    lvl.textContent = cap != null ? `Level ${G.level.index} / ${cap}` : `Level ${G.level.index}`;
+  }
   for (const p of s.p) {
     const el = document.querySelector(`.pp[data-pid="${p[0]}"]`); if (!el) continue;
     el.querySelector('.hp').textContent = p[4]; el.querySelector('.sc').textContent = p[7]; el.querySelector('.k').textContent = p[5]; el.querySelector('.po').textContent = p[6];

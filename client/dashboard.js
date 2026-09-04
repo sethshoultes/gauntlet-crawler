@@ -12,6 +12,7 @@ const STAT_LABELS = [
   ['potions', 'Potions used'], ['deaths', 'Deaths'], ['coins', 'Coins inserted'], ['no_death_clears', 'Best no-death streak'],
   ['speed_clears', 'Speed clears'], ['pacifist_clears', 'Pacifist clears'], ['squad_clears', 'Full-party clears'], ['solo_clears', 'Solo clears'],
   ['ai_levels', 'AI levels made'], ['levels_published', 'Levels published'], ['level_plays', 'Plays of my levels'], ['seconds_played', 'Time played'],
+  ['deepest_death_level', 'Deepest Death mode level'], ['waves_cleared', 'Death mode waves cleared'],
 ];
 
 const PERK_LABELS = (perks) => {
@@ -68,9 +69,9 @@ async function main() {
   const render = (t) => {
     if (!lb) { $('#lb').innerHTML = '<tr><td class="muted">Leaderboard unavailable</td></tr>'; return; }
     const rows = lb[t] || [];
-    const head = { scores: ['#', 'Hero', 'Class', 'Score', 'Level', 'Kills', 'When'], rank: ['#', 'Hero', 'XP', 'Rank'], depth: ['#', 'Hero', 'Deepest level'], kills: ['#', 'Hero', 'Kills'], achievements: ['#', 'Hero', 'Achievements'] }[t];
+    const head = { scores: ['#', 'Hero', 'Class', 'Score', 'Level', 'Kills', 'When'], death: ['#', 'Hero', 'Class', 'Score', 'Level', 'Kills', 'When'], rank: ['#', 'Hero', 'XP', 'Rank'], depth: ['#', 'Hero', 'Deepest level'], kills: ['#', 'Hero', 'Kills'], achievements: ['#', 'Hero', 'Achievements'] }[t];
     const body = rows.map((r, i) => {
-      const cells = t === 'scores' ? [i + 1, esc(r.username), `<span class="cls-${r.class}">${CLASSES[r.class]?.name || r.class}</span>`, r.score.toLocaleString(), r.level_reached, r.kills, `<span class="muted">${ago(r.ended_at)}</span>`]
+      const cells = (t === 'scores' || t === 'death') ? [i + 1, esc(r.username), `<span class="cls-${r.class}">${CLASSES[r.class]?.name || r.class}</span>`, r.score.toLocaleString(), r.level_reached, r.kills, `<span class="muted">${ago(r.ended_at)}</span>`]
         : t === 'rank' ? [i + 1, esc(r.username), r.xp.toLocaleString(), `Rank ${progressionFor(r.xp).rank} · ${progressionFor(r.xp).title}`]
         : t === 'depth' ? [i + 1, esc(r.username), r.deepest] : t === 'kills' ? [i + 1, esc(r.username), r.kills.toLocaleString()] : [i + 1, esc(r.username), r.n];
       return `<tr>${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`;

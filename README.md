@@ -15,7 +15,7 @@ Deliberately simple graphics: every sprite is 8x8 pixel art drawn in code, no as
 ```bash
 npm install
 npm start            # http://localhost:3000
-npm test             # unit tests (level format, procgen, simulation, achievements, progression)
+npm test             # unit tests (level format, procgen, simulation, achievements, progression, death mode)
 ```
 
 Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/gauntlet.sqlite`.
@@ -55,6 +55,11 @@ Optional environment variables:
 - Your health drains one point per second. Eat food (+100). Shoot generators before they flood the room. Keys open doors
   (all connected door tiles open together). Secret walls crumble when touched. Step on the exit to move the whole party to the next level.
 - Level 1 is hand-built. Every level after that is procedurally generated from the room seed, getting bigger and nastier forever.
+- **Death mode**: pick it from the room screen's Mode dropdown. Every level is a randomly generated arena (no
+  hand-built opener) and the exit stays sealed — shown pulsing red — until your party clears that level's timed
+  waves of monsters. Beat the level cap (shown as "Level N / cap" in the HUD and "Death mode · cap 99" in the room
+  list) and you get a victory screen; get wiped out for too long and the run ends too. Either way the room drops
+  back to the lobby so you can run it again.
 
 ## Features
 
@@ -92,6 +97,18 @@ Optional environment variables:
   text and shows palette swatches under unlocked classes; other players in the room see your chosen skin. Newly
   opened unlocks push an in-game toast the moment an achievement or rank-up earns them, and the dashboard lists the
   whole catalogue with locked/unlocked state.
+- **Death mode** (`bias.arena` in `shared/procgen.js`): an endless wave-survival mode. Every level is a generated
+  arena — fewer, bigger rooms, wide corridors, noticeably more monster generators than a normal dungeon — and the
+  exit is sealed (server-authoritative, rendered as a pulsing red tile) until the level's `3 + floor(level/5)`
+  timed waves are cleared. Each wave spawns `4 + level*1.5` monsters at least 6 tiles from every player, mixing more
+  grunts and demons in at depth and a Death every 5th level; a wave advances once its monsters are dead or after a
+  40s timeout, with a 3s "WAVE N" banner between waves. Health drains 1.5x faster than campaign. The level cap is
+  rank-gated (`levelCapForRank` in `shared/progression.js`: 99 through rank 3, +25 per rank after that, uncapped at
+  the top rank) using the highest rank in the room (guests count as rank 1); clearing the capped level ends the run
+  with a victory screen, and a party that stays wiped for 10 seconds with nobody continuing ends it as a loss —
+  either way the room returns to the lobby to run it again. Runs are recorded to their own `death` leaderboard tab
+  on the dashboard, separate from campaign high scores, with two Death-specific achievements (*Wave Rider*, *Staring
+  Down Death*).
 
 ## Level format
 
@@ -128,10 +145,9 @@ test/              node:test suites
 
 ## Roadmap
 
-Tracked as GitHub issues: hero level-ups (#2), and Endless / Death mode with rank-gated level caps (#4). The full
-pre-game lobby with ready-up, private rooms and reconnect (#5), the chest selection intermission between levels (#3),
-and character unlocks — alternate palettes and new hero archetypes (#1) — are implemented above; a real Death mode
-is still coming.
+Tracked as GitHub issues: hero level-ups (#2). The full pre-game lobby with ready-up, private rooms and reconnect
+(#5), the chest selection intermission between levels (#3), character unlocks — alternate palettes and new hero
+archetypes (#1) — and Endless / Death mode with timed waves and a rank-gated level cap (#4) are implemented above.
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.
 

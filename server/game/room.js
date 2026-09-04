@@ -2,8 +2,8 @@ import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';
 import { generateLevel } from '../../shared/procgen.js';
-import { TICK_RATE, DT, MAX_PLAYERS, CLASSES } from '../../shared/constants.js';
-import { rankForXp, rankTitle, perksForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
+import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T } from '../../shared/constants.js';
+import { rankForXp, rankTitle, perksForRank, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
 import { rollChests, applyChest } from '../../shared/chests.js';
 import { isClassUnlocked, isPaletteUnlocked, unlockedFor, requirementText, PALETTE_BY_ID } from '../../shared/unlocks.js';
@@ -16,6 +16,10 @@ const AWAY_GRACE_MS = 30000;    // how long a disconnected player's slot is held
 const COUNTDOWN_SECONDS = 5;    // auto-start countdown once everyone is ready
 const INTERMISSION_SECONDS = 15; // how long players get to pick a chest before auto-pick
 const INTERMISSION_REVEAL_MS = 2000; // grace period after everyone has picked, before the next level loads
+const WAVE_BANNER_SECONDS = 3;   // "WAVE N" banner shown before a wave's monsters actually spawn
+const WAVE_TIMEOUT_MS = 40000;  // a wave advances automatically after this even if not fully cleared
+const WIPE_GRACE_MS = 10000;    // Death mode: end the run if everyone stays dead this long, uncontested
+const WAVE_SPAWN_MIN_DIST = 6;  // tiles a wave spawn must be from every player
 
 export class Room {
   constructor({ id, name, seed, source = { type: 'campaign' }, isPublic = true, onEmpty }) {
@@ -37,7 +41,13 @@ export class Room {
     this.intermissionEnding = false;
     this.chestOffers = new Map(); // pid -> chest[] offered this intermission (hidden contents)
     this.chestPicks = new Map();  // pid -> chest picked this intermission
-    this.sim = new Sim(this.levelFor(1), { levelIndex: 1, onEvent: (e) => this.onEvent(e) });
+    // ---- Death mode wave state (see startWaves() and friends below) ----
+    this.waveCount = 0; this.waveNum = 0;
+    this.waveMonsterIds = null;   // Set<monsterId> — null while no wave is in flight
+    this.waveBannerTimer = null;  // "WAVE N" banner delay before monsters actually spawn
+    this.waveTimer = null;        // forces the wave to advance after WAVE_TIMEOUT_MS
+    this.allDeadSince = null;     // Death mode wipe-timeout tracking
+    this.sim = new Sim(this.levelFor(1), { levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign' });
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
     this.secondsTimer = setInterval(() => this.creditTime(), 30000);
     this.changing = false;
@@ -45,6 +55,7 @@ export class Room {
   }
 
   levelFor(n) {
+    if (this.source.type === 'death') return generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) });
     if (n === 1) {
       if (this.source.type === 'custom' && this.source.level) return this.source.level;
       return LEVEL1;
@@ -52,14 +63,30 @@ export class Room {
     return generateLevel({ seed: this.seed, level: n });
   }
 
+  /** Death mode generator bias: arena layout, and monster mix shifting ghost -> grunt -> demon as
+   *  the party goes deeper, with a Death appearing every 5th level. */
+  deathBias(n) {
+    const t = Math.min(1, n / 40);
+    return { arena: true, monsters: 0.6, ghost: Math.max(0, 1 - t), grunt: 0.5 + t * 0.5, demon: t, death: n % 5 === 0 ? 1 : 0 };
+  }
+
+  /** Highest Death-mode level cap among the room's players (guests count as rank 1). */
+  computeDeathCap() {
+    let cap = 0;
+    for (const c of this.clients.values()) cap = Math.max(cap, levelCapForRank(c.user ? (c.rank || 1) : 1));
+    return cap || 99;
+  }
+
   get playerCount() { return this.clients.size; }
   get full() { return this.clients.size >= MAX_PLAYERS; }
 
   info() {
+    let deathCap = null;
+    if (this.source.type === 'death') { const cap = this.computeDeathCap(); deathCap = Number.isFinite(cap) ? cap : null; } // Infinity isn't JSON-safe
     return {
       id: this.id, name: this.name, players: this.playerCount, max: MAX_PLAYERS, state: this.state,
       level: this.levelIndex, levelName: this.sim.level.name, source: this.source.type,
-      mode: this.source.type, customLevel: this.source.type === 'custom' && this.source.level
+      mode: this.source.type, deathCap, customLevel: this.source.type === 'custom' && this.source.level
         ? { id: this.source.levelId || null, name: this.source.level.name } : null,
       customName: this.source.level?.name || null, public: this.isPublic, hostPid: this.hostPid,
       roster: [...this.clients.values()].map((c) => ({
@@ -198,7 +225,7 @@ export class Room {
       const fresh = stats.raise(c.user.id, `class_${c.cls}`, 1);
       const played = db.prepare("SELECT COUNT(*) AS n FROM stats WHERE user_id = ? AND key LIKE 'class_%' AND value > 0").get(c.user.id).n;
       this.unlock(c, [...fresh, ...stats.raise(c.user.id, 'classes_played', played)]);
-      this.unlock(c, stats.raise(c.user.id, 'deepest_level', this.levelIndex));
+      this.unlock(c, stats.raise(c.user.id, this.source.type === 'death' ? 'deepest_death_level' : 'deepest_level', this.levelIndex));
     }
   }
 
@@ -229,10 +256,13 @@ export class Room {
       const row = db.prepare('SELECT id, name, description, rows FROM levels WHERE id = ? AND published = 1').get(Number(levelId));
       if (!row) throw new Error('Pick a published custom level');
       this.source = { type: 'custom', levelId: row.id, level: { name: row.name, description: row.description, rows: JSON.parse(row.rows) } };
+    } else if (mode === 'death') {
+      this.source = { type: 'death' };
     } else if (mode) {
       throw new Error('Unknown mode');
     }
     if (typeof isPublic === 'boolean') this.isPublic = isPublic;
+    this.sim.mode = this.source.type === 'death' ? 'death' : 'campaign';
     this.sim.loadLevel(this.levelFor(1), 1);
     this.broadcastRoom();
   }
@@ -254,6 +284,7 @@ export class Room {
     this.broadcast({ t: 'start' });
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
+    if (this.source.type === 'death') this.startWaves();
   }
 
   checkAutoStart() {
@@ -301,7 +332,7 @@ export class Room {
     if (c.awayTimer) { clearTimeout(c.awayTimer); c.awayTimer = null; }
     const p = this.sim.players.get(pid);
     if (c.user && p) {
-      stats.recordRun(c.user.id, { cls: c.cls, score: p.score, level: this.levelIndex, kills: p.kills, seconds: Math.round((Date.now() - c.joinedAt) / 1000) });
+      stats.recordRun(c.user.id, { cls: c.cls, score: p.score, level: this.levelIndex, kills: p.kills, seconds: Math.round((Date.now() - c.joinedAt) / 1000), mode: this.source.type === 'death' ? 'death' : 'campaign' });
       stats.raise(c.user.id, 'best_score', p.score);
     }
     this.clients.delete(pid);
@@ -321,6 +352,9 @@ export class Room {
     if (action === 'clear' && this.state === 'playing') {
       const anyPid = [...this.sim.players.keys()][0];
       if (anyPid != null) this.onEvent({ type: 'exit', pid: anyPid, levelTime: this.sim.levelTime });
+    } else if (action === 'killall' && this.state === 'playing') {
+      // Wipes every current monster — mainly useful to force a Death mode wave to advance instantly.
+      for (const id of [...this.sim.monsters.keys()]) this.sim.monsters.delete(id);
     }
   }
 
@@ -408,9 +442,12 @@ export class Room {
       if (!c.user) continue;
       const u = c.user.id;
       this.awardXp(c, u, xpForLevelClear(this.levelIndex));
+      // Death mode tracks its own depth stat so a grind there can't trivially unlock the
+      // campaign-only Delver achievements (and vice versa).
+      const depthKey = this.source.type === 'death' ? 'deepest_death_level' : 'deepest_level';
       const fresh = [
         ...stats.bump(u, 'levels_cleared'),
-        ...stats.raise(u, 'deepest_level', this.levelIndex + 1),
+        ...stats.raise(u, depthKey, this.levelIndex + 1),
         ...(e.levelTime < SPEEDRUN_SECONDS ? stats.bump(u, 'speed_clears') : []),
         ...(p.levelKills === 0 ? stats.bump(u, 'pacifist_clears') : []),
         ...(n === MAX_PLAYERS ? stats.bump(u, 'squad_clears') : []),
@@ -430,7 +467,13 @@ export class Room {
     }
     const who = this.clients.get(e.pid);
     this.broadcast({ t: 'levelclear', by: who?.name || '?', level: this.levelIndex, time: Math.round(e.levelTime), next: this.levelIndex + 1 });
-    this.levelChangeTimer = setTimeout(() => { this.levelChangeTimer = null; this.startIntermission(); }, LEVEL_CHANGE_DELAY_MS);
+    // Death mode: clearing the rank-gated cap level ends the run (victory) instead of continuing
+    // into another intermission/level — skip the chest pick entirely.
+    const atCap = this.source.type === 'death' && this.levelIndex >= this.computeDeathCap();
+    this.levelChangeTimer = setTimeout(() => {
+      this.levelChangeTimer = null;
+      if (atCap) this.endRun('cap'); else this.startIntermission();
+    }, LEVEL_CHANGE_DELAY_MS);
   }
 
   // ---------- chest intermission ----------
@@ -526,6 +569,121 @@ export class Room {
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     this.broadcastRoom();
+    if (this.source.type === 'death') this.startWaves();
+  }
+
+  // ---------- Death mode: timed waves, rank-gated cap, wipe/cap run-ending ----------
+  /** Begin the wave loop for the level just loaded. Wave count grows with depth. */
+  startWaves() {
+    this.clearWaveTimers();
+    this.waveCount = 3 + Math.floor(this.levelIndex / 5);
+    this.waveNum = 0;
+    this.waveMonsterIds = null;
+    this.nextWave();
+  }
+
+  clearWaveTimers() {
+    if (this.waveBannerTimer) { clearTimeout(this.waveBannerTimer); this.waveBannerTimer = null; }
+    if (this.waveTimer) { clearTimeout(this.waveTimer); this.waveTimer = null; }
+  }
+
+  /** Advance to the next wave, or finish the level's wave set once they're all done. */
+  nextWave() {
+    this.waveNum++;
+    if (this.waveNum > this.waveCount) { this.finishWaves(); return; }
+    this.broadcast({ t: 'wave', n: this.waveNum, total: this.waveCount, seconds: WAVE_BANNER_SECONDS });
+    this.waveBannerTimer = setTimeout(() => { this.waveBannerTimer = null; this.spawnWave(); }, WAVE_BANNER_SECONDS * 1000);
+  }
+
+  /** Spawn this wave's monsters (mix shifts ghost -> grunt -> demon with depth; a Death appears
+   *  on the level's first wave every 5th level) and arm the wave's forced-advance timeout. */
+  spawnWave() {
+    const n = Math.round(4 + this.levelIndex * 1.5);
+    const t = Math.min(1, this.levelIndex / 40);
+    const weights = { ghost: Math.max(0.15, 1 - t), grunt: 0.5 + t * 0.5, demon: 0.2 + t * 0.8 };
+    const ids = new Set();
+    for (let i = 0; i < n && this.sim.monsters.size < MAX_MONSTERS; i++) {
+      const spot = this.farSpawnSpot();
+      if (!spot) continue;
+      const m = this.sim.spawnMonster(weightedPick(weights), spot[0] + 0.5, spot[1] + 0.5);
+      if (m) ids.add(m.id);
+    }
+    if (this.levelIndex % 5 === 0 && this.waveNum === 1 && this.sim.monsters.size < MAX_MONSTERS) {
+      const spot = this.farSpawnSpot();
+      if (spot) { const m = this.sim.spawnMonster('death', spot[0] + 0.5, spot[1] + 0.5); if (m) ids.add(m.id); }
+    }
+    this.waveMonsterIds = ids;
+    this.waveTimer = setTimeout(() => this.checkWaveAdvance(true), WAVE_TIMEOUT_MS);
+  }
+
+  /** A random floor tile at least WAVE_SPAWN_MIN_DIST tiles (Manhattan) from every player. */
+  farSpawnSpot() {
+    const sim = this.sim;
+    const candidates = [];
+    for (let y = 1; y < sim.h - 1; y++) for (let x = 1; x < sim.w - 1; x++) {
+      if (sim.grid[y][x] !== T.FLOOR) continue;
+      let ok = true;
+      for (const p of sim.players.values()) if (Math.abs(p.x - (x + 0.5)) + Math.abs(p.y - (y + 0.5)) < WAVE_SPAWN_MIN_DIST) { ok = false; break; }
+      if (ok) candidates.push([x, y]);
+    }
+    if (!candidates.length) return null;
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }
+
+  /** Called every tick while a wave is in flight, and once from the wave's own timeout. Advances
+   *  once every spawned monster is dead, or unconditionally once the timeout fires. */
+  checkWaveAdvance(fromTimeout) {
+    if (!this.waveMonsterIds) return;
+    const anyAlive = [...this.waveMonsterIds].some((id) => this.sim.monsters.has(id));
+    if (anyAlive && !fromTimeout) return;
+    if (this.waveTimer) { clearTimeout(this.waveTimer); this.waveTimer = null; }
+    this.waveMonsterIds = null;
+    for (const c of this.clients.values()) if (c.user) this.unlock(c, stats.bump(c.user.id, 'waves_cleared'));
+    this.nextWave();
+  }
+
+  /** Every wave on this level is done: unseal the exit and let the party know. */
+  finishWaves() {
+    this.clearWaveTimers();
+    this.waveMonsterIds = null;
+    this.sim.exitSealed = false;
+    this.broadcast({ t: 'exitopen' });
+    this.broadcast({ t: 'notice', text: 'All waves cleared — the exit has opened!' });
+  }
+
+  /** Everyone has been dead for WIPE_GRACE_MS with nobody continuing — end the run. Death mode only. */
+  checkWipe() {
+    const players = [...this.sim.players.values()];
+    if (!players.length) { this.allDeadSince = null; return; }
+    const allDead = players.every((p) => p.dead);
+    if (!allDead) { this.allDeadSince = null; return; }
+    if (!this.allDeadSince) this.allDeadSince = Date.now();
+    else if (Date.now() - this.allDeadSince >= WIPE_GRACE_MS) this.endRun('wipe');
+  }
+
+  /** End a Death mode run (cap reached, or a wipe): record each player's run, broadcast the
+   *  result, and drop the room back to the lobby so the party can start another one. */
+  endRun(reason) {
+    if (this.state !== 'playing') return;
+    this.clearWaveTimers();
+    this.waveMonsterIds = null;
+    this.allDeadSince = null;
+    const cap = this.computeDeathCap();
+    const scores = [...this.sim.players.values()].map((p) => ({ pid: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills }));
+    for (const c of this.clients.values()) {
+      const p = this.sim.players.get(c.pid);
+      if (!p || !c.user) continue;
+      stats.recordRun(c.user.id, { cls: c.cls, score: p.score, level: this.levelIndex, kills: p.kills, seconds: Math.round((Date.now() - c.joinedAt) / 1000), mode: 'death' });
+      this.unlock(c, stats.raise(c.user.id, 'best_score', p.score));
+    }
+    this.broadcast({ t: 'gameover', reason, level: this.levelIndex, cap: Number.isFinite(cap) ? cap : null, scores });
+    for (const pid of [...this.sim.players.keys()]) this.sim.removePlayer(pid);
+    this.state = 'lobby';
+    this.levelIndex = 1;
+    this.changing = false;
+    for (const c of this.clients.values()) c.ready = false;
+    this.sim.loadLevel(this.levelFor(1), 1);
+    this.broadcastRoom();
   }
 
   tick() {
@@ -535,6 +693,7 @@ export class Room {
     }
     if (this.state !== 'playing') return; // lobby: frozen, nothing to simulate yet
     this.sim.step(DT);
+    if (this.source.type === 'death') { this.checkWaveAdvance(false); this.checkWipe(); }
     const snap = this.sim.snapshot();
     if (this.pendingEvents.length) { snap.e = this.pendingEvents; this.pendingEvents = []; }
     this.broadcast(snap);
@@ -546,9 +705,19 @@ export class Room {
     if (this.levelChangeTimer) clearTimeout(this.levelChangeTimer);
     if (this.intermissionTimer) clearInterval(this.intermissionTimer);
     if (this.intermissionEndTimer) clearTimeout(this.intermissionEndTimer);
+    this.clearWaveTimers();
     for (const c of this.clients.values()) { if (c.awayTimer) clearTimeout(c.awayTimer); this.send(c, { t: 'kicked', reason: 'Room closed' }); }
     this.onEmpty?.(this);
   }
 }
 
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+/** Weighted random pick from a {key: weight} map, e.g. Death mode's ghost/grunt/demon mix. */
+function weightedPick(weights) {
+  const entries = Object.entries(weights);
+  const total = entries.reduce((s, [, w]) => s + w, 0);
+  let r = Math.random() * total;
+  for (const [k, w] of entries) { if (r < w) return k; r -= w; }
+  return entries[entries.length - 1][0];
+}

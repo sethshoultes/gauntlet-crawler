@@ -70,6 +70,17 @@ export function progressionFor(xp) {
   };
 }
 
+// ---------- Death mode level cap ----------
+/** Highest level a Death-mode party may reach, gated by the best rank in the room (guests count
+ *  as rank 1). Ranks 1-3 share a base cap of 99; each rank above that adds 25 more levels; the
+ *  top rank (Legend) removes the cap entirely. */
+export function levelCapForRank(rank) {
+  const r = Math.max(1, Math.min(MAX_RANK, Math.round(rank) || 1));
+  if (r >= MAX_RANK) return Infinity;
+  if (r <= 3) return 99;
+  return 99 + (r - 3) * 25;
+}
+
 // ---------- XP sources (server-authoritative) ----------
 export const XP_KILL = { ghost: 5, grunt: 8, demon: 12, death: 150 };
 export const XP_GENERATOR = 15;

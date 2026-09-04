@@ -11,33 +11,40 @@ const ADJ = ['Forgotten', 'Screaming', 'Sunken', 'Bone', 'Ember', 'Frozen', 'Cur
  * @param {object} opts
  * @param {string|number} opts.seed  room seed
  * @param {number} opts.level        1-based level number (drives difficulty)
- * @param {object} [opts.bias]       optional hints from the AI/editor: {monsters, treasure, food, maze, size, ghost, grunt, demon, death}
+ * @param {object} [opts.bias]       optional hints from the AI/editor: {monsters, treasure, food, maze, size, ghost, grunt, demon, death, arena}
+ *   `arena` is the death-mode "wave arena" profile: fewer/bigger rooms, wide two-tile corridors, more generators.
  */
 export function generateLevel({ seed, level = 2, bias = {} }) {
   const rng = makeRng(hashSeed(`${seed}:${level}`));
   const diff = Math.max(1, level);
+  const arena = !!bias.arena; // "wave arena" profile: death mode — fewer/bigger rooms, wide corridors, more generators
   const sizeBias = bias.size ?? 0;
   const w = clamp(24 + Math.floor(diff * 1.2) + sizeBias * 6 + rng.int(-2, 4), 20, 56);
   const h = clamp(20 + Math.floor(diff * 0.9) + sizeBias * 4 + rng.int(-2, 3), 16, 44);
   const g = Array.from({ length: h }, () => Array(w).fill(T.WALL));
 
-  // 1. Rooms
+  // 1. Rooms — an arena favors a handful of big open rooms over many small ones
   const rooms = [];
-  const target = clamp(6 + Math.floor(diff / 2) + (bias.maze ? 4 : 0), 6, 22);
+  const target = arena
+    ? clamp(3 + Math.floor(diff / 5), 3, 10)
+    : clamp(6 + Math.floor(diff / 2) + (bias.maze ? 4 : 0), 6, 22);
   for (let tries = 0; tries < 400 && rooms.length < target; tries++) {
-    const rw = rng.int(4, bias.maze ? 6 : 9), rh = rng.int(3, bias.maze ? 5 : 7);
+    const rw = arena ? rng.int(7, 13) : rng.int(4, bias.maze ? 6 : 9);
+    const rh = arena ? rng.int(6, 11) : rng.int(3, bias.maze ? 5 : 7);
     const rx = rng.int(1, w - rw - 2), ry = rng.int(1, h - rh - 2);
     if (rooms.some((r) => rx < r.x + r.w + 1 && rx + rw + 1 > r.x && ry < r.y + r.h + 1 && ry + rh + 1 > r.y)) continue;
     rooms.push({ x: rx, y: ry, w: rw, h: rh, cx: rx + (rw >> 1), cy: ry + (rh >> 1) });
     for (let y = ry; y < ry + rh; y++) for (let x = rx; x < rx + rw; x++) g[y][x] = T.FLOOR;
   }
-  // 2. Corridors: connect rooms in order (sorted by x) plus a few extra loops
+  // 2. Corridors: connect rooms in order (sorted by x) plus a few extra loops.
+  // An arena carves them two tiles wide so packs of monsters can flow freely.
   rooms.sort((a, b) => a.cx - b.cx);
   const carveCorridor = (a, b) => {
     let x = a.cx, y = a.cy;
     const horizFirst = rng.chance(0.5);
-    const stepX = () => { while (x !== b.cx) { x += Math.sign(b.cx - x); g[y][x] = g[y][x] === T.WALL ? T.FLOOR : g[y][x]; } };
-    const stepY = () => { while (y !== b.cy) { y += Math.sign(b.cy - y); g[y][x] = g[y][x] === T.WALL ? T.FLOOR : g[y][x]; } };
+    const mark = (mx, my) => { if (g[my]?.[mx] === T.WALL) g[my][mx] = T.FLOOR; };
+    const stepX = () => { while (x !== b.cx) { x += Math.sign(b.cx - x); mark(x, y); if (arena) mark(x, y + 1); } };
+    const stepY = () => { while (y !== b.cy) { y += Math.sign(b.cy - y); mark(x, y); if (arena) mark(x + 1, y); } };
     if (horizFirst) { stepX(); stepY(); } else { stepY(); stepX(); }
   };
   for (let i = 1; i < rooms.length; i++) carveCorridor(rooms[i - 1], rooms[i]);
@@ -84,9 +91,9 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   place(T.TREASURE, treasureN);
   place(T.POTION, rng.int(1, 1 + Math.floor(diff / 3)));
 
-  // 6. Generators and monsters
+  // 6. Generators and monsters — an arena packs in noticeably more generators than a normal dungeon
   const monsterScale = 1 + (bias.monsters ?? 0) * 0.5;
-  const genN = clamp(Math.round((2 + diff * 0.6) * monsterScale), 1, 14);
+  const genN = clamp(Math.round((2 + diff * 0.6) * monsterScale * (arena ? 1.8 : 1)), 1, arena ? 26 : 14);
   const genPool = [];
   const wGhost = 3 + (bias.ghost ?? 0) * 4, wGrunt = 3 + (bias.grunt ?? 0) * 4, wDemon = Math.max(0, diff - 2) * 0.8 + (bias.demon ?? 0) * 4;
   for (let i = 0; i < genN; i++) {

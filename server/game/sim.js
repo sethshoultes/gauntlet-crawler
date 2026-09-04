@@ -14,8 +14,9 @@ let nextId = 1;
 const uid = () => nextId++;
 
 export class Sim {
-  constructor(levelDef, { levelIndex = 1, onEvent = () => {} } = {}) {
+  constructor(levelDef, { levelIndex = 1, onEvent = () => {}, mode = 'campaign' } = {}) {
     this.onEvent = onEvent;
+    this.mode = mode; // 'campaign' | 'death' — Room may flip this before loadLevel() on a mode switch
     this.players = new Map();
     this.loadLevel(levelDef, levelIndex);
   }
@@ -33,6 +34,8 @@ export class Sim {
     this.levelTime = 0;
     this.completed = null;
     this.levelKills = 0;
+    // Death mode: every level starts with the exit sealed until Room clears all its waves.
+    this.exitSealed = this.mode === 'death';
     for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
       const c = this.grid[y][x];
       if (MONSTER_TILES.has(c)) {
@@ -61,7 +64,7 @@ export class Sim {
   }
 
   levelPacket() {
-    return { t: 'level', index: this.levelIndex, name: this.level.name, description: this.level.description, w: this.w, h: this.h, rows: this.grid.map((r) => r.join('')) };
+    return { t: 'level', index: this.levelIndex, name: this.level.name, description: this.level.description, w: this.w, h: this.h, rows: this.grid.map((r) => r.join('')), sealed: !!this.exitSealed };
   }
 
   // ---------- players ----------
@@ -211,8 +214,9 @@ export class Sim {
       }
       inp.respawn = false;
       const c = cls(p);
-      // health drain — the clock is always ticking (a cursed chest can double this for the level)
-      p.hp -= HEALTH_DRAIN_PER_SEC * dt * (p.boosts?.drainMul || 1);
+      // health drain — the clock is always ticking (a cursed chest can double this for the level;
+      // Death mode itself drains 1.5x to keep the timed waves under pressure)
+      p.hp -= HEALTH_DRAIN_PER_SEC * dt * (p.boosts?.drainMul || 1) * (this.mode === 'death' ? 1.5 : 1);
       if (p.hp <= 0) { p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++; this.onEvent({ type: 'death', pid: p.id, source: 'hunger' }); continue; }
 
       const moving = inp.dx !== 0 || inp.dy !== 0;
@@ -253,7 +257,7 @@ export class Sim {
         else if (here === T.POTION) p.potions++;
         else if (here === T.TREASURE) p.score += TREASURE_SCORE;
         this.onEvent({ type: 'pickup', pid: p.id, item: here, x: tx, y: ty });
-      } else if (here === T.EXIT) {
+      } else if (here === T.EXIT && !this.exitSealed) {
         p.score += LEVEL_BONUS;
         this.completed = { pid: p.id, levelTime: this.levelTime, players: this.players.size };
         this.onEvent({ type: 'exit', pid: p.id, levelTime: this.levelTime });

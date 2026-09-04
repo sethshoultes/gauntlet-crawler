@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   RANK_TITLES, MAX_RANK, PERK_CAPS, xpForRank, rankForXp, rankTitle, perksForRank,
-  progressionFor, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear,
+  progressionFor, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear,
 } from '../shared/progression.js';
 
 test('rank titles: 10 unique, fun titles ending in Legend', () => {
@@ -98,6 +98,21 @@ test('progressionFor bundles xp, rank, title, perks and next-rank progress', () 
   assert.equal(pMax.nextRank, null);
   assert.equal(pMax.nextTitle, null);
   assert.equal(pMax.progress, 1);
+});
+
+test('levelCapForRank: 99 for ranks 1-3, +25 per rank above that, uncapped at max rank', () => {
+  assert.equal(levelCapForRank(1), 99);
+  assert.equal(levelCapForRank(2), 99);
+  assert.equal(levelCapForRank(3), 99);
+  assert.equal(levelCapForRank(4), 124);
+  assert.equal(levelCapForRank(5), 149);
+  assert.equal(levelCapForRank(6), 174);
+  assert.equal(levelCapForRank(7), 199);
+  assert.equal(levelCapForRank(8), 224);
+  assert.equal(levelCapForRank(9), 249);
+  assert.equal(levelCapForRank(MAX_RANK), Infinity, 'top rank is uncapped');
+  assert.equal(levelCapForRank(0), 99, 'clamps up to rank 1');
+  assert.equal(levelCapForRank(999), Infinity, 'clamps down to MAX_RANK');
 });
 
 test('XP sources are positive and level-clear XP scales with level index', () => {
