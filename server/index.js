@@ -176,7 +176,7 @@ const server = http.createServer(async (req, res) => {
 // ---------- WebSocket game protocol ----------
 const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws, req) => {
-  const pid = crypto.randomBytes(4).toString('hex');
+  let pid = crypto.randomBytes(4).toString('hex');
   let room = null;
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -192,6 +192,10 @@ wss.on('connection', (ws, req) => {
           const name = user ? user.username : String(msg.name || 'Guest').replace(/[^\w ]/g, '').slice(0, 12) || 'Guest';
           let target = msg.roomId ? lobby.get(msg.roomId) : null;
           if (msg.roomId && !target) throw new Error('That room no longer exists');
+          if (msg.resume && target) {
+            const resumed = target.resume(ws, msg.resume);
+            if (resumed) { pid = resumed.pid; room = target; break; }
+          }
           if (!target) target = msg.create ? lobby.create({ name: msg.roomName, isPublic: msg.public !== false }) : lobby.quick();
           target.join(ws, { pid, user, name, cls });
           room = target;
@@ -199,13 +203,18 @@ wss.on('connection', (ws, req) => {
         }
         case 'input': if (room) room.handleInput(pid, msg); break;
         case 'chat': if (room) room.chat(pid, msg.text); break;
+        case 'ready': if (room) room.setReady(pid, !!msg.ready); break;
+        case 'hero': if (room) room.setHero(pid, msg.cls); break;
+        case 'settings': if (room) room.setSettings(pid, msg); break;
+        case 'start': if (room) room.start(pid); break;
+        case 'kick': if (room) room.kick(pid, msg.pid); break;
         case 'leave': if (room) { room.leave(pid); room = null; send({ t: 'left' }); } break;
         case 'rooms': send({ t: 'rooms', rooms: lobby.list() }); break;
         case 'ping': send({ t: 'pong', ts: msg.ts }); break;
       }
     } catch (e) { send({ t: 'error', error: e.message }); }
   });
-  ws.on('close', () => { if (room) room.leave(pid); });
+  ws.on('close', () => { if (room) room.disconnect(pid); });
 });
 setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); } }, 30000);
 

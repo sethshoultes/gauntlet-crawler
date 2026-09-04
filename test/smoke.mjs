@@ -109,6 +109,10 @@ async function main() {
     await page.click('.hero:nth-child(2)');
     await page.fill('#gname', 'SmokeTest');
     await page.click('#quick');
+    log('waiting for the pre-game room screen');
+    await page.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+    log('solo host — clicking Start');
+    await page.click('#rs-start');
     await page.waitForSelector('#game.on', { timeout: 15_000 });
     log('in game, holding "d" for 500ms');
     await page.keyboard.down('d');

@@ -21,9 +21,9 @@ export class Lobby {
 
   get(id) { return this.rooms.get(id) || null; }
 
-  /** Quick play: join the fullest public campaign room with space, or make one. */
+  /** Quick play: join the fullest public campaign room still in its lobby (not yet started), or make one. */
   quick() {
-    const candidates = [...this.rooms.values()].filter((r) => r.isPublic && !r.full && r.source.type === 'campaign' && r.levelIndex <= 3);
+    const candidates = [...this.rooms.values()].filter((r) => r.isPublic && !r.full && r.source.type === 'campaign' && r.state === 'lobby');
     candidates.sort((a, b) => b.playerCount - a.playerCount);
     return candidates[0] || this.create({});
   }

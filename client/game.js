@@ -1,6 +1,7 @@
 import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
 import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS } from '/shared/constants.js';
+const RESUME_KEY = 'gc_resume';
 
 const $ = (s) => document.querySelector(s);
 const SCALE = 2;                 // 8px art -> 16px tiles
@@ -27,8 +28,8 @@ async function loadRooms() {
   const { rooms } = await api('/api/rooms').catch(() => ({ rooms: [] }));
   const box = $('#rooms');
   if (!rooms.length) { box.innerHTML = '<span class="muted">No open dungeons. Start one!</span>'; return; }
-  box.innerHTML = rooms.map((r) => `<div class="r"><div><b>${esc(r.name)}</b> <span class="tag">${r.source === 'custom' ? 'custom: ' + esc(r.customName || '') : 'campaign'}</span><br>
-    <span class="muted" style="font-size:12px">Level ${r.level} · ${esc(r.levelName)} · ${r.roster.map((p) => `<span class="cls-${p.cls}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
+  box.innerHTML = rooms.map((r) => `<div class="r"><div><b>${esc(r.name)}</b> <span class="tag">${r.source === 'custom' ? 'custom: ' + esc(r.customName || '') : 'campaign'}</span> <span class="tag">${r.state === 'lobby' ? 'In lobby' : 'Level ' + r.level}</span><br>
+    <span class="muted" style="font-size:12px">${esc(r.levelName)} · ${r.roster.map((p) => `<span class="cls-${p.cls}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
     <button data-join="${r.id}" ${r.players >= r.max ? 'disabled' : ''}>${r.players}/${r.max} Join</button></div>`).join('');
   box.querySelectorAll('[data-join]').forEach((b) => b.onclick = () => joinGame({ roomId: b.dataset.join }));
 }
@@ -51,7 +52,18 @@ const G = {
   prev: null, cur: null, prevAt: 0, curAt: 0, tiles: {}, fx: [], notices: [],
   input: { dx: 0, dy: 0, fire: false }, lastSent: '', camX: 0, camY: 0, overlay: null, muted: localStorage.getItem('gc_mute') === '1', narrate: localStorage.getItem('gc_narrate') !== '0',
   followId: null, lastFood: 0, shake: 0,
+  inRoom: false, reconnecting: false, reconnectAttempts: 0, reconnectTimer: null,
 };
+// exposed for manual/E2E debugging only — not used by the game itself
+window.__gc = { reconnectNow: () => attemptReconnect() };
+
+function saveResume(room, pid, resume) {
+  try { sessionStorage.setItem(RESUME_KEY, JSON.stringify({ roomId: room.id, pid, resume, name: $('#gname').value.trim() || 'Guest', cls: selectedClass })); } catch {}
+}
+function loadResume() {
+  try { return JSON.parse(sessionStorage.getItem(RESUME_KEY) || 'null'); } catch { return null; }
+}
+function clearResume() { try { sessionStorage.removeItem(RESUME_KEY); } catch {} }
 
 function joinGame(opts) {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -61,29 +73,71 @@ function joinGame(opts) {
     ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, ...opts }));
   };
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
-  ws.onclose = () => { if (G.ws === ws) { leaveGame('Disconnected from server'); } };
-  ws.onerror = () => toast('Connection error', 'Could not reach the game server', 'err');
+  ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
+  ws.onerror = () => { if (!G.inRoom) toast('Connection error', 'Could not reach the game server', 'err'); };
+}
+
+function scheduleReconnect() {
+  if (G.reconnectTimer) return;
+  const saved = loadResume();
+  if (!saved) { leaveGame('Disconnected from server'); return; }
+  const delay = Math.min(20000, 1000 * 2 ** G.reconnectAttempts);
+  G.reconnectAttempts++;
+  toast('Reconnecting…', `Trying again in ${Math.round(delay / 1000)}s`);
+  G.reconnectTimer = setTimeout(() => { G.reconnectTimer = null; attemptReconnect(); }, delay);
+}
+function attemptReconnect() {
+  const saved = loadResume();
+  if (!saved) { leaveGame('Disconnected from server'); return; }
+  G.reconnecting = true;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  G.ws = ws;
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls }));
+  ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
+  ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
+  ws.onerror = () => {};
 }
 
 function leaveGame(reason) {
+  if (G.reconnectTimer) { clearTimeout(G.reconnectTimer); G.reconnectTimer = null; }
+  G.reconnecting = false; G.reconnectAttempts = 0; G.inRoom = false;
   if (G.ws) { try { G.ws.close(); } catch {} }
-  G.ws = null; G.level = null; G.cur = G.prev = null; G.players.clear(); G.overlay = null;
-  $('#game').classList.remove('on'); $('#lobby').style.display = ''; $('#touch').classList.remove('on');
+  G.ws = null; G.level = null; G.cur = G.prev = null; G.players.clear(); G.overlay = null; G.room = null;
+  clearResume();
+  $('#game').classList.remove('on'); $('#roomscreen').classList.remove('on'); $('#session').classList.remove('on');
+  $('#lobby').style.display = ''; $('#touch').classList.remove('on');
   if (reason) toast('Left the dungeon', reason);
   loadRooms();
   history.replaceState(null, '', '/');
 }
-$('#leave').onclick = () => leaveGame();
+$('#leave').onclick = () => { if (G.ws) G.ws.send(JSON.stringify({ t: 'leave' })); leaveGame(); };
 
 function onMessage(m) {
   switch (m.t) {
     case 'welcome':
-      G.pid = m.pid; G.room = m.room;
-      $('#lobby').style.display = 'none'; $('#game').classList.add('on'); $('#touch').classList.add('on');
+      G.pid = m.pid; G.room = m.room; G.inRoom = true; G.reconnecting = false; G.reconnectAttempts = 0;
+      saveResume(m.room, m.pid, m.resume);
+      $('#lobby').style.display = 'none'; $('#session').classList.add('on');
+      if (m.room.state === 'lobby') {
+        $('#roomscreen').classList.add('on'); $('#game').classList.remove('on'); $('#touch').classList.remove('on');
+      } else {
+        $('#roomscreen').classList.remove('on'); $('#game').classList.add('on'); $('#touch').classList.add('on');
+      }
       $('#log').innerHTML = '';
       log(`<span class="n">Welcome to ${esc(m.room.name)}. ${m.room.source === 'custom' ? 'Custom dungeon: ' + esc(m.room.customName || '') : ''}</span>`);
       history.replaceState(null, '', `/?room=${m.room.id}`);
+      renderRoomScreen(m.room);
       say('Welcome, ' + CLASSES[selectedClass].name);
+      break;
+    case 'room':
+      G.room = m.room;
+      renderRoomScreen(m.room);
+      break;
+    case 'countdown': renderCountdown(m.seconds); break;
+    case 'start':
+      $('#roomscreen').classList.remove('on'); $('#game').classList.add('on'); $('#touch').classList.add('on');
+      renderCountdown(null);
       break;
     case 'level':
       G.level = m; G.grid = m.rows.map((r) => r.split(''));
@@ -108,7 +162,10 @@ function onMessage(m) {
     case 'levelclear':
       G.overlay = { kind: 'clear', title: 'LEVEL CLEARED', sub: `${m.by} found the exit in ${m.time}s`, until: performance.now() + 2500 };
       sfx('clear'); break;
-    case 'error': toast('Error', m.error, 'err'); if (!G.level) leaveGame(); break;
+    case 'error':
+      toast('Error', m.error, 'err');
+      if (G.reconnecting || !G.inRoom) leaveGame();
+      break;
     case 'kicked': leaveGame(m.reason); break;
     case 'left': leaveGame(); break;
   }
@@ -144,11 +201,81 @@ function log(html) {
   el.scrollTop = el.scrollHeight;
 }
 
+// ---------------- room (pre-game) screen ----------------
+const heroSelect = $('#rs-hero');
+for (const id of CLASS_IDS) {
+  const o = document.createElement('option'); o.value = id; o.textContent = CLASSES[id].name; heroSelect.appendChild(o);
+}
+heroSelect.onchange = () => {
+  selectedClass = heroSelect.value; localStorage.setItem(CLASS_KEY, selectedClass);
+  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'hero', cls: selectedClass }));
+};
+let selfReady = false;
+$('#rs-ready').onclick = () => {
+  selfReady = !selfReady;
+  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'ready', ready: selfReady }));
+};
+$('#rs-start').onclick = () => { if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'start' })); };
+$('#rs-mode').onchange = () => {
+  const mode = $('#rs-mode').value;
+  $('#rs-customwrap').style.display = mode === 'custom' ? '' : 'none';
+  if (G.ws && G.ws.readyState === 1 && mode !== 'custom') G.ws.send(JSON.stringify({ t: 'settings', mode }));
+};
+$('#rs-customlevel').onchange = () => {
+  const levelId = $('#rs-customlevel').value;
+  if (G.ws && G.ws.readyState === 1 && levelId) G.ws.send(JSON.stringify({ t: 'settings', mode: 'custom', levelId }));
+};
+$('#rs-private').onchange = () => {
+  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'settings', isPublic: !$('#rs-private').checked }));
+};
+let customLevelsLoaded = false;
+async function ensureCustomLevels() {
+  if (customLevelsLoaded) return;
+  customLevelsLoaded = true;
+  const { levels } = await api('/api/levels').catch(() => ({ levels: [] }));
+  const sel = $('#rs-customlevel');
+  sel.innerHTML = levels.map((l) => `<option value="${l.id}">${esc(l.name)} (by ${esc(l.author)})</option>`).join('') || '<option disabled>No published levels yet</option>';
+}
+function renderRoomScreen(room) {
+  if (!room || room.state !== 'lobby') return;
+  ensureCustomLevels();
+  $('#rs-name').textContent = room.name;
+  $('#rs-invite').value = `${location.origin}/?room=${room.id}`;
+  const isHost = room.hostPid === G.pid;
+  $('#rs-start').style.display = isHost ? '' : 'none';
+  const me2 = room.roster.find((p) => p.pid === G.pid);
+  selfReady = !!me2?.ready;
+  $('#rs-ready').textContent = selfReady ? 'Not ready' : 'Ready';
+  $('#rs-ready').className = selfReady ? '' : 'primary';
+  const allReady = room.players <= 1 || room.roster.every((p) => p.ready);
+  $('#rs-start').disabled = !allReady;
+  $('#settingspanel').style.display = isHost ? '' : 'none';
+  if (isHost) {
+    $('#rs-mode').value = room.mode === 'custom' ? 'custom' : 'campaign';
+    $('#rs-customwrap').style.display = room.mode === 'custom' ? '' : 'none';
+    if (room.mode === 'custom' && room.customLevel) $('#rs-customlevel').value = String(room.customLevel.id || '');
+    $('#rs-private').checked = !room.public;
+  }
+  $('#rs-roster').innerHTML = room.roster.map((p) => `
+    <div class="row2 ${p.away ? 'away' : ''}">
+      <div class="who"><span class="nm cls-${p.cls}">${esc(p.name)}${p.pid === G.pid ? ' (you)' : ''}</span> ${p.title ? `<span class="muted" style="font-size:11px">${esc(p.title)}</span>` : ''}</div>
+      ${p.host ? '<span class="badge host">HOST</span>' : ''}
+      ${p.away ? '<span class="badge away">AWAY</span>' : `<span class="badge ${p.ready ? 'ready' : ''}">${p.ready ? 'READY' : 'not ready'}</span>`}
+      ${isHost && p.pid !== G.pid ? `<button data-kick="${p.pid}" style="font-size:11px;padding:2px 6px">Kick</button>` : ''}
+    </div>`).join('');
+  $('#rs-roster').querySelectorAll('[data-kick]').forEach((b) => b.onclick = () => G.ws?.send(JSON.stringify({ t: 'kick', pid: b.dataset.kick })));
+}
+function renderCountdown(seconds) {
+  $('#countdown').textContent = seconds ? `Starting in ${seconds}…` : '';
+}
+
 // ---------------- input ----------------
 const keys = new Set();
 const chat = $('#chat');
 window.addEventListener('keydown', (e) => {
   if (!G.ws) return;
+  const ae = document.activeElement;
+  if (ae && ae !== chat && ['INPUT', 'SELECT', 'TEXTAREA'].includes(ae.tagName)) return;
   if (document.activeElement === chat) {
     if (e.key === 'Enter') { if (chat.value.trim()) G.ws.send(JSON.stringify({ t: 'chat', text: chat.value.trim() })); chat.value = ''; chat.blur(); }
     if (e.key === 'Escape') { chat.value = ''; chat.blur(); }
@@ -332,8 +459,8 @@ function drawEntity(img, x, y, dir, bob = 0, isHero = false) {
 function renderHud() {
   const hud = $('#hud');
   hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => `
-    <div class="pp" data-pid="${p.id}" style="border-color:${CLASSES[p.cls].color}">
-      <div class="nm" style="color:${CLASSES[p.cls].color}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}</div>
+    <div class="pp ${p.away ? 'away' : ''}" data-pid="${p.id}" style="border-color:${CLASSES[p.cls].color}">
+      <div class="nm" style="color:${CLASSES[p.cls].color}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}${p.away ? ' <span class="muted">(away)</span>' : ''}</div>
       <div class="muted" style="font-size:11px">${CLASSES[p.cls].name}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
       <div>HEALTH <span class="hp">0</span></div>
       <div>SCORE <span class="sc">0</span></div>
@@ -400,6 +527,12 @@ function say(text) {
   speechSynthesis.speak(u);
 }
 
-// deep link: /?room=ID
+// deep link: /?room=ID — but if this tab already holds a resume token for a room (e.g. the page
+// reloaded after a dropped connection), reconnect as the same player instead of joining fresh.
 const params = new URLSearchParams(location.search);
-if (params.get('room')) joinGame({ roomId: params.get('room') });
+const savedResume = loadResume();
+if (savedResume && (!params.get('room') || params.get('room') === savedResume.roomId)) {
+  attemptReconnect();
+} else if (params.get('room')) {
+  joinGame({ roomId: params.get('room') });
+}
