@@ -123,3 +123,57 @@ level caps (#4). The full pre-game lobby with ready-up, private rooms and reconn
 intermission between levels (#3), are implemented above; a real Death mode is still coming.
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.
+
+## Deployment
+
+The app ships as a single Docker image (`Dockerfile`, `node:22-slim`, non-root user, `npm ci --omit=dev` so
+`playwright` never lands in production) fronted by [Caddy](https://caddyserver.com) for automatic HTTPS and
+WebSocket-aware reverse proxying (`docker-compose.yml`, `deploy/Caddyfile`). It's designed to run on a single
+Hetzner Cloud VPS with data persisted in a Docker volume, and to auto-deploy from GitHub Actions over SSH whenever
+`main` is updated.
+
+### Hetzner quick start
+
+1. Create a Hetzner Cloud server: **CX22**, image **Ubuntu 24.04**, add your SSH key.
+2. Point your domain's DNS `A`/`AAAA` record at the server's IP (skip this for an IP-only/test deploy).
+3. SSH in as root and bootstrap it:
+
+   ```bash
+   ssh root@YOUR_SERVER_IP
+   curl -fsSL https://raw.githubusercontent.com/sethshoultes/gauntlet-crawler/main/deploy/setup-server.sh | bash
+   ```
+
+   (Or `scp deploy/setup-server.sh root@YOUR_SERVER_IP:/root/` and run it there.) This installs Docker, opens
+   `ufw` for `22/80/443`, creates a `deploy` user, clones the repo into `/opt/gauntlet-crawler`, copies
+   `deploy/.env.example` to `.env`, and runs `docker compose up -d --build`.
+4. Edit `/opt/gauntlet-crawler/.env` and set `DOMAIN` (your real hostname, for Caddy's automatic HTTPS) and,
+   optionally, `ANTHROPIC_API_KEY` to enable the AI level builder. Then re-apply:
+
+   ```bash
+   cd /opt/gauntlet-crawler && docker compose up -d --build
+   ```
+
+### Auto-deploy from GitHub Actions
+
+`.github/workflows/deploy.yml` runs `npm ci && npm test` on every push to `main` (and via manual
+`workflow_dispatch`), then SSHes into the server and runs `deploy/deploy.sh`, which pulls the branch, rebuilds
+with `docker compose up -d --build --remove-orphans`, prunes old images, and polls `/api/ai/status` inside the
+`app` container before declaring success. It's a no-op (skipped, not failed) until these repository secrets are
+set:
+
+| Secret | Purpose |
+|---|---|
+| `DEPLOY_HOST` | Server hostname or IP to SSH into |
+| `DEPLOY_USER` | SSH user on the server (the `deploy` user created by `setup-server.sh`) |
+| `DEPLOY_SSH_KEY` | Private key authorized for that user (its public half must be in the user's `~/.ssh/authorized_keys`) |
+| `DEPLOY_PORT` *(optional)* | SSH port, if not 22 |
+
+### Manual operations
+
+```bash
+cd /opt/gauntlet-crawler
+docker compose up -d --build       # deploy/redeploy
+docker compose logs -f app         # tail server logs
+docker compose ps                  # container status
+docker compose down                # stop everything (volumes persist)
+```
