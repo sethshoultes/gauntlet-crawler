@@ -28,7 +28,7 @@ async function loadRooms() {
   const box = $('#rooms');
   if (!rooms.length) { box.innerHTML = '<span class="muted">No open dungeons. Start one!</span>'; return; }
   box.innerHTML = rooms.map((r) => `<div class="r"><div><b>${esc(r.name)}</b> <span class="tag">${r.source === 'custom' ? 'custom: ' + esc(r.customName || '') : 'campaign'}</span><br>
-    <span class="muted" style="font-size:12px">Level ${r.level} · ${esc(r.levelName)} · ${r.roster.map((p) => `<span class="cls-${p.cls}">${esc(p.name)}</span>`).join(', ') || 'empty'}</span></div>
+    <span class="muted" style="font-size:12px">Level ${r.level} · ${esc(r.levelName)} · ${r.roster.map((p) => `<span class="cls-${p.cls}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
     <button data-join="${r.id}" ${r.players >= r.max ? 'disabled' : ''}>${r.players}/${r.max} Join</button></div>`).join('');
   box.querySelectorAll('[data-join]').forEach((b) => b.onclick = () => joinGame({ roomId: b.dataset.join }));
 }
@@ -104,6 +104,7 @@ function onMessage(m) {
     case 'notice': log(`<span class="n">${esc(m.text)}</span>`); break;
     case 'chat': log(`<span class="c"><b>${esc(m.from)}:</b> ${esc(m.text)}</span>`); break;
     case 'ach': toast(`${m.ach.icon} Achievement: ${m.ach.name}`, m.ach.desc); sfx('ach'); break;
+    case 'rankup': toast(`⭐ Rank Up!`, `You are now Rank ${m.rank}: ${m.title}`); sfx('ach'); break;
     case 'levelclear':
       G.overlay = { kind: 'clear', title: 'LEVEL CLEARED', sub: `${m.by} found the exit in ${m.time}s`, until: performance.now() + 2500 };
       sfx('clear'); break;
@@ -333,7 +334,7 @@ function renderHud() {
   hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => `
     <div class="pp" data-pid="${p.id}" style="border-color:${CLASSES[p.cls].color}">
       <div class="nm" style="color:${CLASSES[p.cls].color}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}</div>
-      <div class="muted" style="font-size:11px">${CLASSES[p.cls].name}</div>
+      <div class="muted" style="font-size:11px">${CLASSES[p.cls].name}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
       <div>HEALTH <span class="hp">0</span></div>
       <div>SCORE <span class="sc">0</span></div>
       <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>

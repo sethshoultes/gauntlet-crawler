@@ -15,7 +15,7 @@ Deliberately simple graphics: every sprite is 8x8 pixel art drawn in code, no as
 ```bash
 npm install
 npm start            # http://localhost:3000
-npm test             # unit tests (level format, procgen, simulation, achievements)
+npm test             # unit tests (level format, procgen, simulation, achievements, progression)
 ```
 
 Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/gauntlet.sqlite`.
@@ -54,7 +54,12 @@ Optional environment variables:
 - **Accounts** (username + password, scrypt-hashed) with per-user stats, run history and achievements. Guests can play without saving.
 - **32 achievements** (`shared/achievements.js`): classics like *Don't Shoot the Food!* and *Needs Food Badly*, plus
   speedruns, pacifist clears, full-party clears, no-death streaks, depth milestones, and builder achievements (*Architect*, *Prompt Engineer*).
-- **Dashboard** (`/dashboard.html`): career stats, achievement progress, recent runs, your levels, and leaderboards (score, depth, kills, achievements).
+- **Persistent hero progression**: registered heroes earn XP for kills, generators, treasure and level clears, which builds a
+  hero **rank** (Peasant through Legend, `shared/progression.js`) that grants small automatic perks — more speed, shot damage,
+  damage resistance, max health and magic — capped so the arcade health-drain loop and 4-player fairness stay intact. Guests
+  earn no XP. A rank-up shows an in-game toast and a leaderboard mention.
+- **Dashboard** (`/dashboard.html`): career stats, rank/XP progress bar and perks, achievement progress, recent runs, your levels,
+  and leaderboards (score, rank, depth, kills, achievements).
 - **Level Builder** (`/editor.html`): paint tiles, flood fill, resize, import/export ASCII, validate (border, connectivity, keys before doors),
   test-play instantly, save, publish to the community list, and play other people's levels.
 - **AI generator**: describe a dungeon, pick difficulty and size. With an Anthropic key the server asks Claude for a level
@@ -86,6 +91,7 @@ shared/            code used by both server and browser
   procgen.js       seeded endless generator (rooms + corridors + loot + generators)
   levels/level1.js the hand-built opener
   achievements.js  achievement definitions
+  progression.js   XP curve, rank titles/thresholds, perk caps — shared by server and dashboard/HUD
 client/            static browser app (no build step): game, dashboard, editor, sprites, audio
 test/              node:test suites
 ```

@@ -106,6 +106,28 @@ test('potion clears nearby monsters and Death only dies to magic', () => {
   assert.equal(p.score, 30 + 1000);
 });
 
+test('addPlayer perks are optional (backward compatible) and apply speed/health/damage caps when given', () => {
+  const sim = new Sim(ARENA);
+  const base = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  assert.equal(base.maxHealth, START_HEALTH, 'no perks means no health bonus');
+  assert.equal(base.perks.speedMul, 1);
+
+  const perked = sim.addPlayer('b', {
+    name: 'B', cls: 'warrior', userId: 1,
+    perks: { speedMul: 1.15, shotDamageAdd: 1, damageTakenMul: 0.85, maxHealthBonus: 200, magicAdd: 1 },
+  });
+  assert.equal(perked.maxHealth, START_HEALTH + 200, 'max health perk raises starting/spawn health');
+  assert.equal(perked.hp, perked.maxHealth);
+  assert.equal(perked.perks.speedMul, 1.15);
+
+  // damage-taken perk reduces incoming damage relative to an unperked player of the same class
+  sim.hurtPlayer(base, 100, 'test');
+  sim.hurtPlayer(perked, 100, 'test');
+  const baseDamage = START_HEALTH - base.hp;
+  const perkedDamage = perked.maxHealth - perked.hp;
+  assert.ok(perkedDamage < baseDamage, 'perked player takes less damage from the same hit');
+});
+
 test('snapshot is compact and level packet round-trips', () => {
   const sim = new Sim(ARENA);
   sim.addPlayer('a', { name: 'A', cls: 'valkyrie' });

@@ -25,6 +25,13 @@
   .tabs button.on { border-color: var(--yellow); color: var(--yellow); }
   .hero-hdr { display: flex; align-items: center; gap: 16px; }
   .hero-hdr h1 { margin: 0; color: var(--yellow); text-shadow: 3px 3px 0 var(--red); letter-spacing: 2px; }
+  .prog-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .prog-top .t { font-weight: bold; font-size: 16px; color: var(--yellow); }
+  .prog-bar { height: 10px; background: var(--line); }
+  .prog-bar div { height: 100%; background: var(--yellow); }
+  .prog-next { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .perks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .perk { background: #000; border: 2px solid var(--line); padding: 4px 10px; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -37,6 +44,13 @@
   </div>
   <div id="mine" style="display:none">
     <div class="panel hero-hdr"><h1 id="uname"></h1><span class="muted" id="rank"></span></div>
+    <div class="panel" style="margin-top:18px">
+      <h2>Progression</h2>
+      <div class="prog-top"><span class="t" id="prog-title"></span><span class="muted" id="prog-xp"></span></div>
+      <div class="prog-bar"><div id="prog-bar-fill" style="width:0%"></div></div>
+      <div class="prog-next" id="prog-next"></div>
+      <div class="perks" id="prog-perks"></div>
+    </div>
     <div class="panel" style="margin-top:18px"><h2>Career</h2><div class="stats" id="stats"></div></div>
     <div class="panel" style="margin-top:18px"><h2>Achievements <span class="muted" id="ach-count" style="font-size:12px;letter-spacing:0"></span></h2><div class="achs" id="achs"></div></div>
     <div class="grid2" style="margin-top:18px">
@@ -46,7 +60,7 @@
   </div>
   <div class="panel" style="margin-top:18px">
     <h2>Leaderboards</h2>
-    <div class="tabs" id="tabs"><button data-t="scores" class="on">High scores</button><button data-t="depth">Deepest</button><button data-t="kills">Most kills</button><button data-t="achievements">Most achievements</button></div>
+    <div class="tabs" id="tabs"><button data-t="scores" class="on">High scores</button><button data-t="rank">Rank</button><button data-t="depth">Deepest</button><button data-t="kills">Most kills</button><button data-t="achievements">Most achievements</button></div>
     <table id="lb"></table>
   </div>
 </main>

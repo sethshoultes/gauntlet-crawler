@@ -23,6 +23,14 @@ export function bump(userId, key, n = 1) {
   return check(userId, key, value);
 }
 
+/** Award XP (guests earn nothing). Returns the new total plus any newly unlocked achievements
+ *  — the caller compares the total against `amount` to detect a rank-up. */
+export function bumpXp(userId, amount) {
+  if (!userId || !amount) return { value: getStats(userId).xp || 0, fresh: [] };
+  const { value } = bumpStmt.get(userId, 'xp', amount);
+  return { value, fresh: check(userId, 'xp', value) };
+}
+
 /** Raise a high-water-mark stat; returns newly unlocked achievements. */
 export function raise(userId, key, v) {
   if (!userId) return [];
@@ -57,6 +65,7 @@ export function leaderboard(limit = 20) {
     depth: db.prepare(`SELECT u.username, MAX(s.value) AS deepest FROM stats s JOIN users u ON u.id = s.user_id WHERE s.key = 'deepest_level' GROUP BY u.id ORDER BY deepest DESC LIMIT ?`).all(limit),
     kills: db.prepare(`SELECT u.username, s.value AS kills FROM stats s JOIN users u ON u.id = s.user_id WHERE s.key = 'kills' ORDER BY s.value DESC LIMIT ?`).all(limit),
     achievements: db.prepare(`SELECT u.username, COUNT(*) AS n FROM achievements a JOIN users u ON u.id = a.user_id GROUP BY u.id ORDER BY n DESC LIMIT ?`).all(limit),
+    rank: db.prepare(`SELECT u.username, s.value AS xp FROM stats s JOIN users u ON u.id = s.user_id WHERE s.key = 'xp' ORDER BY s.value DESC LIMIT ?`).all(limit),
   };
 }
 

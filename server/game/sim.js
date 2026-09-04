@@ -8,6 +8,7 @@ import { parseLevel } from '../../shared/level.js';
 
 const HALF = 0.38;            // entity half-size in tiles
 const MONSTER_TYPE_BY_TILE = { [T.GHOST]: 'ghost', [T.GRUNT]: 'grunt', [T.DEMON]: 'demon', [T.DEATH]: 'death' };
+const DEFAULT_PERKS = { speedMul: 1, shotDamageAdd: 0, damageTakenMul: 1, maxHealthBonus: 0, magicAdd: 0 };
 
 let nextId = 1;
 const uid = () => nextId++;
@@ -54,14 +55,16 @@ export class Sim {
   }
 
   // ---------- players ----------
-  addPlayer(id, { name, cls, userId = null }) {
+  addPlayer(id, { name, cls, userId = null, perks = null, rank = null, title = null }) {
     if (!CLASSES[cls]) cls = 'warrior';
+    const mergedPerks = { ...DEFAULT_PERKS, ...(perks || {}) };
+    const maxHealth = START_HEALTH + mergedPerks.maxHealthBonus;
     const p = {
       id, name: String(name).slice(0, 16), cls, userId,
-      x: 1.5, y: 1.5, dir: 4, hp: START_HEALTH, keys: 0, potions: 0, score: 0,
+      x: 1.5, y: 1.5, dir: 4, hp: maxHealth, maxHealth, keys: 0, potions: 0, score: 0,
       dead: false, shotCd: 0, kills: 0, levelKills: 0, deaths: 0, levelDeaths: 0, coins: 0,
       input: { dx: 0, dy: 0, fire: false, potion: false, respawn: false },
-      lastPotion: 0, stats: {},
+      lastPotion: 0, stats: {}, perks: mergedPerks, rank, title,
     };
     this.players.set(id, p);
     this.placeAtStart(p);
@@ -145,7 +148,7 @@ export class Sim {
   }
   hurtPlayer(p, amount, source) {
     if (p.dead) return;
-    p.hp -= amount * CLASSES[p.cls].armor;
+    p.hp -= amount * CLASSES[p.cls].armor * p.perks.damageTakenMul;
     if (p.hp <= 0) {
       p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++;
       this.onEvent({ type: 'death', pid: p.id, source });
@@ -189,7 +192,7 @@ export class Sim {
       if (p.dead) {
         if (inp.respawn) {
           inp.respawn = false;
-          p.dead = false; p.hp = START_HEALTH; p.coins++;
+          p.dead = false; p.hp = p.maxHealth; p.coins++;
           this.placeAtStart(p);
           this.onEvent({ type: 'coin', pid: p.id });
         }
@@ -210,13 +213,14 @@ export class Sim {
           const [dx, dy] = DIRS[p.dir];
           const len = Math.hypot(dx, dy);
           const sid = uid();
-          this.shots.set(sid, { id: sid, owner: p.id, cls: p.cls, x: p.x + dx * 0.5, y: p.y + dy * 0.5, vx: dx / len * SHOT_SPEED, vy: dy / len * SHOT_SPEED, dmg: c.shotDamage, dir: p.dir, hostile: false, life: 3 });
+          this.shots.set(sid, { id: sid, owner: p.id, cls: p.cls, x: p.x + dx * 0.5, y: p.y + dy * 0.5, vx: dx / len * SHOT_SPEED, vy: dy / len * SHOT_SPEED, dmg: c.shotDamage + p.perks.shotDamageAdd, dir: p.dir, hostile: false, life: 3 });
           p.shotCd = c.shotCooldown;
           this.onEvent({ type: 'sound', name: 'shoot_' + p.cls, x: p.x, y: p.y });
         }
       } else if (moving) {
         const len = Math.hypot(inp.dx, inp.dy);
-        const touched = this.moveEntity(p, inp.dx / len * c.speed * dt, inp.dy / len * c.speed * dt, 'player');
+        const speed = c.speed * p.perks.speedMul;
+        const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
         for (const [tx, ty, tc] of touched) {
           if (tc === T.DOOR && p.keys > 0) {
             p.keys--; this.dissolveGroup(tx, ty, T.DOOR);
@@ -245,7 +249,7 @@ export class Sim {
       }
       if (inp.potion) {
         inp.potion = false;
-        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic); }
+        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic + p.perks.magicAdd); }
       }
     }
   }
@@ -395,6 +399,6 @@ export class Sim {
     };
   }
   playerInfo() {
-    return [...this.players.values()].map((p) => ({ id: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills, dead: p.dead }));
+    return [...this.players.values()].map((p) => ({ id: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills, dead: p.dead, rank: p.rank, title: p.title }));
   }
 }
