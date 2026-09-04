@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dashboard · Gauntlet Crawler</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+  .stat { background: #000; border: 2px solid var(--line); padding: 10px; }
+  .stat .v { font-size: 24px; font-weight: bold; color: var(--yellow); }
+  .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .achs { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .ach { display: flex; gap: 10px; background: #000; border: 2px solid var(--line); padding: 10px; align-items: center; }
+  .ach.on { border-color: var(--yellow); }
+  .ach .i { font-size: 28px; width: 40px; text-align: center; filter: grayscale(1); opacity: .4; }
+  .ach.on .i { filter: none; opacity: 1; }
+  .ach .n { font-weight: bold; font-size: 13px; }
+  .ach .d { font-size: 11px; color: var(--muted); }
+  .ach .p { height: 4px; background: var(--line); margin-top: 6px; }
+  .ach .p div { height: 100%; background: var(--yellow); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+  .tabs button { padding: 4px 10px; font-size: 11px; }
+  .tabs button.on { border-color: var(--yellow); color: var(--yellow); }
+  .hero-hdr { display: flex; align-items: center; gap: 16px; }
+  .hero-hdr h1 { margin: 0; color: var(--yellow); text-shadow: 3px 3px 0 var(--red); letter-spacing: 2px; }
+</style>
+</head>
+<body>
+<nav class="top"></nav>
+<main>
+  <div id="guest" class="panel" style="display:none">
+    <h2>Adventurer's Dashboard</h2>
+    <p>Stats, achievements and custom levels are saved for registered heroes. <button class="primary" id="login">Log in / Register</button></p>
+    <p class="muted">The leaderboards below are public.</p>
+  </div>
+  <div id="mine" style="display:none">
+    <div class="panel hero-hdr"><h1 id="uname"></h1><span class="muted" id="rank"></span></div>
+    <div class="panel" style="margin-top:18px"><h2>Career</h2><div class="stats" id="stats"></div></div>
+    <div class="panel" style="margin-top:18px"><h2>Achievements <span class="muted" id="ach-count" style="font-size:12px;letter-spacing:0"></span></h2><div class="achs" id="achs"></div></div>
+    <div class="grid2" style="margin-top:18px">
+      <div class="panel"><h2>Recent runs</h2><table id="runs"></table></div>
+      <div class="panel"><h2>My levels</h2><table id="mylevels"></table><p class="muted" style="font-size:12px">Build more in the <a href="/editor.html">Level Builder</a>.</p></div>
+    </div>
+  </div>
+  <div class="panel" style="margin-top:18px">
+    <h2>Leaderboards</h2>
+    <div class="tabs" id="tabs"><button data-t="scores" class="on">High scores</button><button data-t="depth">Deepest</button><button data-t="kills">Most kills</button><button data-t="achievements">Most achievements</button></div>
+    <table id="lb"></table>
+  </div>
+</main>
+<footer>Gauntlet Crawler</footer>
+<script type="module" src="/dashboard.js"></script>
+</body>
+</html>

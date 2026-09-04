@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Gauntlet Crawler</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  #lobby .heroes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 12px 0; }
+  @media (max-width: 800px) { #lobby .heroes { grid-template-columns: repeat(2, 1fr); } }
+  .hero { border: 2px solid var(--line); padding: 12px; cursor: pointer; text-align: center; background: #000; }
+  .hero.sel { border-color: var(--yellow); box-shadow: 0 0 0 3px #000, 0 0 0 5px var(--yellow); }
+  .hero canvas { width: 64px; height: 64px; }
+  .hero .n { font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-top: 6px; }
+  .hero .s { font-size: 11px; color: var(--muted); }
+  .rooms .r { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); }
+  #game { display: none; flex-direction: column; align-items: center; gap: 8px; }
+  #game.on { display: flex; }
+  .stage { display: flex; gap: 8px; align-items: stretch; max-width: 100%; }
+  #cv { background: #000; border: 4px solid var(--line); width: min(960px, calc(100vw - 260px)); height: auto; aspect-ratio: 4 / 3; }
+  #hud { width: 220px; background: #000; border: 4px solid var(--line); padding: 8px; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+  #hud .pp { border: 1px solid var(--line); padding: 6px; }
+  #hud .pp .nm { font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
+  #hud .pp .hp { font-size: 20px; font-weight: bold; }
+  #hud .pp.low .hp { color: var(--red); animation: blink 1s steps(2) infinite; }
+  #hud .pp.dead { opacity: .5; }
+  @keyframes blink { 50% { opacity: .3; } }
+  #hud .lvl { color: var(--yellow); text-align: center; text-transform: uppercase; letter-spacing: 1px; }
+  #log { width: 100%; max-width: 1188px; height: 96px; overflow-y: auto; background: #000; border: 2px solid var(--line); padding: 6px; font-size: 12px; }
+  #log .n { color: var(--yellow); } #log .c b { color: var(--blue); }
+  .bar { width: 100%; max-width: 1188px; display: flex; gap: 8px; align-items: center; }
+  .bar input { flex: 1; }
+  .help { font-size: 12px; color: var(--muted); }
+  .help kbd { background: var(--panel2); border: 1px solid var(--line); padding: 1px 5px; }
+  .touch { display: none; position: fixed; bottom: 12px; left: 12px; right: 12px; justify-content: space-between; pointer-events: none; }
+  .touch > div { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); gap: 4px; pointer-events: auto; }
+  .touch button { padding: 0; font-size: 18px; opacity: .8; }
+  @media (pointer: coarse) { .touch.on { display: flex; } }
+</style>
+</head>
+<body>
+<nav class="top"></nav>
+<main>
+  <section id="lobby">
+    <div class="panel">
+      <h2>Choose your hero</h2>
+      <div class="heroes" id="heroes"></div>
+      <div class="row">
+        <label class="muted" for="gname">Guest name</label>
+        <input id="gname" maxlength="12" placeholder="Guest" style="width:160px" />
+        <span class="muted" id="gname-note" style="font-size:12px"></span>
+      </div>
+    </div>
+    <div class="grid2" style="margin-top:18px">
+      <div class="panel">
+        <h2>Play</h2>
+        <div class="row">
+          <button class="primary" id="quick">Quick Play</button>
+          <button id="create">Create room</button>
+          <input id="roomname" placeholder="Room name (optional)" style="width:200px" />
+          <label class="muted" style="font-size:12px"><input type="checkbox" id="private" /> private</label>
+        </div>
+        <p class="help">Move <kbd>WASD</kbd>/<kbd>arrows</kbd> &middot; Fire <kbd>Space</kbd> (hold and steer to aim) &middot; Potion <kbd>Q</kbd>/<kbd>Shift</kbd> &middot; Continue <kbd>Enter</kbd> &middot; Chat <kbd>T</kbd> &middot; Sound <kbd>M</kbd> &middot; Narrator <kbd>N</kbd></p>
+        <p class="help">Your health ticks down every second. Eat food. Shoot generators before they flood the room. Keys open doors. Potions clear the screen. Find the exit. It never ends.</p>
+      </div>
+      <div class="panel">
+        <h2>Open dungeons <button id="refresh" style="float:right;padding:2px 8px;font-size:11px">refresh</button></h2>
+        <div class="rooms" id="rooms"><span class="muted">Loading…</span></div>
+        <p class="help" style="margin-top:12px">Want a hand-made or AI-generated dungeon? Browse <a href="/editor.html#browse">community levels</a> or build your own in the <a href="/editor.html">Level Builder</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="game">
+    <div class="stage">
+      <canvas id="cv" width="640" height="480" class="pixel"></canvas>
+      <div id="hud"></div>
+    </div>
+    <div id="log"></div>
+    <div class="bar">
+      <input id="chat" placeholder="Press T to chat… Enter to send, Esc to cancel" />
+      <button id="leave" class="danger">Leave</button>
+    </div>
+    <div class="help">Move <kbd>WASD</kbd> · Fire <kbd>Space</kbd> · Potion <kbd>Q</kbd> · Continue <kbd>Enter</kbd> · Chat <kbd>T</kbd> · Sound <kbd>M</kbd> · Narrator <kbd>N</kbd></div>
+  </section>
+</main>
+<div class="touch" id="touch">
+  <div id="dpad"></div>
+  <div style="grid-template-columns: repeat(2, 64px); grid-template-rows: 64px;"><button data-act="fire">🔥</button><button data-act="potion">🧪</button></div>
+</div>
+<footer>Gauntlet Crawler &mdash; a love letter to 1985. Not affiliated with Atari.</footer>
+<script type="module" src="/game.js"></script>
+</body>
+</html>

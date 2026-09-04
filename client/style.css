@@ -1,0 +1,48 @@
+:root {
+  --bg: #0b0b12; --panel: #15151f; --panel2: #1d1d2b; --line: #2b2b3d; --text: #e8e6d8; --muted: #8e8ca0;
+  --red: #e03c31; --blue: #3b7dff; --yellow: #f2c400; --green: #2ecc40; --purple: #a05cff; --orange: #ff8c1a;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font-family: "Courier New", Courier, monospace; }
+body { min-height: 100vh; display: flex; flex-direction: column; }
+a { color: var(--yellow); }
+button, input, select, textarea { font-family: inherit; font-size: 14px; }
+button { background: var(--panel2); color: var(--text); border: 2px solid var(--line); padding: 8px 14px; cursor: pointer; text-transform: uppercase; letter-spacing: 1px; }
+button:hover { border-color: var(--yellow); color: var(--yellow); }
+button.primary { background: var(--yellow); color: #000; border-color: var(--yellow); font-weight: bold; }
+button.primary:hover { background: #ffd83a; color: #000; }
+button.danger { border-color: var(--red); color: var(--red); }
+button:disabled { opacity: .5; cursor: not-allowed; }
+input, select, textarea { background: #000; color: var(--text); border: 2px solid var(--line); padding: 8px; }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--yellow); }
+nav.top { display: flex; align-items: center; gap: 18px; padding: 10px 18px; background: var(--panel); border-bottom: 2px solid var(--line); }
+nav.top .brand { font-weight: bold; font-size: 20px; color: var(--yellow); text-shadow: 3px 3px 0 var(--red); letter-spacing: 2px; text-decoration: none; }
+nav.top a.nl { color: var(--muted); text-decoration: none; text-transform: uppercase; font-size: 13px; letter-spacing: 1px; }
+nav.top a.nl:hover, nav.top a.nl.active { color: var(--text); }
+nav.top .spacer { flex: 1; }
+nav.top .who { color: var(--muted); font-size: 13px; }
+main { flex: 1; padding: 18px; max-width: 1200px; margin: 0 auto; width: 100%; }
+.panel { background: var(--panel); border: 2px solid var(--line); padding: 16px; }
+.panel h2 { margin: 0 0 12px; font-size: 16px; text-transform: uppercase; letter-spacing: 2px; color: var(--yellow); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+@media (max-width: 900px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+.muted { color: var(--muted); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+th { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }
+.tag { display: inline-block; padding: 2px 6px; border: 1px solid var(--line); font-size: 11px; text-transform: uppercase; color: var(--muted); }
+.toast-wrap { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 50; }
+.toast { background: #000; border: 2px solid var(--yellow); padding: 10px 14px; min-width: 240px; box-shadow: 0 0 0 4px #000; animation: pop .25s ease-out; }
+.toast .t { color: var(--yellow); font-weight: bold; text-transform: uppercase; font-size: 12px; letter-spacing: 1px; }
+.toast.err { border-color: var(--red); } .toast.err .t { color: var(--red); }
+@keyframes pop { from { transform: translateY(10px); opacity: 0; } to { transform: none; opacity: 1; } }
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: flex; align-items: center; justify-content: center; z-index: 40; }
+.modal { background: var(--panel); border: 2px solid var(--yellow); padding: 20px; width: 360px; max-width: 95vw; }
+.modal h3 { margin: 0 0 12px; color: var(--yellow); text-transform: uppercase; letter-spacing: 2px; }
+.modal label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; text-transform: uppercase; }
+.modal input { width: 100%; }
+.cls-warrior { color: var(--red); } .cls-valkyrie { color: var(--blue); } .cls-wizard { color: var(--yellow); } .cls-elf { color: var(--green); }
+.pixel { image-rendering: pixelated; image-rendering: crisp-edges; }
+footer { text-align: center; color: var(--muted); font-size: 11px; padding: 12px; }
