@@ -16,6 +16,7 @@ Deliberately simple graphics: every sprite is 8x8 pixel art drawn in code, no as
 ```bash
 npm install
 npm start            # http://localhost:3000
+npm run dev          # same, but restarts on file changes (node --watch)
 npm test             # unit tests (level format, procgen, simulation, achievements, progression, death mode, ...)
 ```
 

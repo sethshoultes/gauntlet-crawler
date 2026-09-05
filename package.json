@@ -1,7 +1,7 @@
 {
   "name": "gauntlet-crawler",
-  "version": "0.1.0",
-  "description": "A Gauntlet-style (1985) online multiplayer dungeon crawler with achievements, dashboard, endless procedural levels and an AI level builder.",
+  "version": "0.2.0",
+  "description": "A Gauntlet-style (1985) online multiplayer dungeon crawler with achievements, a player dashboard, endless procedural levels and Death mode, a Hero Builder for custom heroes, and a level builder with an AI generator.",
   "type": "module",
   "main": "server/index.js",
   "scripts": {
