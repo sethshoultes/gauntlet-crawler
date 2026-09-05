@@ -122,7 +122,7 @@ async function main() {
     const pageD = await ctxD.newPage();
     attachPageErrors(pageD, 'Hazard', { pageErrors, consoleErrors, failedRequests });
 
-    await pageD.goto(`${baseUrl}/`, { waitUntil: 'load' });
+    await pageD.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
     await pageD.waitForSelector('#heroes .hero', { timeout: 10_000 });
     await pageD.click('#heroes .hero:nth-child(1)'); // Warrior — fixed, known speed (4.6 tiles/s)
     await pageD.fill('#gname', 'HazardHero');
@@ -307,7 +307,7 @@ async function main() {
     let localWs = null;
 
     await scenario('13. It mode toggle + tag HUD in a two-browser room, plus local co-op via join_local and the lobby roster', async () => {
-      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#heroes .hero', { timeout: 10_000 });
       await pageA.click('#heroes .hero:nth-child(1)');
       await pageA.click('#create');
@@ -315,7 +315,7 @@ async function main() {
       coopRoomId = new URL(pageA.url()).searchParams.get('room');
       if (!coopRoomId) throw new Error(`browser A URL did not carry a room id: ${pageA.url()}`);
 
-      await pageB.goto(`${baseUrl}/?room=${coopRoomId}`, { waitUntil: 'load' });
+      await pageB.goto(`${baseUrl}/?room=${coopRoomId}&nosw=1`, { waitUntil: 'load' });
       await pageB.waitForSelector('#roomscreen.on', { timeout: 15_000 });
 
       // Local co-op (#15): one raw WebSocket standing in for "a second gamepad on browser A's
@@ -369,9 +369,9 @@ async function main() {
       const ctxE = await browser.newContext();
       const pageE = await ctxE.newPage(); attachPageErrors(pageE, 'Editor', { pageErrors, consoleErrors, failedRequests });
       try {
-        await pageE.goto(`${baseUrl}/`, { waitUntil: 'load' });
+        await pageE.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
         await pageE.evaluate((t) => localStorage.setItem('gc_token', t), token);
-        await pageE.goto(`${baseUrl}/editor.html`, { waitUntil: 'load' });
+        await pageE.goto(`${baseUrl}/editor.html?nosw=1`, { waitUntil: 'load' });
         await pageE.waitForSelector('#remix', { timeout: 10_000 });
 
         const genCountFromStatus = async () => {
@@ -413,9 +413,9 @@ async function main() {
       const ctxF = await browser.newContext();
       const pageF = await ctxF.newPage(); attachPageErrors(pageF, 'HeroBuilder', { pageErrors, consoleErrors, failedRequests });
       try {
-        await pageF.goto(`${baseUrl}/`, { waitUntil: 'load' });
+        await pageF.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
         await pageF.evaluate((t) => localStorage.setItem('gc_token', t), token);
-        await pageF.goto(`${baseUrl}/heroes.html`, { waitUntil: 'load' });
+        await pageF.goto(`${baseUrl}/heroes.html?nosw=1`, { waitUntil: 'load' });
         await pageF.waitForSelector('#builder:not([hidden])', { timeout: 10_000 });
         await pageF.fill('#ai-prompt', 'A shadowy archer who lives on treasure');
         await pageF.click('#ai-gen');
@@ -442,9 +442,9 @@ async function main() {
       const ctxG = await browser.newContext();
       const pageG = await ctxG.newPage(); attachPageErrors(pageG, 'Settings', { pageErrors, consoleErrors, failedRequests });
       try {
-        await pageG.goto(`${baseUrl}/`, { waitUntil: 'load' });
+        await pageG.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
         await pageG.evaluate((t) => localStorage.setItem('gc_token', t), token);
-        await pageG.goto(`${baseUrl}/settings.html`, { waitUntil: 'load' });
+        await pageG.goto(`${baseUrl}/settings.html?nosw=1`, { waitUntil: 'load' });
         await pageG.waitForSelector('#mine:not([style*="display: none"])', { timeout: 10_000 });
 
         // prefs round trip: flip narrator off and mute the master volume (#18/narrator + mute).
@@ -499,9 +499,9 @@ async function main() {
       const ctxH = await browser.newContext();
       const pageH = await ctxH.newPage(); attachPageErrors(pageH, 'Admin', { pageErrors, consoleErrors, failedRequests });
       try {
-        await pageH.goto(`${baseUrl}/`, { waitUntil: 'load' });
+        await pageH.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
         await pageH.evaluate((t) => localStorage.setItem('gc_token', t), token);
-        await pageH.goto(`${baseUrl}/admin.html`, { waitUntil: 'load' });
+        await pageH.goto(`${baseUrl}/admin.html?nosw=1`, { waitUntil: 'load' });
         await pageH.waitForSelector('#app:not([style*="display: none"])', { timeout: 10_000 });
         await pageH.click('#tabs button[data-t="users"]');
         await pageH.waitForFunction((name) => (document.querySelector('#users-table')?.textContent || '').includes(name), otherUser.name, { timeout: 10_000 });
@@ -555,7 +555,7 @@ async function main() {
       const ctxJ = await browser.newContext();
       const pageJ = await ctxJ.newPage(); attachPageErrors(pageJ, 'Trailer', { pageErrors, consoleErrors, failedRequests });
       try {
-        await pageJ.goto(`${baseUrl}/trailer.html`, { waitUntil: 'load' });
+        await pageJ.goto(`${baseUrl}/trailer.html?nosw=1`, { waitUntil: 'load' });
         const src = await pageJ.locator('video source').first().getAttribute('src');
         if (!src || !src.includes('trailer.mp4')) throw new Error(`expected the trailer <video> to have a trailer.mp4 <source>, got "${src}"`);
       } finally {
