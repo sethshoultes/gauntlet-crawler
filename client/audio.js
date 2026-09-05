@@ -20,7 +20,7 @@ function readMuted() {
 const vol = { master: readVol(VOL_KEYS.master), sfx: readVol(VOL_KEYS.sfx), voice: readVol(VOL_KEYS.voice) };
 let muted = readMuted();
 
-let AC = null, masterGain = null, sfxBus = null, crusher = null;
+let AC = null, masterGain = null, sfxBus = null, sfxClipBus = null, crusher = null;
 
 /** A quantizing curve: rounds the waveform down to a small number of amplitude steps, the
  *  classic cheap-DAC "crunch" of 1985 arcade sound chips. */
@@ -45,6 +45,11 @@ function build() {
   crusher.oversample = '2x';
   sfxBus = AC.createGain(); sfxBus.gain.value = vol.sfx;
   sfxBus.connect(crusher).connect(masterGain);
+  // Pre-rendered sfx clips (see loadSfxBuffer()/playBuffer() below) are already retro-sounding
+  // out of the ElevenLabs+ffmpeg pipeline, so they get their own gain node straight to
+  // masterGain -- same sfx-volume level as sfxBus, just skipping the bit-crusher bus.
+  sfxClipBus = AC.createGain(); sfxClipBus.gain.value = vol.sfx;
+  sfxClipBus.connect(masterGain);
   return AC;
 }
 function ac() { return build(); }
@@ -55,6 +60,53 @@ export function initAudio() {
   const resume = () => { const a = build(); if (a && a.state === 'suspended') a.resume(); };
   window.addEventListener('pointerdown', resume, { once: true });
   window.addEventListener('keydown', resume, { once: true });
+  loadSfxManifest(); // kick off the manifest fetch now; never awaited, never blocks gameplay
+}
+
+// ---------- pre-rendered sfx clips (#20 clip pipeline; see tools/generate-sfx.mjs) ----------
+// client/audio.js's synth engine above remains the always-available fallback: sfx(name) plays a
+// pre-rendered clip when one has been generated and decoded, otherwise falls straight through to
+// the WebAudio synth switch below, exactly as before this pipeline existed.
+let sfxManifest = null; // null until the fetch below resolves; {} on 404/error (tolerated)
+let sfxManifestPromise = null;
+function loadSfxManifest() {
+  if (!sfxManifestPromise) {
+    sfxManifestPromise = fetch('/audio/sfx/manifest.json')
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((m) => { sfxManifest = (m && typeof m === 'object') ? m : {}; return sfxManifest; })
+      .catch(() => { sfxManifest = {}; return sfxManifest; });
+  }
+  return sfxManifestPromise;
+}
+
+const sfxBuffers = {}; // id -> decoded AudioBuffer, filled in lazily on first request
+const sfxBufferPromises = {}; // id -> in-flight decode Promise, so a burst of the same id before
+                                // the first decode finishes doesn't fire off duplicate fetches
+/** Lazily fetch + decode one clip the first time its id is actually requested (never eagerly for
+ *  every clip in the manifest). Resolves to null (and is safe to ignore) on any fetch/decode
+ *  failure -- the synth fallback already covers that call, and the *next* sfx(name) call will
+ *  retry from a clean slate since the failed promise isn't cached in sfxBufferPromises. */
+function loadSfxBuffer(id, file) {
+  const a = ac();
+  if (!a) return Promise.resolve(null);
+  const p = fetch(`/audio/sfx/${file}`)
+    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`sfx fetch ${r.status}`))))
+    .then((buf) => a.decodeAudioData(buf))
+    .then((decoded) => { sfxBuffers[id] = decoded; return decoded; })
+    .catch(() => { delete sfxBufferPromises[id]; return null; });
+  sfxBufferPromises[id] = p;
+  return p;
+}
+function playBuffer(buffer) {
+  const a = ac(); if (!a || muted || !sfxClipBus) return;
+  const src = a.createBufferSource();
+  src.buffer = buffer;
+  src.connect(sfxClipBus);
+  src.start();
+  // Debug-only counter (mirrors window.__gc in client/game.js) so smoke/e2e tooling can confirm a
+  // pre-rendered clip actually decoded and played, without this module needing to know anything
+  // about the game's own debug object.
+  try { window.__gcSfxClipsPlayed = (window.__gcSfxClipsPlayed || 0) + 1; } catch {}
 }
 
 const muteListeners = new Set();
@@ -106,6 +158,17 @@ export function sfx(name) {
   const now = performance.now();
   if (sfxLast[name] && now - sfxLast[name] < 40) return;
   sfxLast[name] = now;
+
+  if (!muted) {
+    const buf = sfxBuffers[name];
+    if (buf) { playBuffer(buf); return; }
+    // Manifest not resolved yet, or this id has no clip: fall through to the synth below for
+    // *this* call. If the manifest turned out to list a clip for this id, kick off decoding it in
+    // the background (deduped via sfxBufferPromises) so the *next* call to sfx(name) can use it.
+    if (sfxManifest && sfxManifest[name] && !sfxBufferPromises[name]) {
+      loadSfxBuffer(name, sfxManifest[name].file);
+    }
+  }
   switch (name) {
     // ---- generic ----
     case 'shoot': tone(880, 0.06, 'square', 0.04, -400); break;

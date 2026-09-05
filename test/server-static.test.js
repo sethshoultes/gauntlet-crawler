@@ -6,7 +6,12 @@
 // traversal only manifests through the real HTTP request-path parsing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startServer } from './helpers/server.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('static file traversal is blocked; legitimate /shared and /client files still serve', async () => {
   const server = await startServer();
@@ -42,6 +47,30 @@ test('static file traversal is blocked; legitimate /shared and /client files sti
 
     const index = await fetch(baseUrl + '/');
     assert.equal(index.status, 200, 'GET / should still serve index.html');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('GET /audio/sfx/<clip>.ogg serves with Content-Type audio/ogg', async () => {
+  // Uses whichever clip the sfx pipeline (tools/generate-sfx.mjs) has actually generated on disk,
+  // via client/audio/sfx/manifest.json -- rather than hardcoding an id -- so this test still
+  // passes on a fresh checkout with an empty manifest (nothing to fetch, test is a no-op) and on
+  // a checkout with generated clips alike.
+  const manifestPath = path.join(ROOT, 'client', 'audio', 'sfx', 'manifest.json');
+  const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  const ids = Object.keys(manifest);
+  if (ids.length === 0) return; // no clips generated in this environment -- nothing to check
+
+  const server = await startServer();
+  const { baseUrl } = server;
+  try {
+    const file = manifest[ids[0]].file;
+    const res = await fetch(`${baseUrl}/audio/sfx/${file}`);
+    assert.equal(res.status, 200, `GET /audio/sfx/${file} should succeed`);
+    assert.match(res.headers.get('content-type') || '', /^audio\/ogg/, 'Content-Type should be audio/ogg');
+    const buf = Buffer.from(await res.arrayBuffer());
+    assert.ok(buf.length > 0, 'served clip should not be empty');
   } finally {
     await server.stop();
   }
