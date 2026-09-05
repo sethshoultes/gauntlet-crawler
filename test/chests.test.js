@@ -45,6 +45,21 @@ test('rolls are deterministic for a given rng seed and level', () => {
   assert.notDeepEqual(a.map((x) => x.kind), c.map((x) => x.kind), 'different players see different offers (almost certainly)');
 });
 
+test('chest ids are reproducible from the seed, not from a global counter', () => {
+  const a = rollChests(makeRng('room1|3|p1'), 3);
+  const b = rollChests(makeRng('room1|3|p1'), 3);
+  assert.deepEqual(a.map((c) => c.id), b.map((c) => c.id), 'same seed -> identical ids, run to run');
+
+  const ids = new Set(a.map((c) => c.id));
+  assert.equal(ids.size, a.length, 'ids are distinct within one offer');
+
+  // A second, unrelated roll (different seed/level) must not shift the ids of the first roll —
+  // i.e. ids don't depend on any process-wide counter or on rolls that came before them.
+  rollChests(makeRng('unrelated-seed'), 7);
+  const aAgain = rollChests(makeRng('room1|3|p1'), 3);
+  assert.deepEqual(a.map((c) => c.id), aAgain.map((c) => c.id), 'ids are unaffected by unrelated prior rolls');
+});
+
 test('cursed chest weight is roughly the configured 10% over many rolls', () => {
   const rng = makeRng('cursed-weight-check');
   let cursed = 0, total = 0;

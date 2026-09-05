@@ -59,29 +59,33 @@ function label(kind, value) {
   }
 }
 
-let seq = 0;
-function makeChest(rng, levelIndex) {
+// `index` is this chest's position within the offer being rolled — combined with a roll drawn
+// from the same seeded `rng`, it makes the id both deterministic (same seed -> same ids) and
+// unique within one offer, without any module-level counter.
+function makeChest(rng, levelIndex, index) {
   const cursed = rng.chance(CURSED_WEIGHT);
   const scale = 1 + Math.min(0.6, Math.max(0, levelIndex - 1) * 0.03); // minor amounts creep up with depth
+  const idTag = rng.int(0, 1e9).toString(36);
   if (cursed) {
     const def = rng.pick(CURSED_POOL);
     const value = def.kind === 'curse_health' ? Math.round(def.base * scale) : def.base;
-    return { id: `c${++seq}`, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: true };
+    return { id: `${def.kind}-${index}-${idTag}`, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: true };
   }
   const def = weightedPick(rng, CHEST_POOL);
   const scalable = def.kind.startsWith('food') || def.kind === 'score_bonus';
   const value = scalable ? Math.round(def.base * scale) : def.base;
-  return { id: `c${++seq}`, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: false };
+  return { id: `${def.kind}-${index}-${idTag}`, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: false };
 }
 
 /** Roll `count` chest offers for one player. Each call advances `rng`, so pass a fresh RNG seeded
- *  per (room seed, level index, player id) for deterministic, player-distinct offers. */
+ *  per (room seed, level index, player id) for deterministic, player-distinct offers — including
+ *  the chest ids themselves, which are derived from that same rng rather than a global counter. */
 export function rollChests(rng, levelIndex, count = 3) {
   const chests = [];
   const usedKinds = new Set();
   let guard = 0;
   while (chests.length < count && guard++ < 100) {
-    const chest = makeChest(rng, levelIndex);
+    const chest = makeChest(rng, levelIndex, chests.length);
     if (usedKinds.has(chest.kind)) continue; // keep the three offers distinct when possible
     usedKinds.add(chest.kind);
     chests.push(chest);

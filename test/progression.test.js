@@ -36,7 +36,7 @@ test('rankForXp is the inverse of xpForRank at each threshold', () => {
   assert.equal(rankForXp(Number.MAX_SAFE_INTEGER), MAX_RANK, 'huge xp caps at MAX_RANK');
 });
 
-test('rankForXp and rankForXp/rankForXp never regress as xp grows', () => {
+test('rankForXp never regresses as xp grows, across the full xp range (not just at thresholds)', () => {
   let prevRank = 1;
   for (let xp = 0; xp <= xpForRank(MAX_RANK) + 1000; xp += 37) {
     const r = rankForXp(xp);

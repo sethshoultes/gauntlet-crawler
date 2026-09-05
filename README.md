@@ -75,7 +75,7 @@ Optional environment variables:
 - **Reconnect**: a dropped socket keeps its player entity (score/keys/potions/health) for 30s, marked "away" in the HUD; the
   client auto-retries the connection with backoff and resumes the same hero via a per-tab resume token.
 - **Accounts** (username + password, scrypt-hashed) with per-user stats, run history and achievements. Guests can play without saving.
-- **32 achievements** (`shared/achievements.js`): classics like *Don't Shoot the Food!* and *Needs Food Badly*, plus
+- **Dozens of achievements**, defined in `shared/achievements.js`: classics like *Don't Shoot the Food!* and *Needs Food Badly*, plus
   speedruns, pacifist clears, full-party clears, no-death streaks, depth milestones, and builder achievements (*Architect*, *Prompt Engineer*).
 - **Persistent hero progression**: registered heroes earn XP for kills, generators, treasure and level clears, which builds a
   hero **rank** (Peasant through Legend, `shared/progression.js`) that grants small automatic perks — more speed, shot damage,

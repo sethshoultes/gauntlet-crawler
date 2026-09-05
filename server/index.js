@@ -18,6 +18,7 @@ import * as admin from './admin.js';
 import * as account from './account.js';
 import * as telemetry from './telemetry.js';
 import * as log from './log.js';
+import { heartbeat } from './ws-heartbeat.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
@@ -323,7 +324,7 @@ wss.on('connection', (ws, req) => {
   });
   ws.on('close', () => { if (room) room.disconnect(pid); });
 });
-setInterval(() => { for (const ws of wss.clients) { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); } }, 30000);
+setInterval(() => heartbeat(wss.clients), 30000);
 
 server.listen(PORT, () => {
   console.log(`Gauntlet Crawler listening on http://localhost:${PORT}  (AI level builder: ${aiAvailable() ? 'Claude' : 'procedural fallback — set ANTHROPIC_API_KEY'})`);
