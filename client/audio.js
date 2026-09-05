@@ -67,6 +67,7 @@ export function setMuted(v) {
   try { localStorage.setItem('gc_mute', muted ? '1' : '0'); } catch {}
   muteListeners.forEach((fn) => { try { fn(muted); } catch {} });
 }
+export function isMuted() { return muted; }
 
 function tone(freq, dur, type = 'square', gain = 0.08, slide = 0, opts = {}) {
   const a = ac(); if (!a || muted) return;
