@@ -490,14 +490,31 @@ export class Room {
 
   handleInput(pid, input) { this.sim.setInput(pid, input); }
 
-  /** Test/manual-verification only, gated behind GAUNTLET_DEBUG=1 in server/index.js. */
-  debugAction(action) {
+  /** Test/manual-verification only, gated behind GAUNTLET_DEBUG=1 in server/index.js. `msg` is the
+   *  whole `{t:'debug', ...}` payload, so an action can carry its own extra fields (loadLevel's
+   *  `rows`/`timers`/`treasureRoom`) alongside `action` itself. */
+  debugAction(action, msg = {}) {
     if (action === 'clear' && this.state === 'playing') {
       const anyPid = [...this.sim.players.keys()][0];
       if (anyPid != null) this.onEvent({ type: 'exit', pid: anyPid, levelTime: this.sim.levelTime });
     } else if (action === 'killall' && this.state === 'playing') {
       // Wipes every current monster — mainly useful to force a Death mode wave to advance instantly.
       for (const id of [...this.sim.monsters.keys()]) this.sim.monsters.delete(id);
+    } else if (action === 'loadLevel' && this.state === 'playing' && Array.isArray(msg.rows)) {
+      // Swaps the live level for an arbitrary fixture grid (same levelIndex, no chest/intermission
+      // side effects) so test/e2e-features.mjs can place the hero right next to one specific tile
+      // (an amulet, a pressure plate, a timed wall, ...) instead of hunting for one in a real
+      // generated level. `msg.timers` overrides the default timed-wall countdown (see
+      // shared/constants.js TIMER_DEFAULT_SEC) so a scenario doesn't have to wait 30s for one to
+      // fire; `msg.treasureRoom` exercises the bonus-round entry exactly like advanceLevel() does.
+      this.sim.loadLevel({ name: 'Debug Fixture', rows: msg.rows, timers: msg.timers }, this.levelIndex, { treasureRoom: !!msg.treasureRoom });
+      this.changing = false;
+      this.broadcast(this.sim.levelPacket());
+      this.broadcast(this.playersPacket());
+      if (msg.treasureRoom) {
+        this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS, mystery: this.sim.mysteryRoom });
+        this.startTreasureTimer();
+      }
     }
   }
 

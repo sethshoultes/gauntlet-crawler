@@ -870,7 +870,7 @@ client/            static browser app (no build step)
   common.js, sprites.js, font.js, pixelsprite.js, audio.js, voice.js, cutscenes.js   shared client modules
   input.js                touch d-pad/auto-fire + Gamepad API + local co-op input (#15)
   layout.js               pure canvas-fit math for the mobile game screen (#31)
-test/               node:test unit suites, plus smoke.mjs and e2e.mjs (Playwright)
+test/               node:test unit suites, plus smoke.mjs, e2e.mjs and e2e-features.mjs (Playwright)
 tools/              tools/generate-voice.mjs — narrator voice clip generation
 deploy/             Hetzner/Docker deployment scripts and Caddy config
 ```
@@ -880,12 +880,15 @@ deploy/             Hetzner/Docker deployment scripts and Caddy config
 ```bash
 npm test                                              # unit tests (test/**/*.test.js), node --test
 CHROMIUM_PATH=/path/to/chromium npm run smoke         # boots the real server, drives it in a real browser
-CHROMIUM_PATH=/path/to/chromium npm run e2e           # full multiplayer/editor/dashboard scenarios, two browsers
+CHROMIUM_PATH=/path/to/chromium npm run e2e           # multiplayer/editor/dashboard scenarios, two browsers
+CHROMIUM_PATH=/path/to/chromium npm run e2e:features  # full feature sweep (#35) — hazards/pickups,
+                                                       # It mode, chests, Hero Builder, settings, admin,
+                                                       # attract mode, ... — see test/e2e-features.mjs
 ```
 
-`npm run smoke` and `npm run e2e` need `npx playwright install --with-deps chromium` once (or an
-existing Chromium binary pointed at by `CHROMIUM_PATH`). `.github/workflows/ci.yml` runs all three
-— `test`, `smoke`, `e2e` — on every push and pull request.
+`npm run smoke`, `npm run e2e` and `npm run e2e:features` need `npx playwright install --with-deps
+chromium` once (or an existing Chromium binary pointed at by `CHROMIUM_PATH`). `.github/workflows/ci.yml`
+runs all four — `test`, `smoke`, `e2e`, `e2e-features` — on every push and pull request.
 
 Optional environment variables:
 
@@ -905,20 +908,27 @@ Optional environment variables:
 **Debug hooks** (only reachable when `GAUNTLET_DEBUG=1`, otherwise a plain 404/no-op — these are
 the *only* debug surfaces in the app):
 
-- A `{t:'debug', action}` WebSocket message, handled by `Room#debugAction` (`server/game/room.js`):
+- A `{t:'debug', action, ...}` WebSocket message, handled by `Room#debugAction` (`server/game/room.js`):
   `action: 'clear'` force-completes the current level (used by `test/e2e.mjs` to reach the chest
   intermission and later levels without playing them out), `action: 'killall'` wipes every current
-  monster (used to force a Death-mode wave to advance instantly).
+  monster (used to force a Death-mode wave to advance instantly), `action: 'loadLevel'` (body also
+  carries `rows` — an ASCII level grid, same shape as the [level format](#level-format) — plus
+  optional `timers` and `treasureRoom`) swaps the room's live level for that fixture grid in place
+  (same level index, no chest/intermission side effects), so a scenario can place the hero right
+  next to one specific tile (an amulet, a pressure plate, a timed wall, ...) instead of hunting for
+  one in a real generated level — `timers` shortens a timed wall's default 30s countdown for the
+  test, and `treasureRoom: true` exercises the bonus-round entry exactly like a real treasure level.
+  Used by `test/e2e-features.mjs` (#35).
 - `POST /api/heroes/debug/xp` (body `{amount}`), handled in `server/heroes.js`: grants XP to the
-  caller so `test/heroes-api.test.js` and `test/e2e.mjs` can reach the Hero Builder's rank-3 unlock
-  without a long grind.
+  caller so `test/heroes-api.test.js`, `test/e2e.mjs` and `test/e2e-features.mjs` can reach the Hero
+  Builder's rank-3 unlock without a long grind.
 - `POST /api/debug/highscore` (body `{score, cls, level, mode, userId, guestId, username,
   endedAt}`), handled inline in `server/index.js`: seeds one row directly on the [arcade high-score
   board](#high-scores-14) so `test/highscores.test.js` can test `GET /api/highscores` and `POST
   /api/runs/:id/initials` without driving a whole Death-mode run to completion.
 
-`test/e2e.mjs` starts its server with `GAUNTLET_DEBUG=1`; `npm start`/`npm run dev` don't set it,
-so these hooks are unreachable in a normal or deployed instance.
+`test/e2e.mjs` and `test/e2e-features.mjs` start their own server with `GAUNTLET_DEBUG=1`; `npm
+start`/`npm run dev` don't set it, so these hooks are unreachable in a normal or deployed instance.
 
 **Generating narrator voice clips**: the game works out of the box via the browser's
 `speechSynthesis` (see [Narrator voice](#narrator-voice) above). To pre-render real audio clips

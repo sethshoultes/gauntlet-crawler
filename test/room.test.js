@@ -10,6 +10,7 @@ process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), 'gauntlet-room-test-'));
 const { Room } = await import('../server/game/room.js');
 const { db, now } = await import('../server/db.js');
 const stats = await import('../server/stats.js');
+const { LEVEL1 } = await import('../shared/levels/level1.js');
 
 function fakeWs() {
   const sent = [];
@@ -762,6 +763,86 @@ test('a fresh level start re-tags It, via advanceLevel', () => {
     room.advanceLevel();
     assert.equal(room.levelIndex, 2);
     assert.ok(room.sim.itPid === 'a' || room.sim.itPid === 'b', 'the new level assigned a fresh It tag');
+  } finally { room.close(); }
+});
+
+// ---------- debug 'loadLevel' hook (#35, test/e2e-features.mjs) ----------
+// A minimal valid level (parseLevel needs >=12x12, a start, and an exit) with one extra tile
+// placed at (tx,ty) so a test can plant a specific hazard/pickup glyph without hand-rolling a
+// full grid each time.
+function fixtureRows({ tile = '.', tx = 5, ty = 5 } = {}) {
+  const w = 12, h = 12;
+  const rows = [];
+  for (let y = 0; y < h; y++) {
+    let row = '';
+    for (let x = 0; x < w; x++) {
+      if (y === 0 || y === h - 1 || x === 0 || x === w - 1) row += '#';
+      else if (x === 1 && y === 1) row += 'S';
+      else if (x === w - 2 && y === h - 2) row += 'E';
+      else if (x === tx && y === ty) row += tile;
+      else row += '.';
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+test('debug loadLevel swaps the live level for a fixture grid, keeping the level index', () => {
+  const room = makeRoom({ id: 'dbg-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    assert.equal(room.levelIndex, 1);
+    room.debugAction('loadLevel', { rows: fixtureRows({ tile: 'R', tx: 3, ty: 1 }) });
+    assert.equal(room.levelIndex, 1, 'levelIndex is unchanged by a fixture swap');
+    assert.equal(room.sim.level.name, 'Debug Fixture');
+    assert.equal(room.sim.grid[1][3], 'R', 'the requested tile landed at the requested coordinates');
+    const p = room.sim.players.get('a');
+    assert.equal(p.x, 1.5); assert.equal(p.y, 1.5); // placed at the fixture's own start tile
+  } finally { room.close(); }
+});
+
+test('debug loadLevel clears amulets/stun and honors a timers override for a timed wall', () => {
+  const room = makeRoom({ id: 'dbg-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    const p = room.sim.players.get('a');
+    p.amulets = { reflect: 20 }; p.stunTicks = 30; p.stunImmuneTicks = 90;
+    room.debugAction('loadLevel', { rows: fixtureRows({ tile: '^', tx: 3, ty: 1 }), timers: { wall: 2.5 } });
+    assert.deepEqual(room.sim.players.get('a').amulets, {}, 'a fixture load clears temporary amulets, same as any other level load');
+    assert.equal(room.sim.players.get('a').stunTicks, 0);
+    assert.equal(room.sim.timedWalls.length, 1);
+    assert.equal(room.sim.timedWalls[0].remaining, 2.5, 'the timers override shortens the default 30s countdown');
+  } finally { room.close(); }
+});
+
+test('debug loadLevel with treasureRoom:true flags the sim and broadcasts the bonus banner', () => {
+  const room = makeRoom({ id: 'dbg-3' });
+  const wsA = fakeWs();
+  try {
+    room.join(wsA, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    wsA.sent.length = 0;
+    room.debugAction('loadLevel', { rows: fixtureRows(), treasureRoom: true });
+    assert.equal(room.sim.treasureRoom, true);
+    const bonus = wsA.sent.find((m) => m.t === 'bonus');
+    assert.ok(bonus, 'a treasure-room fixture load broadcasts the same bonus banner advanceLevel() sends');
+    assert.equal(bonus.mystery, false);
+  } finally { room.close(); }
+});
+
+test('debug loadLevel is a no-op outside "playing" state, or with malformed rows', () => {
+  const room = makeRoom({ id: 'dbg-4' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    // still in the lobby: no sim to swap into yet.
+    room.debugAction('loadLevel', { rows: fixtureRows() });
+    assert.equal(room.state, 'lobby');
+    assert.equal(room.sim.level.name, LEVEL1.name);
+    room.start('a');
+    room.debugAction('loadLevel', { rows: 'not-an-array' });
+    assert.equal(room.sim.level.name, LEVEL1.name, 'malformed rows leave the current level untouched');
   } finally { room.close(); }
 });
 
