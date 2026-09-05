@@ -281,7 +281,7 @@ export function generateTreasureRoom({ seed, level = 1 } = {}) {
   const midY = h >> 1;
   g[midY][1] = T.START; g[midY][2] = T.START;
   g[midY - 1][1] = T.START; g[midY + 1][1] = T.START;
-  const roomNum = Math.round(level / 6) - 1; // 0 for the first treasure room (level 6), 1 for the second (level 12), ...
+  const roomNum = Math.floor(level / 6) - 1; // 0 for the first treasure room (level 6), 1 for the second (level 12), ...; floor so a stray non-multiple never rounds up into the next room's parity
   const mystery = roomNum % 2 === 1;
   const exitSpots = rng.shuffle([[w - 2, 2], [w - 2, midY], [w - 2, h - 3], [w >> 1, h - 2], [w >> 1, 2]]).slice(0, rng.int(3, 4));
   for (const [ex, ey] of exitSpots) g[ey][ex] = mystery ? T.HIDDEN_EXIT : T.EXIT;

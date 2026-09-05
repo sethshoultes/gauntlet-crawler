@@ -133,7 +133,7 @@ test('captureError, with a DSN pointing at a local server, posts an envelope wit
     sentry.captureError('sentry integration boom', {
       stack: 'Error: sentry integration boom\n    at somewhere.js:1:1',
       source: 'server',
-      url: '/api/thing',
+      url: `https://game.example/api/thing?token=${plantedToken}#frag-${plantedToken}`,
       token: plantedToken,
       authorization: `Bearer ${plantedToken}`,
       safeField: 'this-is-fine',
@@ -154,6 +154,7 @@ test('captureError, with a DSN pointing at a local server, posts an envelope wit
     const bodies = received.join('\n');
     assert.match(bodies, /sentry integration boom/, 'the envelope should contain the error message');
     assert.doesNotMatch(bodies, new RegExp(plantedToken), 'the planted token must never reach the wire');
+    assert.match(bodies, /https:\/\/game\.example\/api\/thing/, 'the url path itself is still forwarded, minus query and fragment');
     assert.doesNotMatch(bodies, new RegExp(plantedNestedToken), 'a sensitive key nested inside extra must never reach the wire either');
     assert.match(bodies, /nested-and-fine/, 'a non-sensitive nested value should still be forwarded');
     assert.doesNotMatch(bodies, /Bearer /, 'the authorization value must never reach the wire');

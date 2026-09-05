@@ -93,6 +93,20 @@ function browserFamily(ua) {
   return 'Other';
 }
 
+/** Reduce a URL to origin + path. Client beacons send `location.href`, and the key-based scrub
+ *  above cannot see inside a string, so a `?token=...` query or a `#fragment` would otherwise ride
+ *  along to a third party. Unparsable input is cut at the first `?`/`#` instead. */
+export function safeUrl(url) {
+  if (url === undefined || url === null) return undefined;
+  const raw = String(url);
+  try {
+    const u = new URL(raw, 'http://relative.invalid');
+    return u.origin === 'http://relative.invalid' ? u.pathname : `${u.origin}${u.pathname}`;
+  } catch {
+    return raw.split(/[?#]/)[0];
+  }
+}
+
 /**
  * Forward one error to Sentry. No-op -- and imports nothing -- unless SENTRY_DSN is set. Never
  * throws: a bad DSN or a Sentry outage must not affect the caller, matching the "never throws"
@@ -100,7 +114,8 @@ function browserFamily(ua) {
  * @param {string} msg
  * @param {object} [fields] same shape server/log.js already builds. `stack` becomes the event's
  *   exception (so Sentry groups by it); `source` ('client'|'server') and a coarse `ua` browser
- *   family become tags; `url` and everything else become extras -- all scrubbed for keys matching
+ *   family become tags; `url` (reduced to origin + path, see safeUrl) and everything else become
+ *   extras -- all scrubbed for keys matching
  *   token/authorization/cookie/password/ip first. Raw `ua` and any `userId`-shaped identifier are
  *   never sent as-is: `ua` is reduced to a browser family, and `userId`/`user_id` fall under the
  *   generic key scrub already (case-insensitive `ip`/`token`/etc. substrings aside, an id alone
@@ -118,7 +133,8 @@ export function captureError(msg, fields = {}) {
     const tags = { source: source === 'client' ? 'client' : 'server' };
     const browser = browserFamily(ua);
     if (browser) tags.browser = browser;
-    const extra = scrub(url ? { ...rest, url } : rest);
+    const path = safeUrl(url);
+    const extra = scrub(path ? { ...rest, url: path } : rest);
     loadSentry().then((Sentry) => {
       Sentry.withScope((scope) => {
         scope.setTags(tags);

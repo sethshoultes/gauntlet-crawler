@@ -682,7 +682,7 @@ nothing changes: the first-party `errors` table above remains the only sink. Set
   cookie, password/passwd, secret, forwarded, remote-addr, or an `ip` word segment such as `userIp`,
   `X-Real-IP` or `CF-Connecting-IP`; words that merely contain "ip" like `shipping` are kept), at
   any depth, is stripped before the event is queued (`isSensitiveKey()`/`scrub()`/`beforeSend` in
-  `server/sentry.js`, unit-tested in `test/sentry.test.js`). A client error's User-Agent is reduced
+  `server/sentry.js`, unit-tested in `test/sentry.test.js`). A reported `url` is reduced to origin + path (query strings and fragments are dropped, since a `?token=` in `location.href` is a string the key scrub cannot see). A client error's User-Agent is reduced
   to a coarse browser family (`Chrome`/`Firefox`/`Safari`/`Edge`/`Other`) rather than sent raw, and
   no username or user identity is attached to the event.
 - **No source maps**: there's no build step, so stack traces already reference the exact files
