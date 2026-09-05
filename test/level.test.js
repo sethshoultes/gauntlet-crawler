@@ -162,6 +162,27 @@ test('repairLevel keeps a level that only has a skip exit (8) and adds no extra 
   assert.deepEqual(validateLevel(fixed), []);
 });
 
+test("repairLevel's connectivity carve never overwrites a hidden exit tile (#27 review)", () => {
+  // A hidden exit (H), enclosed in its own room by a fully-solid wall row, with no other exit-like
+  // tile anywhere else. A treasure tile makes it revealable (hiddenExitOpenable), so it should count
+  // as a real exit once repairLevel carves a path to it — the connectivity fallback must never carve
+  // straight through the H tile itself (that used to convert it to floor, destroying the level's
+  // only exit outright).
+  const w = 12, h = 12;
+  const grid = Array.from({ length: h }, (_, y) => Array.from({ length: w }, (_, x) => {
+    if (y === 0 || y === h - 1 || x === 0 || x === w - 1 || y === 5) return '#';
+    return '.';
+  }));
+  grid[1][1] = 'S';
+  grid[1][6] = 'T'; // treasure: makes the hidden exit openable
+  grid[7][10] = 'H'; // hidden exit, walled off in its own room (row 5 is solid all the way across)
+  const rows = grid.map((r) => r.join(''));
+  const fixed = repairLevel({ name: 'hidden-exit-only', rows });
+  const joined = fixed.rows.join('');
+  assert.equal((joined.match(/H/g) || []).length, 1, "the hidden exit must survive repairLevel's carve");
+  assert.deepEqual(validateLevel(fixed), []);
+});
+
 test('the missing-exit error names every exit-like tile, including the hidden exit (#13)', () => {
   const rows = Array.from({ length: 12 }, (_, y) => (y === 0 || y === 11 ? '############' : y === 1 ? '#S.........#' : '#..........#'));
   assert.throws(() => parseLevel({ rows }), /E, 8, or H/);

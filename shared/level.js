@@ -132,12 +132,19 @@ export function repairLevel(raw) {
   let lvl = { name: raw.name, description: raw.description, rows: grid.map((r) => r.join('')) };
   const parsed = parseLevel(lvl);
   if (!exitReachable(parsed)) {
-    // Carve an L-shaped corridor from start to the first exit.
+    // Carve an L-shaped corridor from start to an exit. Prefer a real exit (E/8) as the target
+    // over a hidden one (H) — a hidden exit is only reachable once revealed, so if a real exit
+    // exists elsewhere it's the safer thing to guarantee a path to. Either way, never carve over
+    // the exit-like tile itself: it used to convert a HIDDEN_EXIT target straight to floor,
+    // silently destroying the level's only exit (#27 review) — carving stops one tile short and
+    // relies on exitReachable() already treating an openable H as passable once adjacent.
     const [sx, sy] = parsed.starts[0];
-    const [ex, ey] = parsed.exits[0];
+    const target = parsed.exits.find(([x, y]) => EXIT_TILES.has(grid[y][x])) || parsed.exits[0];
+    const [ex, ey] = target;
     const carve = (x, y) => {
       const c = grid[y][x];
-      if (c === T.WALL || c === T.TRAP || c === T.DOOR || GROUP_WALLS.has(c) || TIMED_WALLS.has(c) || c === T.HIDDEN_EXIT) grid[y][x] = T.FLOOR;
+      if (EXIT_LIKE_TILES.has(c)) return;
+      if (c === T.WALL || c === T.TRAP || c === T.DOOR || GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) grid[y][x] = T.FLOOR;
     };
     for (let x = Math.min(sx, ex); x <= Math.max(sx, ex); x++) carve(x, sy);
     for (let y = Math.min(sy, ey); y <= Math.max(sy, ey); y++) carve(ex, y);

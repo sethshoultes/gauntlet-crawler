@@ -21,6 +21,14 @@ test('enabled() is false and captureError is a no-op when SENTRY_DSN is unset', 
   assert.doesNotThrow(() => sentry.captureError('should be ignored', { stack: 'Error: x' }));
 });
 
+test('enabled() treats an empty-string SENTRY_DSN the same as unset (#27 review)', () => {
+  // test/telemetry.test.js's health-endpoint test relies on this: it clears SENTRY_DSN in the
+  // spawned server's env with '' (rather than deleting the key) so the assertion can't flake
+  // depending on whether the shell running the tests happens to have a real DSN exported.
+  process.env.SENTRY_DSN = '';
+  try { assert.equal(sentry.enabled(), false); } finally { delete process.env.SENTRY_DSN; }
+});
+
 test('captureError never throws with SENTRY_DSN unset, even given malformed fields', () => {
   delete process.env.SENTRY_DSN;
   assert.doesNotThrow(() => sentry.captureError('null fields', null));

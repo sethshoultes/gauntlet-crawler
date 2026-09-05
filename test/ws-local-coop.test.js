@@ -62,6 +62,27 @@ async function withServer(fn) {
   try { await fn(server.baseUrl); } finally { await server.stop(); }
 }
 
+/** Pull a player's snapshot row (see server/game/sim.js's snapshot(): `[id, x, y, dir, ...]`) out
+ *  of a `{t:'s', p:[...]}` tick message by pid. */
+function playerRow(snap, pid) { return (snap.p || []).find((row) => row[0] === pid); }
+
+/** Join a fresh room, add one local co-op player at slot 1, ready up, and start the run — enough
+ *  state for 'input' to actually reach server/game/sim.js's per-tick movement (setInput() is a
+ *  no-op until the target pid exists in the running sim, which only happens once the room leaves
+ *  the lobby). Returns the still-open host ws/queue plus both pids. */
+async function startPlayingWithLocal(baseUrl) {
+  const ws = await wsConnect(baseUrl);
+  const q = messageQueue(ws);
+  ws.send(JSON.stringify({ t: 'join', create: true, name: 'Host' }));
+  const welcome = await q.waitFor((m) => m.t === 'welcome');
+  ws.send(JSON.stringify({ t: 'join_local', slot: 1, name: 'P2', cls: 'elf' }));
+  const ack = await q.waitFor((m) => m.t === 'welcome_local');
+  ws.send(JSON.stringify({ t: 'ready', ready: true }));
+  ws.send(JSON.stringify({ t: 'start' }));
+  await q.waitFor((m) => m.t === 'start');
+  return { ws, q, hostPid: welcome.pid, localPid: ack.pid };
+}
+
 test('join_local rejects an out-of-range or non-integer slot with an error, never adding a player', async () => {
   await withServer(async (baseUrl) => {
     const ws = await wsConnect(baseUrl);
@@ -189,5 +210,84 @@ test('sending "leave" cleans up every local player this connection minted, immed
     assert.equal(roomMsg.room.roster.length, 1, 'only the observer remains');
 
     wsHost.close(); wsObserver.close();
+  });
+});
+
+// ---------- #27 review: slot normalization must agree between 'input' and 'join_local' ----------
+test('input with a string slot ("1") routes to the same local hero as numeric slot 1, never the primary', async () => {
+  await withServer(async (baseUrl) => {
+    const { ws, q, hostPid, localPid } = await startPlayingWithLocal(baseUrl);
+    // Both heroes start facing south (sim.js's default dir index 4) until they receive input that
+    // actually sets a direction -- a clean, wall-independent signal that a given pid was steered.
+    const first = await q.waitFor((m) => m.t === 's');
+    assert.equal(playerRow(first, hostPid)?.[3], 4);
+    assert.equal(playerRow(first, localPid)?.[3], 4);
+
+    // join_local's own key is Number(msg.slot); a raw string here used to miss that map in
+    // 'input' and silently fall through to the primary pid instead of local hero 1.
+    ws.send(JSON.stringify({ t: 'input', slot: '1', dx: 1, dy: 0, fire: false }));
+    const moved = await q.waitFor((m) => m.t === 's' && playerRow(m, localPid)?.[3] === 2);
+    assert.equal(playerRow(moved, localPid)?.[3], 2, 'a string slot "1" must steer local hero 1 (dir index 2 = east)');
+    assert.equal(playerRow(moved, hostPid)?.[3], 4, 'the primary hero must be untouched by a slot-1 input');
+
+    ws.close();
+  });
+});
+
+test('input with an invalid slot ("abc" or an out-of-range number) is rejected, touching neither the primary nor any local hero', async () => {
+  await withServer(async (baseUrl) => {
+    const { ws, q, hostPid, localPid } = await startPlayingWithLocal(baseUrl);
+    await q.waitFor((m) => m.t === 's');
+
+    ws.send(JSON.stringify({ t: 'input', slot: 'abc', dx: 1, dy: 0, fire: false }));
+    ws.send(JSON.stringify({ t: 'input', slot: 7, dx: 1, dy: 0, fire: false }));
+    const collected = await q.collectFor(300);
+    assert.equal(collected.some((m) => m.t === 'error'), false, 'an invalid slot is silently ignored, not an error');
+    const snaps = collected.filter((m) => m.t === 's');
+    assert.ok(snaps.length > 0, 'sanity: at least one tick ran while waiting');
+    for (const snap of snaps) {
+      assert.equal(playerRow(snap, hostPid)?.[3], 4, 'the primary hero must not move from an invalid slot');
+      assert.equal(playerRow(snap, localPid)?.[3], 4, 'the local hero must not move from a slot it was never routed to');
+    }
+
+    ws.close();
+  });
+});
+
+// ---------- #27 review: local co-op players can't resume, so a close must drop them immediately ----------
+test('closing a socket with local co-op players removes them immediately, leaving only the primary in the away grace window', async () => {
+  await withServer(async (baseUrl) => {
+    const wsHost = await wsConnect(baseUrl);
+    const qHost = messageQueue(wsHost);
+    wsHost.send(JSON.stringify({ t: 'join', create: true, name: 'Host' }));
+    const welcomeHost = await qHost.waitFor((m) => m.t === 'welcome');
+    const roomId = welcomeHost.room.id;
+
+    wsHost.send(JSON.stringify({ t: 'join_local', slot: 1, name: 'P2', cls: 'elf' }));
+    await qHost.waitFor((m) => m.t === 'welcome_local');
+    wsHost.send(JSON.stringify({ t: 'join_local', slot: 2, name: 'P3', cls: 'elf' }));
+    await qHost.waitFor((m) => m.t === 'welcome_local');
+
+    const wsObserver = await wsConnect(baseUrl);
+    const qObserver = messageQueue(wsObserver);
+    wsObserver.send(JSON.stringify({ t: 'join', roomId, name: 'Observer' }));
+    const welcomeObs = await qObserver.waitFor((m) => m.t === 'welcome');
+    assert.equal(welcomeObs.room.roster.length, 4, 'host + 2 locals + observer');
+
+    wsHost.close();
+
+    // The close handler drops both local players via leaveLocals() (room.leave -- the same
+    // immediate path an explicit 'leave' uses) before parking the primary as away via
+    // room.disconnect(). Wait for the roster to settle at its final shape rather than the first
+    // 2-player broadcast, since an intermediate one (locals gone, host not yet marked away) also
+    // has roster.length === 2.
+    const settled = await qObserver.waitFor((m) => m.t === 'room' && m.room.roster.length === 2
+      && m.room.roster.find((r) => r.pid === welcomeHost.pid)?.away === true, 5000);
+    assert.equal(settled.room.roster.length, 2, 'both local players are gone immediately, not just parked');
+    const hostEntry = settled.room.roster.find((r) => r.pid === welcomeHost.pid);
+    assert.ok(hostEntry, 'the primary connection is still present');
+    assert.equal(hostEntry.away, true, 'the primary is parked as away (reconnect grace window), not removed');
+
+    wsObserver.close();
   });
 });

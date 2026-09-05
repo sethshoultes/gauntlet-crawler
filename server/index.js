@@ -346,6 +346,21 @@ const server = http.createServer(async (req, res) => {
 // Every legitimate message on this protocol (input/chat/join/hero/settings/prefs/pick/...) is tiny
 // (chat text alone is capped at 200 chars server-side); `ws`'s default maxPayload is 100MiB, so
 // without an explicit cap a single client could force a huge allocation per message.
+/** Normalize a client-supplied local-coop slot (see 'join_local' below) — used by both 'input'
+ *  (to route to the right local pid) and 'join_local' (to validate the slot being claimed) so
+ *  they can't disagree about what counts as a valid slot. A raw string like "1" used to miss
+ *  join_local's Number()-keyed localPids map when 'input' looked it up unconverted, silently
+ *  falling through to the primary connection's own pid (#27 review). Returns:
+ *    - null  -- no slot was given (undefined/null/''/0/"0"): this targets the primary pid.
+ *    - an integer in [1, MAX_PLAYERS-1] -- names a local player slot.
+ *    - NaN   -- a slot WAS given but doesn't parse to a valid one: callers must reject/ignore it
+ *               outright rather than falling back to the primary pid. */
+function normalizeSlot(rawSlot) {
+  if (rawSlot === undefined || rawSlot === null || rawSlot === '' || rawSlot === 0 || rawSlot === '0') return null;
+  const slot = Number(rawSlot);
+  return (Number.isInteger(slot) && slot >= 1 && slot <= MAX_PLAYERS - 1) ? slot : NaN;
+}
+
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
 wss.on('connection', (ws, req) => {
   let pid = crypto.randomBytes(4).toString('hex');
@@ -408,8 +423,12 @@ wss.on('connection', (ws, req) => {
         case 'input': {
           if (!room) break;
           // slot 0 (or no slot) is this connection's own player; slots 1-3 name a local co-op
-          // player joined via 'join_local' below, routed to the pid that join minted for it.
-          const targetPid = (msg.slot ? localPids.get(msg.slot) : null) || pid;
+          // player joined via 'join_local' below, routed to the pid that join minted for it. An
+          // out-of-range or unparsable slot (e.g. 7, "abc") is rejected outright rather than
+          // silently falling back to the primary hero (#27 review).
+          const slot = normalizeSlot(msg.slot);
+          if (Number.isNaN(slot)) break; // out-of-range/unparsable: reject, don't touch the primary
+          const targetPid = (slot === null ? null : localPids.get(slot)) || pid;
           room.handleInput(targetPid, msg);
           break;
         }
@@ -419,8 +438,8 @@ wss.on('connection', (ws, req) => {
           // Room#joinLocal — since the client/server 'join' handshake otherwise assumes one player
           // per WebSocket connection.
           if (!room) throw new Error('Join a room first');
-          const slot = Number(msg.slot);
-          if (!Number.isInteger(slot) || slot < 1 || slot > MAX_PLAYERS - 1) throw new Error('Invalid local player slot');
+          const slot = normalizeSlot(msg.slot);
+          if (slot === null || Number.isNaN(slot)) throw new Error('Invalid local player slot');
           if (localPids.has(slot)) break; // already joined this slot on this connection
           const isCustomCls = typeof msg.cls === 'string' && /^custom:\d+$/.test(msg.cls);
           const cls = (CLASSES[msg.cls] || isCustomCls) ? msg.cls : 'warrior';
@@ -462,7 +481,12 @@ wss.on('connection', (ws, req) => {
       }
     } catch (e) { send({ t: 'error', error: e.message }); }
   });
-  ws.on('close', () => { if (room) { room.disconnect(pid); for (const lpid of localPids.values()) room.disconnect(lpid); } });
+  // Local co-op players (#15) are bound to this socket and can't resume independently of it, so
+  // once the socket is gone they're gone for good — leave them immediately (the same path
+  // 'leave' uses below) rather than parking them in the away-grace window like the primary. Left
+  // in that window, a local player kept the room looking (and counting as) full until
+  // AWAY_GRACE_MS elapsed even though nothing could ever reconnect them (#27 review).
+  ws.on('close', () => { if (room) { leaveLocals(); room.disconnect(pid); } });
 });
 setInterval(() => heartbeat(wss.clients), 30000);
 
