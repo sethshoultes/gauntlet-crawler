@@ -83,3 +83,13 @@ test('caller-supplied fields cannot overwrite the reserved level/ts/msg keys', (
   assert.notEqual(parsed.ts, 'yesterday');
   assert.equal(parsed.extra, 1);
 });
+
+test('a fields object with a throwing getter still produces a log line and never throws', async () => {
+  const { info } = await import('../server/log.js');
+  const hostile = {}; Object.defineProperty(hostile, 'boom', { enumerable: true, get() { throw new Error('nope'); } });
+  const lines = [];
+  const orig = console.log; console.log = (l) => lines.push(l);
+  try { assert.doesNotThrow(() => info('hello', hostile)); } finally { console.log = orig; }
+  const obj = JSON.parse(lines.at(-1));
+  assert.equal(obj.level, 'info'); assert.equal(obj.msg, 'hello'); assert.equal(obj.fields, '<unreadable>');
+});
