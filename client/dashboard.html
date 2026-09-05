@@ -30,8 +30,12 @@
   .tabs { display: flex; gap: 4px; margin-bottom: 8px; }
   .tabs button { padding: 4px 10px; font-size: 11px; }
   .tabs button.on { border-color: var(--yellow); color: var(--yellow); }
-  .hero-hdr { display: flex; align-items: center; gap: 16px; }
+  .hero-hdr { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .hero-hdr h1 { margin: 0; color: var(--yellow); text-shadow: 3px 3px 0 var(--red); letter-spacing: 2px; }
+  @media (max-width: 700px) {
+    .stats, .achs, .unlocks { grid-template-columns: 1fr; }
+    .tabs { flex-wrap: wrap; }
+  }
   .prog-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
   .prog-top .t { font-weight: bold; font-size: 16px; color: var(--yellow); }
   .prog-bar { height: 10px; background: var(--line); }
@@ -71,14 +75,14 @@
     <div class="panel" style="margin-top:18px"><h2>Achievements <span class="muted" id="ach-count" style="font-size:12px;letter-spacing:0"></span></h2><div class="achs" id="achs"></div></div>
     <div class="panel" style="margin-top:18px"><h2>Unlocks <span class="muted" id="unlock-count" style="font-size:12px;letter-spacing:0"></span></h2><p class="muted" style="font-size:12px;margin:0 0 10px">Alternate palettes and new hero archetypes, earned by rank or achievement.</p><div class="unlocks" id="unlocks"></div></div>
     <div class="grid2" style="margin-top:18px">
-      <div class="panel"><h2>Recent runs</h2><table id="runs"></table></div>
-      <div class="panel"><h2>My levels</h2><table id="mylevels"></table><p class="muted" style="font-size:12px">Build more in the <a href="/editor.html">Level Builder</a>.</p></div>
+      <div class="panel"><h2>Recent runs</h2><div class="table-scroll"><table id="runs"></table></div></div>
+      <div class="panel"><h2>My levels</h2><div class="table-scroll"><table id="mylevels"></table></div><p class="muted" style="font-size:12px">Build more in the <a href="/editor.html">Level Builder</a>.</p></div>
     </div>
   </div>
   <div class="panel" style="margin-top:18px">
     <h2>Leaderboards</h2>
     <div class="tabs" id="tabs"><button data-t="scores" class="on">High scores</button><button data-t="death">Death mode</button><button data-t="rank">Rank</button><button data-t="depth">Deepest</button><button data-t="kills">Most kills</button><button data-t="achievements">Most achievements</button></div>
-    <table id="lb"></table>
+    <div class="table-scroll"><table id="lb"></table></div>
   </div>
 </main>
 <footer>Gauntlet Crawler</footer>

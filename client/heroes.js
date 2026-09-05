@@ -3,6 +3,7 @@
 import { api, me, renderNav, authModal, toast, esc } from './common.js';
 import { sprite } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
+import { paintPath } from './paint-path.js';
 import { STATS, PALETTE, WEAPONS, TRAITS, presetHeroes, notchesFromClass } from '/shared/hero-builder.js';
 import { CLASSES } from '/shared/constants.js';
 import { rankTitle } from '/shared/progression.js';
@@ -25,6 +26,8 @@ const HB = {
   stats: blankStats(), weapon: 'axe', trait: null, pixels: blankPixels(),
   brush: '2', mirror: false, scale: 4, flip: false,
 };
+// exposed for manual/E2E debugging only — not used by the Hero Builder itself (see client/game.js's window.__gc for the same pattern)
+window.__hb = { pixels: () => HB.pixels.slice() };
 
 function requirementText(requires) {
   if (!requires) return 'Unlocked';
@@ -63,17 +66,37 @@ function cellAt(ev) {
   return x >= 0 && y >= 0 && x < 8 && y < 8 ? [x, y] : null;
 }
 let painting = false;
-function paintAt(ev) {
-  const cell = cellAt(ev); if (!cell) return;
-  const [x, y] = cell;
+let lastCell = null; // last painted cell, for paintPath() drag interpolation below
+// Undo (#32): one stroke/Clear per entry. A "stroke" is everything painted between one
+// pointerdown and its pointerup, snapshotted *before* it starts so Undo restores the pre-stroke
+// state regardless of how many cells the drag touched.
+let history = [];
+function pushHistory() { history.push(HB.pixels.slice()); if (history.length > 20) history.shift(); }
+function undo() {
+  const prev = history.pop(); if (!prev) return;
+  HB.pixels = prev; drawGrid(); updatePreview();
+}
+function paintAt(ev, isDrag) {
+  const cell = cellAt(ev); if (!cell) { lastCell = null; return; }
   const ch = ev.buttons === 2 ? '.' : HB.brush;
-  setPixel(x, y, ch);
+  // A fast drag (especially touch) can report pointermove events several cells apart; paint every
+  // cell along the straight line from the last one so the stroke has no gaps.
+  const cells = isDrag && lastCell ? paintPath(lastCell, cell) : [cell];
+  for (const [x, y] of cells) setPixel(x, y, ch);
+  lastCell = cell;
   drawGrid(); updatePreview();
 }
 pcv.addEventListener('contextmenu', (e) => e.preventDefault());
-pcv.addEventListener('pointerdown', (e) => { painting = true; paintAt(e); });
-pcv.addEventListener('pointermove', (e) => { if (painting) paintAt(e); });
-window.addEventListener('pointerup', () => { painting = false; });
+pcv.addEventListener('pointerdown', (e) => {
+  painting = true; lastCell = null; pushHistory();
+  pcv.setPointerCapture(e.pointerId); // keeps pointermove targeting #pcv even if the drag leaves its bounds
+  paintAt(e, false);
+});
+pcv.addEventListener('pointermove', (e) => { if (painting) paintAt(e, true); });
+window.addEventListener('pointerup', (e) => {
+  painting = false; lastCell = null;
+  try { pcv.releasePointerCapture(e.pointerId); } catch { /* not captured / already released */ }
+});
 
 // palette swatches
 const swatchesEl = $('#swatches');
@@ -93,7 +116,8 @@ function refreshTools() {
 }
 $('#eraser-btn').onclick = () => { HB.brush = '.'; refreshTools(); };
 $('#mirror-btn').onclick = () => { HB.mirror = !HB.mirror; refreshTools(); };
-$('#clear-btn').onclick = () => { HB.pixels = blankPixels(); drawGrid(); updatePreview(); };
+$('#clear-btn').onclick = () => { pushHistory(); HB.pixels = blankPixels(); drawGrid(); updatePreview(); };
+$('#undo-btn').onclick = () => undo();
 
 // preset dropdown
 const PRESETS = presetHeroes();
@@ -200,6 +224,7 @@ function loadHeroIntoForm(hero) {
   HB.weapon = WEAPONS[hero.weapon] ? hero.weapon : 'axe';
   HB.trait = hero.trait || null;
   HB.pixels = Array.isArray(hero.pixels) && hero.pixels.length === 8 ? hero.pixels.slice() : blankPixels();
+  history = []; lastCell = null; // switching heroes starts a fresh undo session
   $('#hname').value = HB.name; $('#htitle').value = HB.title; $('#hmotto').value = HB.motto;
   $('#save-status').textContent = '';
   drawGrid(); updatePreview(); renderStats(); refreshBudget(); renderWeapons(); renderTraits();

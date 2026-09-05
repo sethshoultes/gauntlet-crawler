@@ -640,6 +640,37 @@ most-played custom levels.
 `isAdmin(user)` gate at the top of `admin.handle()`; a logged-in non-admin gets a 403 and
 `/admin.html` shows an access-denied message instead of the dashboard.
 
+### Mobile
+
+Every non-game page (lobby, dashboard, settings, Hero Builder, Level Builder, attract/trailer, admin)
+is usable on a phone: no horizontal page scroll down to a 360px-wide viewport, ≥44px tap targets on
+nav links and primary buttons, and ≥14px text.
+
+- **Nav** (`client/common.js` `renderNav`, styled in `client/style.css`'s "pages / mobile" block):
+  under ~700px the link list collapses behind a `#nav-toggle` hamburger button
+  (`aria-expanded`/`aria-controls`, so it's announced correctly either way) into a vertical dropdown;
+  the links stay plain, focusable `<a>` elements throughout, and clicking one closes the menu.
+- **Lobby** (`client/index.html`): the hero-picker grid, room list/settings panel and high-score
+  table stack to a single column, and the hero cards wrap.
+- **Hero Builder** pixel editor and **Level Builder** tile grid (`client/heroes.js`,
+  `client/editor.js`) paint via Pointer Events (`pointerdown`/`pointermove`, with
+  `setPointerCapture` so a drag that leaves the grid's bounds keeps painting); `touch-action: none`
+  is scoped to the grid canvas only, so the palette strip beside it stays free to scroll. A fast
+  drag — especially a touch one — can report `pointermove` several cells apart; both editors run
+  every stroke through `client/paint-path.js`'s `paintPath(from, to)` (a pure Bresenham
+  line-interpolation helper, unit-tested in `test/paint-path.test.js`) so the whole path gets
+  painted with no gaps. The palette itself becomes a horizontally scrollable strip of large
+  swatches on narrow screens; the Level Builder additionally gets on-canvas **+/−** zoom controls
+  (resizes only the canvas's displayed CSS size — the coordinate math and the AI-generation/
+  save/publish flow are untouched); the Hero Builder gets an **Undo** button (one stroke or Clear
+  per step).
+- **Settings**: on a coarse-pointer (touch) device the key-bindings editor — irrelevant without a
+  physical keyboard — starts collapsed behind a `<details>` disclosure, with a short note pointing
+  at the touch/gamepad controls instead; sliders stay usable either way.
+- **Dashboard/admin**: tables scroll inside their own container (`.table-scroll`,
+  `.chart-wrap`) instead of the page, and the admin analytics bar charts (inline SVG) shrink to fit
+  their container's width.
+
 ### Analytics and logging
 
 A first-party `events` table (`server/telemetry.js`) records a small set of interactions: server

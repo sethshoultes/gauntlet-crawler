@@ -64,6 +64,20 @@
   #builder[hidden], #locked[hidden], #guest[hidden] { display: none; }
   .field { margin: 8px 0; } .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 3px; }
   .field input[type=text], .field input:not([type]), .field textarea, .field select { width: 100%; }
+
+  /* ---- pixel editor: mobile (#32) ----
+     Pointer Events with drag-to-paint (client/heroes.js) already cover mouse and touch; #pcv
+     already has touch-action:none above so a finger dragging across the grid paints instead of
+     scrolling the page, while the palette strip below is left free to scroll horizontally. */
+  @media (max-width: 700px) {
+    #pcv { width: min(100%, 320px); height: auto; aspect-ratio: 1; }
+    .swatches {
+      display: grid; grid-auto-flow: column; grid-auto-columns: 56px; grid-template-columns: none;
+      overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch;
+    }
+    .swatch-btn { width: 56px; height: 56px; }
+    .tools button, .pick-grid button { min-height: 44px; }
+  }
 </style>
 </head>
 <body>
@@ -91,6 +105,7 @@
       <div class="tools">
         <button id="eraser-btn">Eraser</button>
         <button id="mirror-btn">Mirror: Off</button>
+        <button id="undo-btn" title="Undo the last stroke or Clear">Undo</button>
         <button id="clear-btn">Clear</button>
       </div>
       <div class="field"><label>Start from a template</label>

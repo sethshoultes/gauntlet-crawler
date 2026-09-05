@@ -110,10 +110,17 @@ async function main() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const baseUrl = `http://127.0.0.1:${port}`;
 
+  // #32 mobile scenario needs one user to see the admin dashboard's real content (not just the
+  // "Access denied" panel) so its table/chart mobile layout actually gets exercised. Naming this
+  // account in GAUNTLET_ADMINS (rather than relying on it happening to register first / get user
+  // id 1 — every other scenario in this suite registers accounts before it runs) keeps that
+  // independent of scenario order, which matters since several agents' scenarios share this file.
+  const mobileAdminUser = { name: `e2eAdm${crypto.randomBytes(3).toString('hex')}`, pass: 'Password123' }; // USERNAME_RE caps usernames at 16 chars (server/auth.js)
+
   log(`starting server on ${baseUrl} (DATA_DIR=${dataDir}, GAUNTLET_DEBUG=1)`);
   const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, GAUNTLET_DEBUG: '1' },
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, GAUNTLET_DEBUG: '1', GAUNTLET_ADMINS: mobileAdminUser.name },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -597,6 +604,133 @@ async function main() {
       } finally {
         await ctxD.close().catch(() => {});
       }
+    });
+
+    // ---------------- 13. Mobile layout (#32) ----------------
+    await scenario('13. Mobile layout: every page fits at 360x740 with no horizontal scroll, and the nav menu button opens/closes the menu', async () => {
+      const ctxM = await browser.newContext({ viewport: { width: 360, height: 740 } });
+      const pageM = await ctxM.newPage(); attach(pageM, 'M');
+
+      const regRes = await fetch(`${baseUrl}/api/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: mobileAdminUser.name, password: mobileAdminUser.pass }),
+      });
+      if (!regRes.ok) throw new Error(`mobile admin test user registration failed: HTTP ${regRes.status}`);
+      const { token: mobileToken } = await regRes.json();
+      if (!mobileToken) throw new Error('mobile admin test user registration carried no token');
+
+      // Land on the site once to establish origin, then inject the token the way client/common.js
+      // reads it (localStorage), so every page below loads already logged in — no need to drive
+      // the auth modal by hand seven times over. `?nosw=1` everywhere (see scenario 12, #33) keeps
+      // this scenario's page loads from also registering the PWA service worker.
+      await pageM.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
+      await pageM.evaluate((t) => { try { localStorage.setItem('gc_token', t); } catch {} }, mobileToken);
+
+      const overflowOf = () => pageM.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+      const pages = ['/', '/dashboard.html', '/settings.html', '/heroes.html', '/editor.html', '/attract.html', '/admin.html'];
+      for (const path of pages) {
+        const sep = path.includes('?') ? '&' : '?';
+        await pageM.goto(`${baseUrl}${path}${sep}nosw=1`, { waitUntil: 'load' });
+        await pageM.waitForTimeout(500); // let renderNav()/the page's own async data (tables, charts) finish laying out
+        const { scrollWidth, innerWidth } = await overflowOf();
+        if (scrollWidth > innerWidth + 1) throw new Error(`${path} has horizontal overflow at 360px viewport: scrollWidth=${scrollWidth} vs innerWidth=${innerWidth}`);
+      }
+
+      // The admin dashboard specifically: confirm this user actually reached the real dashboard
+      // (GAUNTLET_ADMINS wiring above), not the "Access denied" panel — otherwise the overflow
+      // check above would have passed by testing nothing.
+      await pageM.goto(`${baseUrl}/admin.html?nosw=1`, { waitUntil: 'load' });
+      await pageM.waitForFunction(() => {
+        const app = document.querySelector('#app'), denied = document.querySelector('#denied');
+        return (app && app.style.display !== 'none') || (denied && denied.style.display !== 'none');
+      }, { timeout: 10_000 });
+      if (await pageM.locator('#denied').isVisible()) throw new Error('mobile admin test user was denied access to /admin.html — GAUNTLET_ADMINS wiring is broken');
+      if (!(await pageM.locator('#app').isVisible())) throw new Error('#app should be visible for an admin user on /admin.html');
+
+      // Nav menu button: reachable, keyboard-accessible (a real <button> with aria-expanded),
+      // collapsed by default at this width, opens on click, and closes when a nav link is clicked.
+      await pageM.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
+      await pageM.waitForSelector('#nav-toggle', { timeout: 10_000 });
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should start collapsed at 360px width');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'false') throw new Error('#nav-toggle should start with aria-expanded="false"');
+
+      await pageM.click('#nav-toggle');
+      if (!(await pageM.locator('#nav-links').isVisible())) throw new Error('#nav-links should become visible after clicking #nav-toggle');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'true') throw new Error('#nav-toggle should report aria-expanded="true" once opened');
+
+      await pageM.click('#nav-links a.nl >> nth=0'); // any nav link click should close the menu
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should collapse again after clicking a nav link');
+
+      await ctxM.close().catch(() => {});
+    });
+
+    // ---------------- 14. Touch-drag painting in both editors (#32) ----------------
+    await scenario('14. Touch-drag painting: a fast pointer drag paints every cell along the path (no gaps) in both the Level Builder and the Hero Builder', async () => {
+      // ---- Level Builder tile grid ----
+      const ctxE = await browser.newContext();
+      const pageE = await ctxE.newPage(); attach(pageE, 'E');
+      await pageE.goto(`${baseUrl}/editor.html?nosw=1`, { waitUntil: 'load' });
+      await pageE.waitForSelector('#ecv', { timeout: 10_000 });
+      await pageE.click('#pal button[data-c="F"]'); // brush: food — visually distinct from the blank floor/wall default
+
+      // boundingBox() is relative to the current scroll position, not the element's position after
+      // scrolling it into view -- #ecv sits below the tall AI panels, so without this it comes back
+      // with a negative y (scrolled above the viewport) and the mouse coordinates below miss it
+      // entirely (locator actions like .click() scroll into view automatically; raw mouse.move()
+      // does not).
+      await pageE.locator('#ecv').scrollIntoViewIfNeeded();
+      const ecvBox = await pageE.locator('#ecv').boundingBox();
+      if (!ecvBox) throw new Error('#ecv has no bounding box');
+      const EW = 32, EH = 24; // the editor's default new-level size (client/editor.js ED.w/h)
+      const ecvCell = (cx, cy) => ({ x: ecvBox.x + (cx + 0.5) * (ecvBox.width / EW), y: ecvBox.y + (cy + 0.5) * (ecvBox.height / EH) });
+      const eFrom = ecvCell(3, 10), eTo = ecvCell(28, 10); // a long horizontal drag, well clear of the border walls
+      await pageE.mouse.move(eFrom.x, eFrom.y);
+      await pageE.mouse.down();
+      await pageE.mouse.move(eTo.x, eTo.y); // one big jump (default steps=1): exactly the sparse-pointermove case paintPath() exists for
+      await pageE.mouse.up();
+
+      const grid = await pageE.evaluate(() => window.__ed.grid());
+      for (let x = 3; x <= 28; x++) {
+        if (grid[10][x] !== 'F') throw new Error(`Level Builder drag left a gap at column ${x} (row 10): expected food ("F"), got "${grid[10][x]}"`);
+      }
+      await ctxE.close().catch(() => {});
+
+      // ---- Hero Builder pixel grid ----
+      const heroUser = { name: `e2ePixel${rnd()}`, pass: 'Password123' };
+      const heroReg = await fetch(`${baseUrl}/api/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: heroUser.name, password: heroUser.pass }),
+      });
+      if (!heroReg.ok) throw new Error(`Hero Builder test user registration failed: HTTP ${heroReg.status}`);
+      const { token: heroToken } = await heroReg.json();
+      const xpRes = await fetch(`${baseUrl}/api/heroes/debug/xp`, {
+        method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${heroToken}` },
+        body: JSON.stringify({ amount: 700 }), // clears the rank-3 Hero Builder unlock, same debug hook as scenario 9
+      });
+      if (!xpRes.ok) throw new Error(`granting XP for the Hero Builder unlock failed: HTTP ${xpRes.status}`);
+
+      const ctxP = await browser.newContext();
+      const pageP = await ctxP.newPage(); attach(pageP, 'P');
+      await pageP.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
+      await pageP.evaluate((t) => { try { localStorage.setItem('gc_token', t); } catch {} }, heroToken);
+      await pageP.goto(`${baseUrl}/heroes.html?nosw=1`, { waitUntil: 'load' });
+      await pageP.waitForSelector('#builder:not([hidden])', { timeout: 10_000 });
+
+      await pageP.locator('#pcv').scrollIntoViewIfNeeded(); // see the #ecv comment above — same reasoning
+      const pcvBox = await pageP.locator('#pcv').boundingBox();
+      if (!pcvBox) throw new Error('#pcv has no bounding box');
+      const pcvCell = (cx, cy) => ({ x: pcvBox.x + (cx + 0.5) * (pcvBox.width / 8), y: pcvBox.y + (cy + 0.5) * (pcvBox.height / 8) });
+      const hFrom = pcvCell(1, 4), hTo = pcvCell(6, 4); // the 8x8 pixel grid: a drag across most of one row
+      await pageP.mouse.move(hFrom.x, hFrom.y);
+      await pageP.mouse.down();
+      await pageP.mouse.move(hTo.x, hTo.y); // one big jump, same fast-drag case as above
+      await pageP.mouse.up();
+
+      const pixels = await pageP.evaluate(() => window.__hb.pixels());
+      for (let x = 1; x <= 6; x++) {
+        if (pixels[4][x] === '.') throw new Error(`Hero Builder drag left a gap at pixel (${x}, 4): still blank after the stroke`);
+      }
+      await ctxP.close().catch(() => {});
     });
 
     await ctxA.close().catch(() => {});

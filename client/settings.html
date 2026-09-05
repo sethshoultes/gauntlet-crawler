@@ -69,15 +69,21 @@
       <div class="switch-row"><input type="checkbox" id="p-colorblind" /><label for="p-colorblind" style="margin:0;text-transform:none;font-size:14px">Colour-blind palette</label></div>
       <div class="switch-row"><input type="checkbox" id="p-reduced-motion" /><label for="p-reduced-motion" style="margin:0;text-transform:none;font-size:14px">Reduced motion</label></div>
       <div class="field" style="margin-top:14px">
-        <label>Key bindings</label>
-        <div class="keys">
-          <div class="field"><label style="font-size:11px">Up</label><input type="text" id="k-up" maxlength="12" /></div>
-          <div class="field"><label style="font-size:11px">Down</label><input type="text" id="k-down" maxlength="12" /></div>
-          <div class="field"><label style="font-size:11px">Left</label><input type="text" id="k-left" maxlength="12" /></div>
-          <div class="field"><label style="font-size:11px">Right</label><input type="text" id="k-right" maxlength="12" /></div>
-          <div class="field"><label style="font-size:11px">Fire</label><input type="text" id="k-fire" maxlength="12" /></div>
-          <div class="field"><label style="font-size:11px">Potion</label><input type="text" id="k-potion" maxlength="12" /></div>
-        </div>
+        <!-- Coarse-pointer devices (phone/tablet) play with the touch d-pad, not a keyboard, so
+             client/settings.js starts this collapsed there and shows #keybindings-touch-note
+             instead; on a mouse/keyboard device it starts open and the note stays hidden. -->
+        <p class="muted" id="keybindings-touch-note" style="font-size:12px;display:none;margin:0 0 10px">Playing with touch or a gamepad? The on-screen d-pad and fire/potion buttons (or your controller) are used automatically — key bindings below only matter with a physical keyboard.</p>
+        <details id="keybindings-details">
+          <summary style="cursor:pointer;min-height:44px;display:flex;align-items:center;color:var(--muted);text-transform:uppercase;font-size:12px;letter-spacing:1px">Key bindings</summary>
+          <div class="keys">
+            <div class="field"><label style="font-size:11px">Up</label><input type="text" id="k-up" maxlength="12" /></div>
+            <div class="field"><label style="font-size:11px">Down</label><input type="text" id="k-down" maxlength="12" /></div>
+            <div class="field"><label style="font-size:11px">Left</label><input type="text" id="k-left" maxlength="12" /></div>
+            <div class="field"><label style="font-size:11px">Right</label><input type="text" id="k-right" maxlength="12" /></div>
+            <div class="field"><label style="font-size:11px">Fire</label><input type="text" id="k-fire" maxlength="12" /></div>
+            <div class="field"><label style="font-size:11px">Potion</label><input type="text" id="k-potion" maxlength="12" /></div>
+          </div>
+        </details>
       </div>
       <button class="primary" id="save-prefs">Save preferences</button>
       <span id="prefs-msg" style="margin-left:10px;font-size:12px"></span>

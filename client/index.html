@@ -106,6 +106,17 @@
     font-size: clamp(18px, 7vw, 28px); padding: 0; align-self: flex-end; }
   .input-autofire { font-size: 11px; padding: 8px 10px; white-space: nowrap; }
   .input-autofire.on { background: var(--green); color: #000; border-color: var(--green); font-weight: bold; }
+
+  /* ---- lobby / hero-picker / room-settings mobile layout (#32) ---- */
+  @media (max-width: 700px) {
+    #lobby .heroes { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .hero-tabs button { min-height: 40px; padding: 8px 14px; }
+    .hero canvas { width: 56px; height: 56px; }
+    .rooms .r { flex-wrap: wrap; gap: 6px; }
+    #roomscreen .invite { flex-wrap: wrap; }
+    #roomscreen .invite input { width: 100%; }
+    .roster .row2 { flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
@@ -149,7 +160,7 @@
     </div>
     <div class="panel" style="margin-top:18px">
       <h2>High Scores</h2>
-      <div id="lobby-highscores"><span class="muted">Loading…</span></div>
+      <div id="lobby-highscores" class="table-scroll"><span class="muted">Loading…</span></div>
     </div>
   </section>
 

@@ -35,8 +35,10 @@
   #stage { position: relative; z-index: 1; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; background: transparent; }
   #cv { position: relative; z-index: 1; background: #000; image-rendering: pixelated; image-rendering: crisp-edges; box-shadow: 0 0 60px rgba(242,196,0,.06); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
-  #footer-links { position: fixed; right: 10px; bottom: 8px; z-index: 2; font-size: 11px; }
-  #footer-links a { color: #5a5870; text-decoration: none; }
+  #footer-links { position: fixed; right: 6px; bottom: 4px; z-index: 2; font-size: 11px; }
+  /* Padding + a matching negative margin keep the visible label unchanged while giving the tap
+     target the full 44px minimum (this page has no nav, so it's the only tappable chrome here). */
+  #footer-links a { display: inline-block; padding: 12px; margin: -12px; color: #5a5870; text-decoration: none; min-width: 20px; min-height: 20px; }
   #footer-links a:hover, #footer-links a:focus-visible { color: #f2c400; }
 </style>
 </head>

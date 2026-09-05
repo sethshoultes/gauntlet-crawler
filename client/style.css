@@ -55,3 +55,59 @@ footer { text-align: center; color: var(--muted); font-size: 11px; padding: 12px
 .hs-modal .hs-slot { width: 48px; height: 56px; font-size: 28px; font-weight: bold; text-align: center; padding: 0;
   background: #000; color: var(--muted); border: 2px solid var(--line); text-transform: none; letter-spacing: 0; }
 .hs-modal .hs-slot.active { color: var(--yellow); border-color: var(--yellow); box-shadow: 0 0 0 3px #000, 0 0 0 5px var(--yellow); }
+
+/* ============================================================================================
+   Pages / mobile (#32): responsive nav, and layout for the lobby/hero-picker plus every
+   secondary page (dashboard, settings, heroes, editor, attract, admin). Touch-friendly-editor
+   specifics (pixel grid, tile grid, palette strips, zoom controls) live in each page's own
+   <style> block; this section holds the cross-page rules. Screen-reader-only utility used by
+   the nav's hamburger label is generic enough to live here too.
+   ============================================================================================ */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* Tables that aren't already wrapped in their own scroller (admin.html's .chart-wrap already is) —
+   wrap the actual <table> so the *table* scrolls horizontally instead of the page. */
+.table-scroll { overflow-x: auto; }
+.chart-wrap svg { max-width: 100%; height: auto; display: block; } /* admin analytics bar charts shrink to width */
+
+nav.top { position: relative; }
+nav.top .nav-toggle { display: none; }
+nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 auto; flex-wrap: wrap; }
+
+@media (max-width: 700px) {
+  html, body { overflow-x: hidden; } /* belt-and-braces: no single runaway element can force page-level horizontal scroll */
+  main { padding: 12px; }
+  .panel { padding: 12px; }
+
+  nav.top { padding: 10px 12px; flex-wrap: wrap; }
+  nav.top .brand { font-size: 16px; }
+  nav.top .nav-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 44px; min-height: 44px; margin-left: auto; font-size: 20px; line-height: 1; padding: 4px 10px;
+  }
+  nav.top .nav-links {
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    flex-direction: column; align-items: stretch; gap: 2px;
+    background: var(--panel); border-bottom: 2px solid var(--line);
+    padding: 6px 12px 14px; z-index: 30;
+  }
+  nav.top .nav-links.open { display: flex; }
+  nav.top .nav-links .spacer { display: none; }
+  nav.top a.nl { min-height: 44px; display: flex; align-items: center; padding: 6px 4px; }
+  nav.top .who { padding: 8px 4px; }
+
+  /* Minimum 44px tap targets for primary actions (buttons, selects, palette-style swatches). */
+  button, select { min-height: 44px; }
+  .hero-tabs button, .tabs button { min-height: 40px; } /* small compact tab buttons: close to 44 without blowing up the tab strip */
+
+  /* Form controls full width — but never override an element that already picked a specific
+     width inline (a small search box, the editor's w/h number fields, ...): inline style="width"
+     always wins over this external rule regardless of specificity, so this only fills in the
+     common case of an un-sized text/password/select/textarea field. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="number"]),
+  select, textarea { width: 100%; }
+
+  table, th, td { font-size: 14px; } /* readable on a phone; base rule is 13px */
+}
+
