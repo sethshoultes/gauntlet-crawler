@@ -12,6 +12,7 @@ import * as stats from './stats.js';
 import { Lobby } from './game/lobby.js';
 import { generateFromPrompt, aiAvailable } from './ai/levelgen.js';
 import * as jobs from './ai/jobs.js';
+import { clientIp } from './client-ip.js';
 import { validateLevel, parseLevel } from '../shared/level.js';
 import { CLASSES } from '../shared/constants.js';
 import { generateLevel } from '../shared/procgen.js';
@@ -117,12 +118,12 @@ async function api(req, res, url) {
   }
 
   if (m === 'POST' && url.pathname === '/api/register') {
-    const ip = req.socket.remoteAddress || 'x';
+    const ip = clientIp(req);
     if (!rateLimit('register:' + ip, 10, 60_000)) return json(res, 429, { error: 'Slow down: 10 registrations per minute' });
     const b = await readBody(req); return json(res, 200, auth.register(b.username, b.password));
   }
   if (m === 'POST' && url.pathname === '/api/login') {
-    const ip = req.socket.remoteAddress || 'x';
+    const ip = clientIp(req);
     // Rate-limited by IP (rather than by attempted username) so this can't be trivially sidestepped
     // by trying many different usernames, and so it doesn't let an attacker lock out a real user's
     // account by hammering their name from elsewhere.
@@ -157,14 +158,14 @@ async function api(req, res, url) {
   if (m === 'PUT' && url.pathname === '/api/me/prefs') { const u = need(); const b = await readBody(req); return json(res, 200, { prefs: account.setPrefs(u.id, b) }); }
   if (m === 'GET' && url.pathname === '/api/me/export') { const u = need(); return json(res, 200, account.exportData(u.id)); }
   if (m === 'POST' && url.pathname === '/api/telemetry') {
-    const ip = req.socket.remoteAddress || 'x';
+    const ip = clientIp(req);
     if (!rateLimit('telemetry:' + ip, 60, 60_000)) return json(res, 429, { error: 'Slow down' });
     const b = await readBody(req, 8 * 1024);
     telemetry.recordClient(b, { user, ip });
     return json(res, 200, { ok: true });
   }
   if (m === 'POST' && url.pathname === '/api/client-errors') {
-    const ip = req.socket.remoteAddress || 'x';
+    const ip = clientIp(req);
     if (!rateLimit('clienterr:' + ip, 20, 60_000)) return json(res, 429, { error: 'Slow down' });
     const b = await readBody(req, 32 * 1024); // generous cap; the stack itself is truncated to 4KB below
     log.recordClientError({ message: b.message, stack: b.stack, url: b.url, ua: req.headers['user-agent'] }, user?.id);
@@ -194,7 +195,7 @@ async function api(req, res, url) {
     return json(res, 200, { level });
   }
   if (m === 'POST' && url.pathname === '/api/levels/generate') {
-    const ip = req.socket.remoteAddress || 'x';
+    const ip = clientIp(req);
     const owner = user ? 'u' + user.id : ip; // same identity used for the rate-limit bucket below; scopes job polling too
     if (!rateLimit('gen:' + owner, 6, 60_000)) return json(res, 429, { error: 'Slow down: 6 generations per minute' });
     const b = await readBody(req);
@@ -214,14 +215,14 @@ async function api(req, res, url) {
     return json(res, 202, { jobId, status: 'pending' });
   }
   if (m === 'GET' && /^\/api\/levels\/generate\/[^/]+$/.test(url.pathname)) {
-    const ip = req.socket.remoteAddress || 'x';
+    const ip = clientIp(req);
     const owner = user ? 'u' + user.id : ip;
     const jobId = url.pathname.slice('/api/levels/generate/'.length);
     const job = jobs.getJob(jobId, owner);
     if (!job) return json(res, 404, { error: 'No such job' });
     if (job.status === 'pending') return json(res, 200, { status: 'pending' });
     if (job.status === 'error') return json(res, 200, { status: 'error', error: job.error });
-    return json(res, 200, { status: 'done', ...job.result });
+    return json(res, 200, { ...job.result, status: 'done' }); // status last so the result can never override it
   }
   if (m === 'POST' && url.pathname === '/api/levels') {
     const u = need();
@@ -268,7 +269,7 @@ async function api(req, res, url) {
     }
     if (m === 'POST' && seg[3] === 'play') {
       if (!level.published && level.owner_id !== user?.id) return json(res, 403, { error: 'This level is private' });
-      const ip = req.socket.remoteAddress || 'x';
+      const ip = clientIp(req);
       // Shared 'createroom:' bucket (roomCreateKey(), defined above) with the WS `join`/
       // `create:true` path below and the plain POST /api/rooms just under this block, so all
       // three ways to mint a new room (which each persist a live sim + timers in memory until it
@@ -280,7 +281,7 @@ async function api(req, res, url) {
     }
   }
   if (m === 'POST' && url.pathname === '/api/rooms') {
-    const ip = req.socket.remoteAddress || 'x';
+    const ip = clientIp(req);
     if (!rateLimit(roomCreateKey(user, ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
     const b = await readBody(req);
     let source = { type: 'campaign' };
@@ -322,7 +323,7 @@ const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
 wss.on('connection', (ws, req) => {
   let pid = crypto.randomBytes(4).toString('hex');
   let room = null;
-  const ip = req.socket.remoteAddress || 'x';
+  const ip = clientIp(req);
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   const send = (m) => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };

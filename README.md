@@ -520,6 +520,7 @@ Optional environment variables:
 | `PORT` | HTTP/WebSocket port (default 3000) |
 | `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
 | `ANTHROPIC_API_KEY` | Enables the AI level builder. Without it, "Generate with AI" falls back to the procedural generator steered by your prompt |
+| `TRUST_PROXY` | Set to `1` when running behind Cloudflare/nginx so rate limits and per-caller job scoping use `cf-connecting-ip` / `x-forwarded-for` instead of the proxy's address. Leave unset when clients connect directly (headers could be spoofed) |
 | `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
 | `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Takes precedence over any previously-persisted salt when set; auto-generated and persisted if unset — see [Privacy](#privacy) |
