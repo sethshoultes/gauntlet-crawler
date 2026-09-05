@@ -428,7 +428,10 @@ wss.on('connection', (ws, req) => {
           // silently falling back to the primary hero (#27 review).
           const slot = normalizeSlot(msg.slot);
           if (Number.isNaN(slot)) break; // out-of-range/unparsable: reject, don't touch the primary
-          const targetPid = (slot === null ? null : localPids.get(slot)) || pid;
+          // A slot-tagged message only ever drives the local player registered for that slot: a
+          // valid-looking slot that was never joined is dropped, never routed to the primary hero.
+          let targetPid = pid;
+          if (slot !== null) { targetPid = localPids.get(slot); if (!targetPid) break; }
           room.handleInput(targetPid, msg);
           break;
         }

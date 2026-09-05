@@ -123,35 +123,25 @@ test('join_local with a valid slot acks welcome_local; a repeat on the same slot
   });
 });
 
-test('an `input` with a slot this connection never joined falls back to controlling this connection\'s own player, never another connection\'s', async () => {
+test('an `input` with a valid-looking slot this connection never joined is dropped, moving neither the primary nor any local hero', async () => {
   await withServer(async (baseUrl) => {
-    const wsA = await wsConnect(baseUrl);
-    const qA = messageQueue(wsA);
-    wsA.send(JSON.stringify({ t: 'join', create: true, name: 'A' }));
-    const welcomeA = await qA.waitFor((m) => m.t === 'welcome');
-    const roomId = welcomeA.room.id;
+    const { ws, q, hostPid, localPid } = await startPlayingWithLocal(baseUrl);
+    await q.waitFor((m) => m.t === 's');
 
-    const wsB = await wsConnect(baseUrl);
-    const qB = messageQueue(wsB);
-    wsB.send(JSON.stringify({ t: 'join', roomId, name: 'B' }));
-    await qB.waitFor((m) => m.t === 'welcome');
-    // B also mints a local player at slot 1 on B's own connection, so B's connection has a
-    // localPids entry keyed by slot 1 too -- A's slot-1 input must never resolve to B's pids.
-    wsB.send(JSON.stringify({ t: 'join_local', slot: 1, name: 'B-local', cls: 'elf' }));
-    const ackB = await qB.waitFor((m) => m.t === 'welcome_local');
-    assert.equal(ackB.slot, 1);
+    // Slot 2 is in range but was never joined on this connection, so `localPids.get(2)` is
+    // undefined. That input must be dropped outright -- not routed to the primary hero (a stale or
+    // mis-tagged controller would otherwise drive the wrong player) and not to local slot 1.
+    ws.send(JSON.stringify({ t: 'input', slot: 2, dx: 1, dy: 0, fire: false }));
+    const collected = await q.collectFor(300);
+    assert.equal(collected.some((m) => m.t === 'error'), false, 'an unregistered slot is silently ignored, not an error');
+    const snaps = collected.filter((m) => m.t === 's');
+    assert.ok(snaps.length > 0, 'sanity: at least one tick ran while waiting');
+    for (const snap of snaps) {
+      assert.equal(playerRow(snap, hostPid)?.[3], 4, 'the primary hero must not move from an unregistered-slot input');
+      assert.equal(playerRow(snap, localPid)?.[3], 4, 'local hero 1 must not move from a slot-2 input');
+    }
 
-    // A never joined a local player at all, so A's connection's `localPids` map is empty --
-    // `(slot ? localPids.get(slot) : null) || pid` must fall back to A's own pid, not throw, and
-    // must never reach into B's connection state.
-    assert.doesNotThrow(() => wsA.send(JSON.stringify({ t: 'input', slot: 1, dx: 1, dy: 0, fire: false })));
-    // Neither connection should see an 'error' as a result.
-    const afterA = await qA.collectFor(200);
-    assert.equal(afterA.some((m) => m.t === 'error'), false);
-    const afterB = await qB.collectFor(200);
-    assert.equal(afterB.some((m) => m.t === 'error'), false);
-
-    wsA.close(); wsB.close();
+    ws.close();
   });
 });
 

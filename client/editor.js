@@ -208,18 +208,6 @@ async function openLevel(id, readOnly = false) {
   } catch (e) { toast('Could not open level', e.message, 'err'); }
 }
 
-(async () => {
-  ED.user = (await me()).user;
-  load({ name: 'My Dungeon', description: '', rows: blank(32, 24).map((r) => r.join('')) });
-  loadMine(); loadPublished();
-  refreshRemixButtons();
-  const m = location.hash.match(/edit=(\d+)/); if (m) openLevel(m[1]);
-  if (location.hash === '#browse') $('#browse').scrollIntoView();
-  const st = await api('/api/ai/status').catch(() => ({ available: false }));
-  if (!st.available) $('#ai-note').textContent = 'No AI key configured on this server: "Generate" will use the procedural generator, steered by your prompt.';
-  aiAvailableFlag = !!st.available;
-  refreshRemixButtons();
-})();
 
 // ============================================================================================
 // #17 AI assist: remix / harden / soften the level currently on the canvas, and explain it.
@@ -290,3 +278,19 @@ $('#explain').onclick = async () => {
   } catch (e) { toast('Could not explain level', e.message, 'err'); }
   btn.disabled = false; btn.textContent = label;
 };
+
+// Boot. Lives at the very end of the module so every `let`/`const` above (including the #17
+// remix state) is initialised before any of this runs -- no reliance on the awaits to dodge the
+// temporal dead zone.
+(async () => {
+  ED.user = (await me()).user;
+  load({ name: 'My Dungeon', description: '', rows: blank(32, 24).map((r) => r.join('')) });
+  loadMine(); loadPublished();
+  refreshRemixButtons();
+  const m = location.hash.match(/edit=(\d+)/); if (m) openLevel(m[1]);
+  if (location.hash === '#browse') $('#browse').scrollIntoView();
+  const st = await api('/api/ai/status').catch(() => ({ available: false }));
+  if (!st.available) $('#ai-note').textContent = 'No AI key configured on this server: "Generate" will use the procedural generator, steered by your prompt.';
+  aiAvailableFlag = !!st.available;
+  refreshRemixButtons();
+})();
