@@ -1,11 +1,13 @@
 import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
+import { spriteFromPixels } from './pixelsprite.js';
 import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER } from '/shared/constants.js';
 import { PALETTES, requirementText } from '/shared/unlocks.js';
 import { BOOST_ICONS } from '/shared/chests.js';
+import { STATS as HERO_STATS, PALETTE as HERO_PALETTE } from '/shared/hero-builder.js';
 import { initAudio, sfx, setMuted } from './audio.js';
 import { say as voiceSay } from './voice.js';
-import { playCutscene, hasSeen, markSeen } from './cutscenes.js';
+import { playCutscene, hasSeen, markSeen, getScene } from './cutscenes.js';
 const RESUME_KEY = 'gc_resume';
 const GUEST_KEY = 'gc_guest_id';
 // Durable guest identity (#7): minted by the server on our first join and echoed back in every
@@ -47,6 +49,10 @@ function playScene(sceneId, opts = {}) {
 let selectedClass = localStorage.getItem(CLASS_KEY) || 'warrior';
 let selectedPalette = localStorage.getItem(PALETTE_KEY) || '';
 let unlocked = { classes: new Set(CLASS_IDS.filter((id) => !CLASSES[id].locked)), palettes: new Set() };
+// Hero Builder custom heroes for the logged-in account (see /api/heroes/mine) — empty for guests.
+let myHeroes = [];
+function isCustomCls(cls) { return typeof cls === 'string' && cls.startsWith('custom:'); }
+function findCustomHero(cls) { return isCustomCls(cls) ? myHeroes.find((h) => `custom:${h.id}` === cls) : null; }
 
 /** The tint color to draw `clsId` with, honoring `selectedPalette` only when it's this class's
  *  own and actually unlocked. */
@@ -57,10 +63,12 @@ function colorFor(clsId, paletteId) {
   }
   return CLASSES[clsId].color;
 }
-/** The color to render a *room-mate's* hero with, from the {cls, palette} the server sent us
- *  (their palette was already unlock-checked server-side, so no local re-check needed here). */
+/** The color to render a *room-mate's* hero with, from the {cls, palette, custom} the server sent
+ *  us (their palette/custom hero was already resolved+unlock-checked server-side, so no local
+ *  re-check needed here — see server/game/room.js pickHero / sim.js playerInfo()). */
 function playerColor(info) {
   if (!info) return CLASSES.warrior.color;
+  if (info.custom) return info.custom.color;
   const cls = CLASSES[info.cls] ? info.cls : 'warrior';
   if (info.palette) {
     const p = PALETTES.find((pp) => pp.id === info.palette && pp.cls === cls);
@@ -68,14 +76,63 @@ function playerColor(info) {
   }
   return CLASSES[cls].color;
 }
+/** The display name for whichever hero `cls` names — a classic CLASSES entry, or a Hero Builder
+ *  custom hero (from myHeroes) for a `custom:<id>` token. */
+function heroDisplayName(cls) {
+  if (isCustomCls(cls)) { const h = findCustomHero(cls); return h ? (h.title || h.name) : 'Adventurer'; }
+  return CLASSES[cls]?.name || 'Adventurer';
+}
+/** The name/label to show for a room-mate (or self) from their `players`/roster info — a custom
+ *  hero's own painted name when present, else the classic class name. */
+function heroLabel(info) {
+  if (info?.custom) return info.custom.name;
+  return CLASSES[info?.cls]?.name || info?.cls || 'Hero';
+}
 
-// The first time a class is picked this session, play its intro cutscene (hero_<classId>).
-function maybeHeroCutscene(id) {
-  if (hasSeen(`hero_${id}`)) return;
-  playScene(`hero_${id}`, { onDone: () => markSeen(`hero_${id}`) });
+// The first time a class is picked this session, play its intro cutscene (hero_<classId>). Custom
+// heroes all share one generic 'hero_custom' scene — see client/cutscenes.js — and are skipped
+// entirely (no toast, no error) if that scene doesn't exist, per the Hero Builder integration note.
+function maybeHeroCutscene(cls) {
+  const sceneId = isCustomCls(cls) ? 'hero_custom' : `hero_${cls}`;
+  if (hasSeen(sceneId)) return;
+  if (!getScene(sceneId)) return;
+  playScene(sceneId, { onDone: () => markSeen(sceneId) });
 }
 
 const heroes = $('#heroes');
+const heroesCustom = $('#heroes-custom');
+const STAT_ABBR = { speed: 'SPD', shot: 'DMG', fireRate: 'RATE', armor: 'ARM', magic: 'MAG', health: 'HP' };
+function renderCustomHeroPicker() {
+  if (!heroesCustom) return;
+  if (!myHeroes.length) {
+    heroesCustom.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:8px">No custom heroes yet. <a href="/heroes.html">Build one</a> at rank 3+.</div>';
+    return;
+  }
+  heroesCustom.innerHTML = '';
+  for (const h of myHeroes) {
+    const cls = `custom:${h.id}`;
+    const el = document.createElement('div');
+    el.className = 'hero' + (cls === selectedClass ? ' sel' : '');
+    const notches = HERO_STATS.map((k) => `${STAT_ABBR[k]} ${'★'.repeat(h.stats?.[k] || 0)}`).join('<br>');
+    el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n">${esc(h.title || h.name)}</div><div class="s">${esc(h.name)}</div><div class="notches">${notches}</div>`;
+    const bmp = spriteFromPixels(h.pixels, HERO_PALETTE, 4);
+    if (bmp) el.querySelector('canvas').getContext('2d').drawImage(bmp, 0, 0, 16, 16);
+    el.onclick = () => {
+      selectedClass = cls; localStorage.setItem(CLASS_KEY, cls);
+      selectedPalette = ''; localStorage.removeItem(PALETTE_KEY);
+      renderHeroPicker(); renderCustomHeroPicker(); rebuildHeroSelect();
+      maybeHeroCutscene(cls);
+    };
+    heroesCustom.appendChild(el);
+  }
+}
+document.querySelectorAll('#hero-tabs [data-tab]').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('#hero-tabs [data-tab]').forEach((x) => x.classList.toggle('sel', x === b));
+    heroes.style.display = b.dataset.tab === 'classic' ? '' : 'none';
+    if (heroesCustom) heroesCustom.style.display = b.dataset.tab === 'custom' ? '' : 'none';
+  };
+});
 function paletteRow(id) {
   const opts = [{ id: '', name: 'Default', color: CLASSES[id].color, locked: false },
     ...PALETTES.filter((p) => p.cls === id).map((p) => ({ id: p.id, name: p.name, color: p.color, locked: !unlocked.palettes.has(p.id) }))];
@@ -141,10 +198,16 @@ renderNav('play').then(async () => {
     classes: new Set(m.unlocks?.classes || CLASS_IDS.filter((id) => !CLASSES[id].locked)),
     palettes: new Set(m.unlocks?.palettes || []),
   };
-  if (!unlocked.classes.has(selectedClass)) { selectedClass = 'warrior'; localStorage.setItem(CLASS_KEY, selectedClass); }
+  if (m.user) { try { ({ heroes: myHeroes } = await api('/api/heroes/mine')); } catch { myHeroes = []; } }
+  else myHeroes = [];
+  if (isCustomCls(selectedClass)) {
+    if (!findCustomHero(selectedClass)) { selectedClass = 'warrior'; localStorage.setItem(CLASS_KEY, selectedClass); }
+  } else if (!unlocked.classes.has(selectedClass)) { selectedClass = 'warrior'; localStorage.setItem(CLASS_KEY, selectedClass); }
   if (selectedPalette && !unlocked.palettes.has(selectedPalette)) { selectedPalette = ''; localStorage.removeItem(PALETTE_KEY); }
   renderHeroPicker();
+  renderCustomHeroPicker();
   rebuildHeroSelect();
+  if (isCustomCls(selectedClass)) document.querySelector('#hero-tabs [data-tab="custom"]')?.click();
   if (!hasSeen('intro')) playScene('intro', { onDone: () => markSeen('intro') });
 });
 loadRooms();
@@ -241,7 +304,7 @@ function onMessage(m) {
       log(`<span class="n">Welcome to ${esc(m.room.name)}. ${m.room.source === 'custom' ? 'Custom dungeon: ' + esc(m.room.customName || '') : ''}</span>`);
       history.replaceState(null, '', `/?room=${m.room.id}`);
       renderRoomScreen(m.room);
-      say('welcome', 'Welcome, ' + CLASSES[selectedClass].name);
+      say('welcome', 'Welcome, ' + heroDisplayName(selectedClass));
       break;
     case 'room':
       G.room = m.room;
@@ -343,8 +406,9 @@ function onMessage(m) {
 
 function onEvent(e) {
   const mine = e.pid === G.pid;
-  const name = G.players.get(e.pid)?.name || '';
-  const cls = G.players.get(e.pid)?.cls;
+  const info = G.players.get(e.pid);
+  const name = info?.name || '';
+  const hLabel = heroLabel(info);
   switch (e.type) {
     case 'tile': if (G.grid) G.grid[e.y][e.x] = e.c; if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); break;
     case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
@@ -355,7 +419,7 @@ function onEvent(e) {
         if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('save_keys', 'Save keys for later levels'); }
       }
       break;
-    case 'food': if (mine && e.lowHealth) say('saved_by_food', `${CLASSES[cls]?.name} was about to die… saved by food`); break;
+    case 'food': if (mine && e.lowHealth) say('saved_by_food', `${hLabel} was about to die… saved by food`); break;
     case 'poison': log(`<span class="n">${esc(name)} ate poisoned food!</span>`); if (mine) { sfx('poison'); say('poisoned', 'That was poisoned!'); } break;
     case 'steal': log(`<span class="n">A thief stole ${e.item === 'potion' ? 'a potion' : 'a key'} from ${esc(name)}!</span>`); if (mine) sfx('bad'); break;
     case 'teleport': if (mine) sfx('teleport'); break;
@@ -370,7 +434,7 @@ function onEvent(e) {
     case 'door': sfx('door'); break;
     case 'secret': log(`<span class="n">${esc(name)} found a secret wall</span>`); sfx('door'); break;
     case 'potion': G.fx.push({ kind: 'magic', x: e.x, y: e.y, r: e.radius, t: 0 }); sfx('potion'); G.shake = 0.4; break;
-    case 'death': log(`<span class="n">${esc(name)} the ${cls} has died</span>`); if (mine) { sfx('death'); say('died', `${CLASSES[cls]?.name} has died. Insert coin to continue.`); } break;
+    case 'death': log(`<span class="n">${esc(name)} the ${esc(hLabel)} has died</span>`); if (mine) { sfx('death'); say('died', `${hLabel} has died. Insert coin to continue.`); } break;
     case 'coin': if (mine) sfx('coin'); break;
     case 'exit': break;
     case 'sound':
@@ -394,14 +458,21 @@ function log(html) {
 const heroSelect = $('#rs-hero');
 const paletteSelect = $('#rs-palette');
 function rebuildHeroSelect() {
-  heroSelect.innerHTML = CLASS_IDS.map((id) => {
+  const classicOpts = CLASS_IDS.map((id) => {
     const locked = !unlocked.classes.has(id);
     return `<option value="${id}" ${locked ? 'disabled' : ''}>${esc(CLASSES[id].name)}${locked ? ' (locked)' : ''}</option>`;
   }).join('');
-  heroSelect.value = unlocked.classes.has(selectedClass) ? selectedClass : 'warrior';
+  const customOpts = myHeroes.length
+    ? `<optgroup label="Custom">${myHeroes.map((h) => `<option value="custom:${h.id}">${esc(h.title || h.name)}</option>`).join('')}</optgroup>`
+    : '';
+  heroSelect.innerHTML = classicOpts + customOpts;
+  heroSelect.value = findCustomHero(selectedClass) ? selectedClass : unlocked.classes.has(selectedClass) ? selectedClass : 'warrior';
   rebuildPaletteSelect();
 }
 function rebuildPaletteSelect() {
+  // Custom heroes carry their own fixed color (from their pixel art) — no palette to pick.
+  paletteSelect.disabled = isCustomCls(selectedClass);
+  if (isCustomCls(selectedClass)) { paletteSelect.innerHTML = '<option value="">—</option>'; return; }
   const opts = [{ id: '', name: 'Default' }, ...PALETTES.filter((p) => p.cls === selectedClass)];
   paletteSelect.innerHTML = opts.map((o) => {
     const locked = o.id && !unlocked.palettes.has(o.id);
@@ -631,7 +702,10 @@ function frame(now) {
   }
   // shots
   for (const b of snap.b) {
-    const name = SHOT_SPRITE[b[4]] || 'fireball';
+    let name = SHOT_SPRITE[b[4]] || 'fireball';
+    // A custom hero's shots all share shotKey 'c' — the owner's own weapon (== its sprite id, see
+    // shared/hero-builder.js WEAPONS) says which sprite to actually draw (see snapshot()'s owner id).
+    if (b[4] === 'c' && b[6] != null) { const owner = G.players.get(b[6]); if (owner?.weapon) name = owner.weapon; }
     const px = b[1] * TS, py = b[2] * TS;
     ctx.save(); ctx.translate(px, py);
     if (b[4] === 'a' && b[5] != null) {
@@ -658,7 +732,9 @@ function frame(now) {
     const info = G.players.get(p[0]); const color = playerColor(info);
     if (p[8]) { ctx.globalAlpha = 0.35; }
     const bob = (Math.floor(now / 120) % 2) * 1;
-    drawEntity(sprite('hero', color), p[1], p[2], p[3], p[8] ? 0 : bob, true);
+    // A custom hero renders its own painted pixel art instead of the tinted stock hero sprite.
+    const heroImg = (info?.custom && spriteFromPixels(info.custom.pixels, HERO_PALETTE, 4)) || sprite('hero', color);
+    drawEntity(heroImg, p[1], p[2], p[3], p[8] ? 0 : bob, true);
     ctx.globalAlpha = 1;
     // name tag
     ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = color;
@@ -695,7 +771,7 @@ function frame(now) {
     ctx.fillStyle = '#e03c31'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center'; ctx.fillText('YOU HAVE DIED', VIEW_W / 2, VIEW_H - 52);
     if (Math.floor(now / 500) % 2) { ctx.fillStyle = '#f2c400'; ctx.font = '14px monospace'; ctx.fillText('INSERT COIN — press ENTER to continue', VIEW_W / 2, VIEW_H - 24); }
   } else if (mine && !mine[8]) {
-    const heroName = CLASSES[G.players.get(G.pid)?.cls]?.name || 'Hero';
+    const heroName = heroLabel(G.players.get(G.pid));
     if (mine[4] < 100 && now - G.lastDying > 8000) { G.lastDying = now; say('about_to_die', `${heroName} is about to die`); }
     else if (mine[4] < LOW_HEALTH && now - G.lastFood > 12000) { G.lastFood = now; say('needs_food', `${heroName} needs food badly`); }
     else if (mine[4] < 300 && mine[6] > 0 && now - G.lastMagicNag > 15000) { G.lastMagicNag = now; say('use_magic', `${heroName}, use magic!`); }
@@ -805,7 +881,7 @@ function renderHud() {
   hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => `
     <div class="pp ${p.away ? 'away' : ''}" data-pid="${p.id}" style="border-color:${playerColor(p)}">
       <div class="nm" style="color:${playerColor(p)}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}${p.away ? ' <span class="muted">(away)</span>' : ''}</div>
-      <div class="muted" style="font-size:11px">${CLASSES[p.cls]?.name || p.cls}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
+      <div class="muted" style="font-size:11px">${esc(heroLabel(p))}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
       <div>HEALTH <span class="hp">0</span></div>
       <div>SCORE <span class="sc">0</span></div>
       <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>

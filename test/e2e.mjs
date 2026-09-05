@@ -390,6 +390,66 @@ async function main() {
       if (!alive.ok) throw new Error(`server did not respond 200 to / after the hostile requests above (HTTP ${alive.status})`);
     });
 
+    // ---------------- 9. Hero Builder integration (#24) ----------------
+    await scenario('9. Hero Builder: create a custom hero via the API, pick it in the lobby Custom tab, solo game HUD shows its name/colour', async () => {
+      const loginRes = await fetch(`${baseUrl}/api/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: userA.name, password: userA.pass }),
+      });
+      if (!loginRes.ok) throw new Error(`login for userA failed: HTTP ${loginRes.status}`);
+      const { token: tokenA } = await loginRes.json();
+      if (!tokenA) throw new Error('login response for userA carried no token');
+
+      // GAUNTLET_DEBUG=1-only test hook (server/heroes.js) — grants enough XP to clear the Hero
+      // Builder's rank-3 unlock.
+      const xpRes = await fetch(`${baseUrl}/api/heroes/debug/xp`, {
+        method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${tokenA}` },
+        body: JSON.stringify({ amount: 700 }),
+      });
+      if (!xpRes.ok) throw new Error(`granting XP for the Hero Builder unlock failed: HTTP ${xpRes.status}`);
+      const xpBody = await xpRes.json();
+      if (!(xpBody.rank >= 3)) throw new Error(`expected rank >= 3 after the XP grant, got ${JSON.stringify(xpBody)}`);
+
+      const heroName = `Bolt${rnd().slice(0, 4)}`; // NAME_RE caps names at 12 chars (see shared/hero-builder.js)
+      const heroRes = await fetch(`${baseUrl}/api/heroes`, {
+        method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${tokenA}` },
+        body: JSON.stringify({
+          name: heroName, title: 'The Bolt', motto: 'Zap.',
+          stats: { speed: 2, shot: 2, fireRate: 2, armor: 2, magic: 2, health: 2 }, // 12 notches
+          weapon: 'skull', trait: 'thick_skin',
+          pixels: new Array(8).fill('.333333.'), // palette index 3 = #3b7dff, dominant colour
+        }),
+      });
+      if (!heroRes.ok) throw new Error(`creating the custom hero failed: HTTP ${heroRes.status}: ${await heroRes.text()}`);
+      const heroBody = await heroRes.json();
+      if (!heroBody.id) throw new Error(`hero creation response carried no id: ${JSON.stringify(heroBody)}`);
+
+      // Scenario 6's "test play" click left a dangling sessionStorage resume token for that room
+      // (never explicitly left) — clear it first so this fresh navigation lands on the lobby
+      // instead of auto-reconnecting into that stale room (see game.js's resume-on-load check).
+      await pageA.evaluate(() => { try { sessionStorage.removeItem('gc_resume'); } catch {} });
+      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.waitForSelector('#heroes .hero', { timeout: 10_000 });
+      await pageA.click('#hero-tabs [data-tab="custom"]');
+      await pageA.waitForSelector('#heroes-custom .hero', { timeout: 10_000 });
+      await pageA.click('#heroes-custom .hero');
+
+      await pageA.click('#create');
+      await pageA.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+      await pageA.waitForSelector('#rs-start:not([disabled])', { timeout: 10_000 }); // solo host, no ready-up needed
+      await pageA.click('#rs-start');
+      await pageA.waitForSelector('#game.on', { timeout: 15_000 });
+
+      await pageA.waitForFunction((name) => [...document.querySelectorAll('#hud .pp')].some((el) => el.textContent.includes(name)), heroName, { timeout: 10_000 });
+      const nmColor = await pageA.evaluate((name) => {
+        const row = [...document.querySelectorAll('#hud .pp')].find((el) => el.textContent.includes(name));
+        return row ? getComputedStyle(row.querySelector('.nm')).color : null;
+      }, heroName);
+      if (nmColor !== 'rgb(59, 125, 255)') throw new Error(`expected the custom hero's colour (#3b7dff) on the HUD name tag, got ${nmColor}`);
+
+      await pageA.click('#leave').catch(() => {});
+    });
+
     await ctxA.close().catch(() => {});
     await ctxB.close().catch(() => {});
   } catch (err) {

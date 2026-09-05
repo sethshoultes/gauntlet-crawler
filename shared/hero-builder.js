@@ -111,13 +111,16 @@ export const WEAPON_IDS = Object.keys(WEAPONS);
 // ---------- traits ----------
 // `requires` uses the same condition shape as shared/unlocks.js (rank/achievement/any/all) so the
 // server can reuse its evaluator; omitted means unlocked as soon as the builder itself is (rank 3).
+// Each effect field is read directly by server/game/sim.js off `classDef.traitDef` (see toClassDef
+// below and README.md "Hero Builder" > Sim integration) — never derived at runtime, so a trait's
+// mechanic can't silently drift out of sync with its own description here.
 export const TRAITS = {
-  glutton:    { name: 'Glutton',    desc: 'Food heals for 50% more.',               foodHealMul: 1.5,   requires: { achievement: 'glutton' } },
-  scavenger:  { name: 'Scavenger',  desc: 'Treasure and generator score +25%.',     lootScoreMul: 1.25, requires: { rank: 3 } },
-  thick_skin: { name: 'Thick Skin', desc: 'Take 10% less damage.',                  damageTakenMul: 0.9, requires: { rank: 3 } },
-  locksmith:  { name: 'Locksmith',  desc: 'Open doors from one tile further away.', doorRangeAdd: 1,    requires: { achievement: 'locksmith' } },
-  sprinter:   { name: 'Sprinter',   desc: '+8% move speed.',                       speedMul: 1.08,     requires: { achievement: 'speedrunner' } },
-  arcanist:   { name: 'Arcanist',   desc: 'Magic potion blast radius +20%.',        potionRadiusMul: 1.2, requires: { achievement: 'alchemist' } },
+  glutton:    { name: 'Glutton',    desc: 'Food heals for 50% more.',                              foodHealMul: 1.5,          requires: { achievement: 'glutton' } },
+  scavenger:  { name: 'Scavenger',  desc: 'Treasure and generator score +50%.',                     lootScoreMul: 1.5,         requires: { rank: 3 } },
+  thick_skin: { name: 'Thick Skin', desc: "Take 50% less damage from a ghost's touch.",              ghostDamageTakenMul: 0.5,  requires: { rank: 3 } },
+  locksmith:  { name: 'Locksmith',  desc: '25% chance a door does not consume your key.',            doorKeySaveChance: 0.25,   requires: { achievement: 'locksmith' } },
+  sprinter:   { name: 'Sprinter',   desc: '+25% move speed while below 300 HP.',                     sprintSpeedMul: 1.25, sprintHpThreshold: 300, requires: { achievement: 'speedrunner' } },
+  arcanist:   { name: 'Arcanist',   desc: 'Magic potion blast radius +30%.',                         potionRadiusMul: 1.3,      requires: { achievement: 'alchemist' } },
 };
 export const TRAIT_IDS = Object.keys(TRAITS);
 

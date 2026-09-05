@@ -16,14 +16,24 @@ const MONSTER_TYPE_BY_TILE = {
   [T.LOBBER]: 'lobber', [T.SORCERER]: 'sorcerer', [T.THIEF]: 'thief',
 };
 const DEFAULT_PERKS = { speedMul: 1, shotDamageAdd: 0, damageTakenMul: 1, maxHealthBonus: 0, magicAdd: 0 };
+const SPLASH_RADIUS = 1.75; // tiles — fireball-style weapons (weaponDef.splash) damage monsters within this of the hit
 
 let nextId = 1;
 const uid = () => nextId++;
 
+/** Effective class definition for a player: a Hero Builder `classDef` (see shared/hero-builder.js
+ *  toClassDef) when one was attached at addPlayer() time, else the usual CLASSES[p.cls] lookup —
+ *  every stat/weapon/trait read in this file goes through this so classic classes keep behaving
+ *  exactly as before (all classDef-only fields are simply absent/undefined on a CLASSES entry). */
+function classOf(p) { return p.classDef || CLASSES[p.cls] || CLASSES.warrior; }
+
 export class Sim {
-  constructor(levelDef, { levelIndex = 1, onEvent = () => {}, mode = 'campaign' } = {}) {
+  constructor(levelDef, { levelIndex = 1, onEvent = () => {}, mode = 'campaign', rng = null } = {}) {
     this.onEvent = onEvent;
     this.mode = mode; // 'campaign' | 'death' — Room may flip this before loadLevel() on a mode switch
+    // Seeded/random source for gameplay randomness that needs to be swappable in tests (e.g. the
+    // Locksmith trait's door-key-save roll) — defaults to plain Math.random so nothing else changes.
+    this.rng = rng || { chance: (p) => Math.random() < p };
     this.players = new Map();
     this.loadLevel(levelDef, levelIndex);
   }
@@ -80,12 +90,17 @@ export class Sim {
   }
 
   // ---------- players ----------
-  addPlayer(id, { name, cls, userId = null, perks = null, rank = null, title = null, palette = null }) {
-    if (!CLASSES[cls]) cls = 'warrior';
+  // `classDef` (see shared/hero-builder.js toClassDef) is a validated Hero Builder hero's stats,
+  // shaped like a CLASSES entry plus builder-only extras (maxHealthBonus/weaponDef/traitDef) —
+  // server/game/room.js resolves and re-validates it before ever passing it in here (never trust
+  // a stored classDef without that check). `custom` (see room.js playerInfo()) is display-only
+  // ({name, pixels, color}) carried alongside for the roster/HUD, never read for gameplay math.
+  addPlayer(id, { name, cls, userId = null, perks = null, rank = null, title = null, palette = null, classDef = null, custom = null }) {
+    if (!classDef && !CLASSES[cls]) cls = 'warrior';
     const mergedPerks = { ...DEFAULT_PERKS, ...(perks || {}) };
-    const maxHealth = START_HEALTH + mergedPerks.maxHealthBonus;
+    const maxHealth = START_HEALTH + mergedPerks.maxHealthBonus + (classDef?.maxHealthBonus || 0);
     const p = {
-      id, name: String(name).slice(0, 16), cls, userId, palette: palette || null,
+      id, name: String(name).slice(0, 16), cls, classDef: classDef || null, custom: custom || null, userId, palette: palette || null,
       x: 1.5, y: 1.5, dir: 4, hp: maxHealth, maxHealth, keys: 0, potions: 0, score: 0,
       dead: false, shotCd: 0, teleportCd: 0, kills: 0, levelKills: 0, deaths: 0, levelDeaths: 0, coins: 0,
       input: { dx: 0, dy: 0, fire: false, potion: false, respawn: false },
@@ -165,6 +180,16 @@ export class Sim {
     }
     return best;
   }
+  /** Nearest monster to (x,y) within maxDist — used by a homing (Hero Builder skull) shot's gentle
+   *  steering (see stepShots). */
+  nearestMonster(x, y, maxDist = Infinity) {
+    let best = null, bd = maxDist * maxDist;
+    for (const m of this.monsters.values()) {
+      const d = (m.x - x) ** 2 + (m.y - y) ** 2;
+      if (d < bd) { bd = d; best = m; }
+    }
+    return best;
+  }
   spawnMonster(type, x, y, hpBonus = 0) {
     if (this.monsters.size >= MAX_MONSTERS) return null;
     const def = MONSTERS[type];
@@ -190,7 +215,11 @@ export class Sim {
   }
   hurtPlayer(p, amount, source) {
     if (p.dead) return;
-    p.hp -= amount * CLASSES[p.cls].armor * p.perks.damageTakenMul * (p.boosts?.damageTakenMul || 1);
+    const c = classOf(p);
+    let dmg = amount * c.armor * p.perks.damageTakenMul * (p.boosts?.damageTakenMul || 1);
+    // thick_skin (Hero Builder trait): only softens a ghost's touch attack, not damage in general.
+    if (source === 'ghost' && c.traitDef?.ghostDamageTakenMul != null) dmg *= c.traitDef.ghostDamageTakenMul;
+    p.hp -= dmg;
     if (p.hp <= 0) {
       p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++;
       this.onEvent({ type: 'death', pid: p.id, source });
@@ -217,7 +246,7 @@ export class Sim {
       this.generators.delete(`${gen.x},${gen.y}`);
       this.setTile(gen.x, gen.y, T.FLOOR);
       if (by) {
-        by.score += Math.round(GENERATOR_SCORE * (GENERATOR_TIER_SCORE_MUL[gen.tier] || 1));
+        by.score += Math.round(GENERATOR_SCORE * (GENERATOR_TIER_SCORE_MUL[gen.tier] || 1) * (classOf(by).traitDef?.lootScoreMul || 1));
         this.onEvent({ type: 'generator', pid: by.id, x: gen.x, y: gen.y });
       }
     } else {
@@ -254,7 +283,7 @@ export class Sim {
   }
 
   stepPlayers(dt) {
-    const cls = (p) => CLASSES[p.cls];
+    const cls = (p) => classOf(p);
     for (const p of this.players.values()) {
       const inp = p.input;
       if (p.dead) {
@@ -283,18 +312,34 @@ export class Sim {
           const [dx, dy] = DIRS[p.dir];
           const len = Math.hypot(dx, dy);
           const sid = uid();
-          const dmg = c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0);
-          this.shots.set(sid, { id: sid, owner: p.id, cls: p.cls, x: p.x + dx * 0.5, y: p.y + dy * 0.5, vx: dx / len * SHOT_SPEED, vy: dy / len * SHOT_SPEED, dmg, dir: p.dir, hostile: false, life: 3 });
-          p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1);
-          this.onEvent({ type: 'sound', name: 'shoot_' + p.cls, x: p.x, y: p.y });
+          const wpn = c.weaponDef || null; // Hero Builder weapon (see shared/hero-builder.js WEAPONS)
+          const shotSpeed = SHOT_SPEED * (wpn?.shotSpeedMul || 1);
+          const dmg = (c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0)) * (wpn?.damageMul || 1);
+          // `range` (tiles) -> shot lifetime, so a weapon's reach stays constant regardless of its
+          // own speed multiplier; classics (no weaponDef) keep the old fixed 3s lifetime.
+          const life = wpn?.range != null ? wpn.range / shotSpeed : 3;
+          this.shots.set(sid, {
+            id: sid, owner: p.id, cls: p.cls, shotKey: c.shotKey, x: p.x + dx * 0.5, y: p.y + dy * 0.5,
+            vx: dx / len * shotSpeed, vy: dy / len * shotSpeed, dmg, dir: p.dir, hostile: false, life,
+            homing: wpn?.homing || 0, splash: wpn?.splash || 0,
+          });
+          p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1) * (wpn?.cooldownMul || 1);
+          // Custom heroes have no per-class synth tone; fall back to the weapon's own sound (the
+          // weapon id doubles as its sprite/sound key — see shared/hero-builder.js WEAPONS).
+          this.onEvent({ type: 'sound', name: 'shoot_' + (p.classDef ? c.weapon : p.cls), x: p.x, y: p.y });
         }
       } else if (moving) {
         const len = Math.hypot(inp.dx, inp.dy);
-        const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1);
+        // sprinter (Hero Builder trait): a speed boost that only kicks in below its HP threshold.
+        const sprint = (c.traitDef?.sprintSpeedMul && p.hp < (c.traitDef.sprintHpThreshold ?? Infinity)) ? c.traitDef.sprintSpeedMul : 1;
+        const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1) * sprint;
         const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
         for (const [tx, ty, tc] of touched) {
           if (tc === T.DOOR && p.keys > 0) {
-            p.keys--; this.dissolveGroup(tx, ty, T.DOOR);
+            // locksmith (Hero Builder trait): a chance the door opens without spending the key.
+            const saved = c.traitDef?.doorKeySaveChance ? this.rng.chance(c.traitDef.doorKeySaveChance) : false;
+            if (!saved) p.keys--;
+            this.dissolveGroup(tx, ty, T.DOOR);
             this.onEvent({ type: 'door', pid: p.id, x: tx, y: ty });
           } else if (tc === T.TRAP) {
             this.dissolveGroup(tx, ty, T.TRAP);
@@ -308,9 +353,9 @@ export class Sim {
       if (PICKUP_TILES.has(here)) {
         this.setTile(tx, ty, T.FLOOR);
         if (here === T.KEY) p.keys++;
-        else if (here === T.FOOD) { this.onEvent({ type: 'food', pid: p.id, lowHealth: p.hp < LOW_HEALTH }); p.hp += FOOD_HEALTH; }
+        else if (here === T.FOOD) { this.onEvent({ type: 'food', pid: p.id, lowHealth: p.hp < LOW_HEALTH }); p.hp += FOOD_HEALTH * (c.traitDef?.foodHealMul || 1); }
         else if (here === T.POTION) p.potions++;
-        else if (here === T.TREASURE) p.score += TREASURE_SCORE;
+        else if (here === T.TREASURE) p.score += TREASURE_SCORE * (c.traitDef?.lootScoreMul || 1);
         else if (here === T.POISON_FOOD) { p.hp = Math.max(1, p.hp - 100); this.onEvent({ type: 'poison', pid: p.id }); }
         else if (here === T.CIDER) p.hp += 50;
         this.onEvent({ type: 'pickup', pid: p.id, item: here, x: tx, y: ty });
@@ -325,7 +370,7 @@ export class Sim {
       }
       if (inp.potion) {
         inp.potion = false;
-        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic + p.perks.magicAdd, 7.5 * (c.potionRadiusMul || 1)); }
+        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic + p.perks.magicAdd, 7.5 * (c.potionRadiusMul || 1) * (c.traitDef?.potionRadiusMul || 1)); }
       }
     }
   }
@@ -434,7 +479,7 @@ export class Sim {
           continue;
         } else if (m.type === 'death') {
           const take = Math.min(def.damage, def.drainTotal - m.drained);
-          this.hurtPlayer(target, take / CLASSES[target.cls].armor, 'death');
+          this.hurtPlayer(target, take / classOf(target).armor, 'death');
           m.drained += take;
           if (m.drained >= def.drainTotal) { this.monsters.delete(m.id); this.onEvent({ type: 'sound', name: 'death_leave', x: m.x, y: m.y }); }
           continue;
@@ -516,6 +561,21 @@ export class Sim {
       }
       s.life -= dt;
       if (s.life <= 0) { this.shots.delete(s.id); continue; }
+      // homing (Hero Builder skull weapon): a gentle nudge of velocity toward the nearest monster
+      // each tick, not a guaranteed hit — `s.homing` is the 0-1 turn-strength fraction from WEAPONS.
+      if (!s.hostile && s.homing) {
+        const target = this.nearestMonster(s.x, s.y, 10);
+        if (target) {
+          const speedMag = Math.hypot(s.vx, s.vy) || 1;
+          const tdx = target.x - s.x, tdy = target.y - s.y;
+          const td = Math.hypot(tdx, tdy) || 1;
+          const turn = Math.min(1, s.homing * dt * 4);
+          let nvx = s.vx + (tdx / td * speedMag - s.vx) * turn;
+          let nvy = s.vy + (tdy / td * speedMag - s.vy) * turn;
+          const nmag = Math.hypot(nvx, nvy) || 1;
+          s.vx = nvx / nmag * speedMag; s.vy = nvy / nmag * speedMag;
+        }
+      }
       const steps = 2; // sub-step so fast shots don't tunnel through 1-tile walls
       let done = false;
       for (let k = 0; k < steps && !done; k++) {
@@ -543,11 +603,27 @@ export class Sim {
             if (MONSTERS[m.type].immune) { this.onEvent({ type: 'sound', name: 'clank', x: m.x, y: m.y }); break; }
             m.hp -= s.dmg;
             if (m.hp <= 0) this.killMonster(m, owner); else this.onEvent({ type: 'sound', name: 'hit', mtype: m.type, x: m.x, y: m.y });
+            // splash (Hero Builder fireball-style weapons): also damage OTHER monsters near the
+            // impact point for `s.splash` fraction of the shot's damage — a single hit can't
+            // double-dip the primary target through this.
+            if (s.splash > 0) this.applySplash(m, s.dmg * s.splash, owner);
             break;
           }
         }
       }
       if (done) this.shots.delete(s.id);
+    }
+  }
+  /** Deal `dmg` to every monster (other than `origin`, already hit directly) within SPLASH_RADIUS
+   *  of `origin`'s position — see stepShots' weaponDef.splash handling. */
+  applySplash(origin, dmg, owner) {
+    for (const m of [...this.monsters.values()]) {
+      if (m === origin) continue;
+      if (MONSTERS[m.type].immune) continue;
+      if (m.type === 'sorcerer' && m.visible === false) continue;
+      if (Math.hypot(m.x - origin.x, m.y - origin.y) > SPLASH_RADIUS) continue;
+      m.hp -= dmg;
+      if (m.hp <= 0) this.killMonster(m, owner); else this.onEvent({ type: 'sound', name: 'hit', mtype: m.type, x: m.x, y: m.y });
     }
   }
 
@@ -561,9 +637,12 @@ export class Sim {
       m: [...this.monsters.values()].map((m) => [m.id, MONSTERS[m.type].snapKey, r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined]),
       g: [...this.generators.values()].map((g) => [g.x, g.y, g.hp]),
       // 6th element on an arc (lobber) shot: flight progress 0..1, for the client's growing/shrinking scale.
+      // 7th element (player shots only): owner pid — a custom hero's shotKey ('c') is shared by
+      // every weapon, so the client needs the owner to look up which weapon sprite to draw (see
+      // playerInfo()'s `weapon` field).
       b: [...this.shots.values()].map((s) => {
-        const type = s.hostile ? (s.arc ? 'a' : 'd') : (CLASSES[s.cls]?.shotKey || s.cls[0]);
-        return [s.id, r2(s.x), r2(s.y), s.dir, type, s.arc ? r2(Math.min(1, s.elapsed / s.flight)) : undefined];
+        const type = s.hostile ? (s.arc ? 'a' : 'd') : (s.shotKey || CLASSES[s.cls]?.shotKey || s.cls[0]);
+        return [s.id, r2(s.x), r2(s.y), s.dir, type, s.arc ? r2(Math.min(1, s.elapsed / s.flight)) : undefined, s.hostile ? undefined : s.owner];
       }),
     };
   }
@@ -571,6 +650,10 @@ export class Sim {
     return [...this.players.values()].map((p) => ({
       id: p.id, name: p.name, cls: p.cls, palette: p.palette || null, score: p.score, kills: p.kills, dead: p.dead, rank: p.rank, title: p.title,
       boosts: p.boosts && Object.keys(p.boosts).length ? Object.keys(p.boosts) : undefined,
+      // Hero Builder heroes only — display-only portrait data plus which weapon (== sprite id,
+      // see shared/hero-builder.js WEAPONS) their shots should render as (see snapshot()'s `b`).
+      custom: p.custom || undefined,
+      weapon: p.classDef?.weapon || undefined,
     }));
   }
 }

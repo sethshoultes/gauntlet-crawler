@@ -8,10 +8,30 @@ import path from 'node:path';
 // a scratch directory before the (dynamic) import so we never touch the real ./data.
 process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), 'gauntlet-room-test-'));
 const { Room } = await import('../server/game/room.js');
+const { db, now } = await import('../server/db.js');
+const stats = await import('../server/stats.js');
 
 function fakeWs() {
   const sent = [];
   return { readyState: 1, sent, send(s) { sent.push(JSON.parse(s)); } };
+}
+
+// ---------- Hero Builder test fixtures ----------
+let nextTestUser = 1;
+function makeUser(username = `hero_tester_${nextTestUser++}`) {
+  const r = db.prepare('INSERT INTO users (username, pass_hash, salt, created_at) VALUES (?, ?, ?, ?)').run(username, 'x', 'x', now());
+  return { id: Number(r.lastInsertRowid), username };
+}
+const VALID_HERO_STATS = { speed: 2, shot: 2, fireRate: 2, armor: 2, magic: 2, health: 2 }; // 12 notches
+const VALID_HERO_PIXELS = new Array(8).fill('.222222.');
+function makeHeroRow(ownerId, overrides = {}) {
+  const r = db.prepare(`INSERT INTO heroes (owner_id, name, title, motto, stats, weapon, trait, pixels, published, clones, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`).run(
+    ownerId, overrides.name || 'Test Hero', overrides.title || 'The Tester', overrides.motto || '',
+    JSON.stringify(overrides.stats || VALID_HERO_STATS), overrides.weapon || 'axe', overrides.trait || '',
+    JSON.stringify(overrides.pixels || VALID_HERO_PIXELS), now(), now(),
+  );
+  return Number(r.lastInsertRowid);
 }
 
 function makeRoom(overrides = {}) {
@@ -485,6 +505,107 @@ test('Death mode never gets a treasure room, however the levelIndex lines up', (
   const room = new Room({ id: 'no-treasure-death', name: 'D', seed: 'nd1', source: { type: 'death' }, isPublic: true, onEmpty: () => {} });
   try {
     for (const n of [6, 12, 30, 60]) assert.equal(room.isTreasureLevel(n), false, `level ${n} in Death mode is never a treasure room`);
+  } finally { room.close(); }
+});
+
+// ---------- Hero Builder integration (#24) ----------
+test('a custom hero is accepted for its owner once they meet the builder rank', () => {
+  const room = makeRoom({ id: 'custom-1' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700); // lands at rank 3, the Hero Builder's unlock rank
+    const heroId = makeHeroRow(owner.id, { name: 'Boltclaw', title: 'The Bolt', trait: 'thick_skin' });
+
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: owner, name: owner.username, cls: `custom:${heroId}` });
+    assert.equal(c.cls, `custom:${heroId}`, 'the custom cls token is kept, not squashed to warrior');
+    assert.ok(c.classDef, 'a classDef was resolved for the owner');
+    assert.equal(c.classDef.custom, true);
+    assert.equal(c.classDef.shotKey, 'c');
+    assert.ok(c.custom && c.custom.name === 'Boltclaw', 'display info (name/pixels/color) is carried for the roster');
+    assert.equal(ws.sent.find((m) => m.t === 'error'), undefined, 'no error for a valid owned hero');
+
+    // Starting the room threads the same classDef into the sim player.
+    room.start('a');
+    const p = room.sim.players.get('a');
+    assert.equal(p.classDef.custom, true);
+    assert.equal(p.custom.name, 'Boltclaw');
+
+    const info = room.info();
+    const row = info.roster.find((r) => r.pid === 'a');
+    assert.ok(row.custom && row.custom.name === 'Boltclaw', 'room.info() roster carries the custom display info');
+    assert.equal(row.weapon, 'axe');
+  } finally { room.close(); }
+});
+
+test('a custom hero is rejected for a non-owner, falling back to warrior with an error', () => {
+  const room = makeRoom({ id: 'custom-2' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700);
+    const heroId = makeHeroRow(owner.id);
+
+    const intruder = makeUser();
+    stats.bumpXp(intruder.id, 700); // plenty of rank — ownership is the thing that must fail, not rank
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: intruder, name: intruder.username, cls: `custom:${heroId}` });
+    assert.equal(c.cls, 'warrior', 'falls back to warrior — the hero belongs to someone else');
+    assert.equal(c.classDef, null);
+    const err = ws.sent.find((m) => m.t === 'error');
+    assert.ok(err, 'an error message is sent to the client');
+    assert.match(err.error, /not yours/i);
+  } finally { room.close(); }
+});
+
+test('a guest cannot use a custom hero at all, even one that exists and would validate', () => {
+  const room = makeRoom({ id: 'custom-3' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700);
+    const heroId = makeHeroRow(owner.id);
+
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: null, name: 'Guest', cls: `custom:${heroId}` });
+    assert.equal(c.cls, 'warrior');
+    assert.equal(c.classDef, null);
+    const err = ws.sent.find((m) => m.t === 'error');
+    assert.ok(err);
+    assert.match(err.error, /guest/i);
+  } finally { room.close(); }
+});
+
+test('a custom hero is downgraded to warrior when the owner no longer meets the builder rank', () => {
+  const room = makeRoom({ id: 'custom-4' });
+  try {
+    // The owner never reached rank 3 (or dropped back below it) — re-validation at join time must
+    // catch this exactly like the publish-time re-check does, never trusting a stored classDef.
+    const owner = makeUser();
+    const heroId = makeHeroRow(owner.id);
+
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: owner, name: owner.username, cls: `custom:${heroId}` });
+    assert.equal(c.cls, 'warrior', 'falls back to warrior — the owner no longer meets the rank requirement');
+    assert.equal(c.classDef, null);
+    const err = ws.sent.find((m) => m.t === 'error');
+    assert.ok(err);
+    assert.match(err.error, /rank 3/i);
+  } finally { room.close(); }
+});
+
+test('an in-lobby hero switch (setHero) to a custom hero works the same as join', () => {
+  const room = makeRoom({ id: 'custom-5' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700);
+    const heroId = makeHeroRow(owner.id, { name: 'Switcheroo' });
+
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: owner, name: owner.username, cls: 'warrior' });
+    room.setHero('a', `custom:${heroId}`);
+    const c = room.clients.get('a');
+    assert.equal(c.cls, `custom:${heroId}`);
+    assert.ok(c.classDef);
+    assert.equal(c.custom.name, 'Switcheroo');
   } finally { room.close(); }
 });
 

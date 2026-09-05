@@ -11,6 +11,11 @@
   #intro-cutscene[hidden] { display: none; }
   #lobby .heroes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 12px 0; }
   @media (max-width: 800px) { #lobby .heroes { grid-template-columns: repeat(2, 1fr); } }
+  .hero-tabs { display: flex; gap: 8px; margin-top: 10px; }
+  .hero-tabs button { font-size: 12px; padding: 4px 12px; background: transparent; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+  .hero-tabs button.sel { color: #000; background: var(--yellow); border-color: var(--yellow); font-weight: bold; }
+  .hero .notches { font-size: 10px; color: var(--muted); line-height: 1.5; text-align: left; margin-top: 8px; }
+  .hero .notches b { color: var(--fg, #e8e6d8); }
   .hero { border: 2px solid var(--line); padding: 12px; cursor: pointer; text-align: center; background: #000; }
   .hero.sel { border-color: var(--yellow); box-shadow: 0 0 0 3px #000, 0 0 0 5px var(--yellow); }
   .hero canvas { width: 64px; height: 64px; }
@@ -78,7 +83,12 @@
     <canvas id="intro-cutscene" width="640" height="480" class="pixel" hidden></canvas>
     <div class="panel">
       <h2>Choose your hero</h2>
+      <div class="hero-tabs" id="hero-tabs">
+        <button type="button" class="sel" data-tab="classic">Classic</button>
+        <button type="button" data-tab="custom">Custom</button>
+      </div>
       <div class="heroes" id="heroes"></div>
+      <div class="heroes" id="heroes-custom" style="display:none"></div>
       <div class="row">
         <label class="muted" for="gname">Guest name</label>
         <input id="gname" maxlength="12" placeholder="Guest" style="width:160px" />

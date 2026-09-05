@@ -29,7 +29,13 @@ const lobby = new Lobby();
 admin.init(lobby);
 telemetry.startRetentionJob(90);
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  // Voice/audio clips (narrator pipeline) and static assets served as-is, with no build step.
+  '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.webm': 'video/webm',
+  '.woff2': 'font/woff2', '.map': 'application/json',
+};
 
 // ---------- tiny helpers ----------
 function json(res, status, body) {
@@ -268,7 +274,11 @@ wss.on('connection', (ws, req) => {
         case 'join': {
           if (room) { room.leave(pid); room = null; }
           const user = auth.userFromToken(msg.token);
-          const cls = CLASSES[msg.cls] ? msg.cls : 'warrior';
+          // A Hero Builder custom hero (`custom:<id>`) isn't a CLASSES entry — Room#pickHero does
+          // the real ownership/rank check and falls back to warrior itself; this pre-filter only
+          // needs to not squash the token before it gets there (see README.md "Hero Builder").
+          const isCustomCls = typeof msg.cls === 'string' && /^custom:\d+$/.test(msg.cls);
+          const cls = (CLASSES[msg.cls] || isCustomCls) ? msg.cls : 'warrior';
           const name = user ? user.username : String(msg.name || 'Guest').replace(/[^\w ]/g, '').slice(0, 12) || 'Guest';
           let target = msg.roomId ? lobby.get(msg.roomId) : null;
           if (msg.roomId && !target) throw new Error('That room no longer exists');

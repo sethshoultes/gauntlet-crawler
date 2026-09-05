@@ -367,4 +367,7 @@ export const TILE_SPRITE = {
   '#': 'wall', '.': 'floor', 'D': 'door', 'K': 'key', 'F': 'food', 'P': 'potion', 'T': 'treasure',
   'E': 'exit', 'S': 'floor', 'W': 'trap', 'X': 'transporter', '!': 'poisonfood', 'C': 'cider', '8': 'exit2',
 };
-export const SHOT_SPRITE = { w: 'axe', v: 'sword', z: 'fireball', e: 'arrow', d: 'dfire', p: 'hammer', r: 'dagger', n: 'skull', a: 'lob' };
+// 'c' = a Hero Builder custom hero's shot (see shared/hero-builder.js toClassDef's shotKey) — every
+// custom hero shares this one letter regardless of weapon, so client/game.js overrides this default
+// per-shot using the owner's own `weapon` id (which doubles as its sprite name — see WEAPONS below).
+export const SHOT_SPRITE = { w: 'axe', v: 'sword', z: 'fireball', e: 'arrow', d: 'dfire', p: 'hammer', r: 'dagger', n: 'skull', a: 'lob', c: 'dagger' };

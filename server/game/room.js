@@ -9,6 +9,9 @@ import { rollChests, applyChest } from '../../shared/chests.js';
 import { isClassUnlocked, isPaletteUnlocked, unlockedFor, requirementText, PALETTE_BY_ID } from '../../shared/unlocks.js';
 import * as stats from '../stats.js';
 import { db } from '../db.js';
+import { resolveCustomHero } from '../heroes.js';
+
+const CUSTOM_CLS_RE = /^custom:(\d+)$/;
 
 const SPEEDRUN_SECONDS = 45;
 const LEVEL_CHANGE_DELAY_MS = 2500;
@@ -50,7 +53,10 @@ export class Room {
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
     this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (#7)
     this.treasureTimer = null;    // bonus-level 30s auto-complete timer (#8)
-    this.sim = new Sim(this.levelFor(1), { levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign' });
+    this.sim = new Sim(this.levelFor(1), {
+      levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign',
+      rng: makeRng(`${seed}|sim`),
+    });
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
     this.secondsTimer = setInterval(this.guard('creditTime', () => this.creditTime()), 30000);
     this.changing = false;
@@ -109,6 +115,7 @@ export class Room {
       roster: [...this.clients.values()].map((c) => ({
         pid: c.pid, name: c.name, cls: c.cls, palette: c.palette, rank: c.rank, title: c.title,
         ready: !!c.ready, away: !!c.away, host: c.pid === this.hostPid,
+        custom: c.custom || undefined, weapon: c.classDef?.weapon || undefined,
       })),
     };
   }
@@ -131,8 +138,17 @@ export class Room {
 
   /** Validate a requested hero/palette against what `user` has actually unlocked. Anything
    *  locked (or an unknown class) silently falls back to warrior/no-palette, and `error` carries
-   *  a human message for the client toast — same rule for `join` and the in-lobby `hero` switch. */
+   *  a human message for the client toast — same rule for `join` and the in-lobby `hero` switch.
+   *  A `cls` of `custom:<heroId>` (Hero Builder — see README.md "Hero Builder") takes a separate
+   *  path: it never falls through to `CLASSES`, since it names a row in the `heroes` table, not a
+   *  fixed archetype. */
   pickHero(user, cls, palette) {
+    const customId = typeof cls === 'string' ? cls.match(CUSTOM_CLS_RE)?.[1] : null;
+    if (customId != null) {
+      const resolved = resolveCustomHero(customId, user);
+      if (!resolved.ok) return { cls: 'warrior', palette: null, error: resolved.error, classDef: null, custom: null };
+      return { cls, palette: null, error: null, classDef: resolved.classDef, custom: { ...resolved.hero, color: resolved.classDef.color } };
+    }
     const profile = this.profileFor(user);
     const requestedCls = CLASSES[cls] ? cls : 'warrior';
     let outCls = requestedCls, error = null;
@@ -145,7 +161,7 @@ export class Room {
       const p = PALETTE_BY_ID[palette];
       if (p) error = `That palette is locked: ${requirementText({ requires: p.requires })}`;
     }
-    return { cls: outCls, palette: outPalette, error };
+    return { cls: outCls, palette: outPalette, error, classDef: null, custom: null };
   }
 
   resolvePalette(profile, cls, palette) {
@@ -194,7 +210,8 @@ export class Room {
     }
     const picked = this.pickHero(user, cls, palette);
     const c = {
-      ws, pid, user, name, cls: picked.cls, palette: picked.palette, guestId: finalGuestId, joinedAt: Date.now(), streak: 0, rank, title, perks,
+      ws, pid, user, name, cls: picked.cls, palette: picked.palette, classDef: picked.classDef || null, custom: picked.custom || null,
+      guestId: finalGuestId, joinedAt: Date.now(), streak: 0, rank, title, perks,
       ready: false, away: false, awaySince: null, awayTimer: null, resume: crypto.randomBytes(8).toString('hex'),
     };
     this.clients.set(pid, c);
@@ -207,7 +224,8 @@ export class Room {
     if (this.state === 'intermission') this.offerChestsTo(c);
     this.broadcastRoom();
     if (this.state !== 'lobby') this.broadcast(this.playersPacket());
-    this.broadcast({ t: 'notice', text: `${name} the ${cap(picked.cls)} enters the dungeon` });
+    const heroLabel = picked.custom ? picked.custom.name : cap(picked.cls);
+    this.broadcast({ t: 'notice', text: `${name} the ${heroLabel} enters the dungeon` });
     this.checkAutoStart();
     return c;
   }
@@ -246,9 +264,16 @@ export class Room {
 
   /** Move a lobby client into the running sim (on start, or on late join into a live room). */
   enterGame(c) {
-    this.sim.addPlayer(c.pid, { name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title, palette: c.palette });
+    this.sim.addPlayer(c.pid, {
+      name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title,
+      palette: c.palette, classDef: c.classDef || null, custom: c.custom || null,
+    });
     if (c.user) {
-      const fresh = stats.raise(c.user.id, `class_${c.cls}`, 1);
+      // Every custom hero shares one 'class_custom' stat key rather than one per hero id — an
+      // unbounded, colon-bearing key per hero would be a poor fit for the classes_played/unlock
+      // machinery below, which only ever knows about the fixed CLASSES roster anyway.
+      const classKey = c.classDef ? 'class_custom' : `class_${c.cls}`;
+      const fresh = stats.raise(c.user.id, classKey, 1);
       const played = db.prepare("SELECT COUNT(*) AS n FROM stats WHERE user_id = ? AND key LIKE 'class_%' AND value > 0").get(c.user.id).n;
       this.unlock(c, [...fresh, ...stats.raise(c.user.id, 'classes_played', played)]);
       this.unlock(c, stats.raise(c.user.id, this.source.type === 'death' ? 'deepest_death_level' : 'deepest_level', this.levelIndex));
@@ -268,7 +293,7 @@ export class Room {
     const c = this.clients.get(pid);
     if (!c || this.state !== 'lobby') return;
     const picked = this.pickHero(c.user, cls, palette);
-    c.cls = picked.cls; c.palette = picked.palette;
+    c.cls = picked.cls; c.palette = picked.palette; c.classDef = picked.classDef || null; c.custom = picked.custom || null;
     if (picked.error) this.send(c, { t: 'error', error: picked.error });
     this.broadcastRoom();
   }

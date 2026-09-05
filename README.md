@@ -233,10 +233,21 @@ g grunt generator   h ghost generator   m demon generator   l lobber generator  
 ## Hero Builder
 
 A player-authored custom hero: a 6-stat "notch" point-buy, a weapon, a trait, and hand-painted
-8x8 pixel art. Lives entirely in its own files (`shared/hero-builder.js`, `server/heroes.js`,
+8x8 pixel art. Its own files (`shared/hero-builder.js`, `server/heroes.js`,
 `client/heroes.html`/`client/heroes.js`, `client/pixelsprite.js`) and its own `heroes` sqlite
-table — see "Integration contract" below for exactly what the sim/room/lobby need to add to let a
-custom hero actually be played, which is **not yet wired up**.
+table hold the character-sheet side (design, save, publish, clone); it is **fully wired into the
+sim, room, and lobby** — a custom hero is playable exactly like a classic one.
+
+**Playing as a custom hero**: on the lobby page (or the in-room hero switcher), click the
+**Custom** tab next to "Choose your hero" to list your saved heroes (rank 3+ and logged in — build
+one first at `/heroes.html`). Picking one sends `cls: 'custom:<heroId>'` in the `join`/`hero`
+WebSocket message; `server/game/room.js`'s `pickHero` confirms you own it, re-validates it against
+your *current* rank/achievements (`server/heroes.js`'s `resolveCustomHero`), and falls back to
+Warrior with an on-screen error if either check fails (a hero built long ago, or belonging to
+someone else, is never trusted as-is) — guests can't use custom heroes at all. In game your hero
+renders its own painted pixel art (not a tinted stock sprite), its shots use its own weapon's
+sprite, and its name tag/HUD use its painted color. The choice persists in `localStorage`
+(`gc_class` as `custom:<id>`) and falls back to Warrior if that hero no longer exists.
 
 - **Unlocks at rank 3** (Adventurer). Below that, `/heroes.html` shows a locked message instead of
   the builder.
@@ -254,14 +265,18 @@ custom hero actually be played, which is **not yet wired up**.
     = faster shots); `health` is a Hero-Builder-only stat (the four classics all share
     `START_HEALTH`, so their mapped `health` notch is always 0) that adds a flat bonus to max
     health via `maxHealthBonus`.
-- **Weapons** (`WEAPONS`): axe, arrow, fireball (80% splash), hammer, dagger (short range, fast),
-  skull (gentle homing). Each carries `shotSpeedMul`/`damageMul`/`cooldownMul`/`range`/`sprite` on
-  top of the notch-derived base stats. All six are available as soon as the builder itself is
-  (rank 3) — there's no per-weapon lock.
-- **Traits** (`TRAITS`, pick at most one): Glutton (+50% food healing, needs the `glutton`
-  achievement), Scavenger (+25% treasure/generator score, rank 3), Thick Skin (-10% damage taken,
-  rank 3), Locksmith (open doors one tile further away, needs the `locksmith` achievement),
-  Sprinter (+8% speed, needs `speedrunner`), Arcanist (+20% potion radius, needs `alchemist`).
+- **Weapons** (`WEAPONS`): axe, arrow, fireball (80% splash — also damages other monsters near the
+  impact point), hammer, dagger (short range, fast), skull (gentle homing — its shot steers a
+  little toward the nearest monster each tick). Each carries
+  `shotSpeedMul`/`damageMul`/`cooldownMul`/`range`(tiles)/`sprite` on top of the notch-derived base
+  stats; `server/game/sim.js` applies these to every shot a custom hero fires. All six are
+  available as soon as the builder itself is (rank 3) — there's no per-weapon lock.
+- **Traits** (`TRAITS`, pick at most one), applied live by `server/game/sim.js`: Glutton (food
+  heals for 50% more, needs the `glutton` achievement), Scavenger (treasure/generator score +50%,
+  rank 3), Thick Skin (take 50% less damage from a ghost's touch specifically, rank 3), Locksmith
+  (25% chance a door doesn't consume your key, needs the `locksmith` achievement), Sprinter (+25%
+  move speed while below 300 HP, needs `speedrunner`), Arcanist (potion blast radius +30%, needs
+  `alchemist`).
 - **Pixel art**: exactly 8 rows of 8 characters, each `.` (transparent) or `0`-`7` indexing
   `PALETTE` (8 hex colours lifted from `client/sprites.js`' `PAL`). At least 8 pixels must be
   painted. The hero's `color` (for `toClassDef`) is the most-used non-transparent colour.
@@ -283,38 +298,33 @@ custom hero actually be played, which is **not yet wired up**.
   `/api/debug/xp`) purely so the single additive router line in `server/index.js` still routes it
   to `server/heroes.js` without adding a second mount point.
 
-### Integration contract
+### Integration (implemented — #24)
 
-The Hero Builder is fully playable as a *character sheet* today (design, save, publish, clone) but
-is **not yet wired into the sim, room, or lobby hero picker**. Whoever does that wiring needs:
+Custom heroes are wired end to end, per the plan this section used to lay out:
 
-1. **`join`/`hero` messages accept `cls: 'custom:<heroId>'`.** The server (`server/index.js`'s
-   WebSocket handler, or `server/game/room.js`) should recognize this prefix, load the hero row via
-   `server/heroes.js`'s exported `classDefForHeroId(heroId)`, and **re-validate it against the
-   owner's current rank/achievements** (same reasoning as the publish-time re-check) before
-   trusting it — never pass a stored `classDef` straight to the sim without that recheck, since the
-   owner's rank could have changed (or a hero could belong to someone who isn't the joining player
-   at all — always confirm `hero.owner_id === user.id` first, and reject/ fall back to Warrior
-   otherwise, exactly like an unknown `cls` does today).
-2. **`sim.addPlayer` accepts and prefers a `classDef` object over looking up `CLASSES[cls]`.** Once
-   validated, pass `toClassDef(hero)`'s result straight through as `classDef` — it's already shaped
-   like a `CLASSES` entry (`name`, `hero`, `color`, `speed`, `shotDamage`, `shotCooldown`, `armor`,
-   `magic`, `weapon`, `shotKey: 'c'`, `custom: true`) plus builder-only extras the sim needs to
-   apply: `maxHealthBonus` (add to `START_HEALTH`), `weaponDef` (apply `shotSpeedMul` /
-   `damageMul` / `cooldownMul` / `range` / `homing` / `splash` on top of the notch-derived shot
-   stats), and `traitDef` (apply whichever of `foodHealMul`, `lootScoreMul`, `damageTakenMul`,
-   `doorRangeAdd`, `speedMul`, `potionRadiusMul` it carries — see `shared/hero-builder.js`
-   `TRAITS`). `shotKey: 'c'` is reserved (never used by a `CLASSES` entry) precisely so a custom
-   hero's shots never collide with a classic class's shot sprite lookup.
-3. **The client hero picker gets a "Custom" tab** listing `GET /api/heroes/mine`, rendering each
-   with `spriteFromPixels` (below) instead of `sprite('hero', tint)`, and sending
-   `cls: 'custom:' + hero.id` in the `join`/`hero` message when selected.
-4. **Sprites**: `client/pixelsprite.js` exports `spriteFromPixels(pixels, palette, scale)` — a tiny
-   standalone module (no other Hero Builder UI code, so `client/game.js` can import just this) that
-   renders a hero's `pixels` onto a canvas the same way `client/sprites.js`' `sprite()` renders a
-   built-in sprite. `client/game.js` would call it once per distinct custom hero (cache the
-   returned canvas, same pattern as `sprite()`'s internal cache) and draw that canvas wherever it
-   currently draws `sprite('hero', tint)` for that player.
+1. **`join`/`hero` messages accept `cls: 'custom:<heroId>'`.** `server/game/room.js`'s `pickHero`
+   recognizes the prefix, and `server/heroes.js`'s `resolveCustomHero(heroId, user)` confirms
+   `user` actually owns the hero and re-validates it against their *current* rank/achievements
+   (same reasoning as the publish-time re-check) before it's ever trusted — a hero belonging to
+   someone else, or one that no longer clears the rank-3 unlock, falls back to Warrior with an
+   `{t:'error'}` naming why. Guests can never use a custom hero.
+2. **`sim.addPlayer` accepts a `classDef` object**, stored on the player as `p.classDef`; every
+   place `server/game/sim.js` used to read `CLASSES[p.cls]` now goes through a `classOf(p)` helper
+   (`p.classDef || CLASSES[p.cls]`), so classic classes are byte-for-byte unaffected. `maxHealthBonus`
+   is folded into max health at spawn/respawn; `weaponDef` scales shot speed/damage/cooldown, turns
+   `range` (tiles) into shot lifetime, and drives homing steering and splash damage; `traitDef`
+   effects (food heal, loot score, ghost-touch damage, door-key-save chance, conditional sprint
+   speed, potion radius) are applied at their respective sim call sites.
+3. **Snapshot/roster**: `sim.playerInfo()` (and `room.info()`'s lobby roster) carry `custom:
+   {name, pixels, color}` and `weapon` for a custom hero — display-only data, sent only on the
+   `players`/room-info packets, never on the 20 Hz `snapshot()`. A custom hero's shots use
+   `shotKey: 'c'`; the client maps a `'c'` shot back to its owner's `weapon` (== its sprite id) to
+   pick the right sprite.
+4. **Client**: the hero picker on both the lobby page and the in-room screen has a "Custom" tab/section
+   listing `GET /api/heroes/mine`, rendered with `spriteFromPixels` (`client/pixelsprite.js`); the
+   pick persists to `localStorage` (`gc_class` as `custom:<id>`) and falls back to Warrior if that
+   hero no longer exists. In game, `client/game.js` draws `spriteFromPixels(custom.pixels)` in place
+   of the tinted stock hero sprite, and uses `custom.color` for name tags/HUD.
 
 ## Architecture
 

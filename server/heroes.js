@@ -188,9 +188,32 @@ export async function handle(req, res, url, user) {
 }
 
 // Exported for the sim/room integration contract described in README.md — a room can build the
-// classDef for a stored hero row without re-importing rowToHero's shape from scratch.
+// classDef for a stored hero row without re-importing rowToHero's shape from scratch. Does NOT
+// check ownership or re-validate against the caller's current rank — see resolveCustomHero below
+// for the safe path a `join`/`hero` message must actually use.
 export function classDefForHeroId(id) {
   const row = selectOne.get(Number(id));
   if (!row) return null;
   return toClassDef(rowToHero(row));
+}
+
+/** The one safe way for server/game/room.js to turn a `custom:<heroId>` cls token into a classDef:
+ *  confirms `user` actually owns the hero, then re-validates it against the owner's CURRENT
+ *  rank/achievements (same reasoning as the publish-time re-check in handle() above) — a hero
+ *  built long ago, or belonging to someone else entirely, is never trusted as-is. Returns
+ *  `{ok:true, classDef, hero:{name,pixels}}` on success (the trimmed `hero` fields are exactly
+ *  what the room needs for the roster's `custom` display info — see room.js pickHero), or
+ *  `{ok:false, error}` naming why it fell back — guests always fail here, callers should fall
+ *  back to warrior on any `ok:false`. Never throws. */
+export function resolveCustomHero(heroId, user) {
+  if (!user) return { ok: false, error: 'Guests cannot use custom heroes' };
+  const id = Number(heroId);
+  if (!Number.isInteger(id)) return { ok: false, error: 'Unknown custom hero' };
+  const row = selectOne.get(id);
+  if (!row || row.owner_id !== user.id) return { ok: false, error: 'That custom hero is not yours' };
+  const hero = rowToHero(row);
+  const profile = profileFor(user);
+  const check = validateHero(hero, profile);
+  if (!check.ok) return { ok: false, error: check.errors[0] || 'That custom hero no longer meets the requirements' };
+  return { ok: true, classDef: toClassDef(hero), hero: { name: hero.name, pixels: hero.pixels } };
 }
