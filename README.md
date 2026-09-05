@@ -203,10 +203,29 @@ sprite, and its name tag/HUD use its painted color. The choice persists in `loca
   sorted by clone count. `POST /api/heroes/:id/clone` copies a published hero into the caller's own
   collection (subject to the same 5-hero limit) and bumps the original's clone count — a simple
   "fork" mechanic with no attribution tracking beyond the copy's own `author` field at read time.
+- **AI Assist** (`server/ai/herogen.js`): the "🤖 AI Assist" panel in `/heroes.html` lets a rank-3+
+  player describe a hero in prose ("a shadowy archer who lives on treasure") and get back a
+  suggested build — stats within their point budget, a weapon, a trait, name/title/motto and an
+  8x8 pixel sprite — loaded straight into the builder's form for them to tweak and save normally
+  (the endpoint never saves anything itself). It calls Claude with the same `json_schema`
+  structured-output approach as the AI level builder (sharing its Anthropic client/credential gate
+  via `getClient`/`aiAvailable`, exported from `server/ai/levelgen.js`), feeding the model the
+  caller's exact notch budget, unlocked weapon/trait ids and the fixed palette from
+  `shared/hero-builder.js`. The model's JSON is repaired (stats rounded/clamped and trimmed down to
+  budget, unknown weapon/trait ids replaced, malformed pixel rows replaced) and then validated with
+  `validateHero`; if it still doesn't validate, or no AI credentials are configured, or the request
+  is rate-limited, a **preset** is suggested instead — one of `presetHeroes()`'s three ready-made
+  heroes, picked deterministically by hashing the prompt text, so the same description always
+  suggests the same preset. `POST /api/heroes/ai` (body `{prompt}`, truncated to 300 characters):
+  login + rank 3 required, rate-limited to 1 request per 10 seconds per user, returns `{hero,
+  source: 'ai'|'preset', note?, aiAvailable}` — check `GET /api/ai/status` (or the response's
+  `aiAvailable` field) to show a graceful "assistant unavailable, suggesting a preset instead"
+  message up front.
 - **Routes**: `GET /api/heroes/mine`, `GET /api/heroes/budget` (rank, unlocked weapons/traits,
   notch budget), `GET /api/heroes/gallery`, `POST /api/heroes` (create, or update when `id` is
   set), `GET /api/heroes/:id` (own or published), `DELETE /api/heroes/:id`, `POST
-  /api/heroes/:id/publish` (toggle), `POST /api/heroes/:id/clone`. `POST /api/heroes/debug/xp`
+  /api/heroes/:id/publish` (toggle), `POST /api/heroes/:id/clone`, `POST /api/heroes/ai` (AI
+  Assist, above). `POST /api/heroes/debug/xp`
   (body `{amount}`) is a test-only hook that grants XP to the caller, alive only when the server is
   started with `GAUNTLET_DEBUG=1` — it lives under `/api/heroes` (rather than the imagined
   `/api/debug/xp`) purely so the single additive router line in `server/index.js` still routes it
@@ -487,6 +506,7 @@ server/            Node HTTP + WebSocket server
   game/room.js     a running dungeon: tick loop, level progression, stats and achievement hooks
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
+  ai/herogen.js    Claude-backed Hero Builder AI Assist (build + sprite from a prompt), preset fallback
   db.js            node:sqlite connection + schema migrations
   auth.js          registration, login/logout, bearer-token sessions
   stats.js         per-user stat counters + achievement unlocking
@@ -540,8 +560,8 @@ Optional environment variables:
 |---|---|
 | `PORT` | HTTP/WebSocket port (default 3000) |
 | `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
-| `ANTHROPIC_API_KEY` | Enables the AI level builder. Without it, "Generate with AI" falls back to the procedural generator steered by your prompt |
-| `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
+| `ANTHROPIC_API_KEY` | Enables the AI level builder and the Hero Builder's AI Assist. Without it, "Generate with AI" falls back to the procedural generator, and AI Assist suggests a preset hero, both still steered by your prompt |
+| `GAUNTLET_AI_MODEL` | Claude model id for level generation and Hero Builder AI Assist (default `claude-opus-5`) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
 | `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Takes precedence over any previously-persisted salt when set; auto-generated and persisted if unset — see [Privacy](#privacy) |
 | `SENTRY_DSN` | Enables forwarding server and client errors to Sentry (or a compatible DSN endpoint). Unset means Sentry is never imported and the first-party `errors` table is the only sink — see [Error reporting](#error-reporting) |

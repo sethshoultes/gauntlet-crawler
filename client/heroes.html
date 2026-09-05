@@ -102,7 +102,14 @@
 
     <!-- middle: stats, weapon, trait, identity -->
     <div>
-      <div class="panel">
+      <div class="panel ai">
+        <h2>🤖 AI Assist</h2>
+        <p class="muted" style="font-size:12px;margin:0 0 8px">Describe a hero and get a suggested build, name and sprite — editable before you save.</p>
+        <div class="field"><label>Describe your hero</label><textarea id="ai-prompt" rows="3" maxlength="300" placeholder="A shadowy archer who lives on treasure"></textarea></div>
+        <button class="primary" id="ai-gen" style="width:100%">Generate</button>
+        <div id="ai-note" class="muted" style="font-size:11px;margin-top:6px"></div>
+      </div>
+      <div class="panel" style="margin-top:18px">
         <h2>Stats <span id="budget-label" class="tag"></span></h2>
         <div class="budget-bar" id="budget-bar"><div style="width:0%"></div></div>
         <div id="stats"></div>

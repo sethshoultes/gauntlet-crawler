@@ -19,6 +19,9 @@ function getClient() {
 }
 
 export function aiAvailable() { return getClient() !== null; }
+// Exported so server/ai/herogen.js shares this exact credential gate and Anthropic client instance
+// instead of re-implementing (and potentially drifting from) the same env-var check.
+export { getClient };
 
 const SYSTEM = `You design levels for a Gauntlet (1985 arcade) style top-down dungeon crawler for 1-4 players.
 Output a rectangular ASCII map. Every row must have the same length. Size between ${MIN_SIZE}x${MIN_SIZE} and ${MAX_SIZE}x${MAX_SIZE}; 28x22 is a good default.
