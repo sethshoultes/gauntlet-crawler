@@ -67,27 +67,6 @@ export function setMuted(v) {
   try { localStorage.setItem('gc_mute', muted ? '1' : '0'); } catch {}
   muteListeners.forEach((fn) => { try { fn(muted); } catch {} });
 }
-export function isMuted() { return muted; }
-
-/** Update one or more mixer buses (0..1). Persists to localStorage and applies live. `voice` is
- *  stored for client/voice.js to read (there is no shared audio graph for speechSynthesis/HTMLAudio). */
-export function setVolumes({ master, sfx: sfxVol, voice } = {}) {
-  if (master != null) {
-    vol.master = Math.max(0, Math.min(1, master));
-    try { localStorage.setItem(VOL_KEYS.master, String(Math.round(vol.master * 100))); } catch {}
-    if (masterGain) masterGain.gain.value = vol.master;
-  }
-  if (sfxVol != null) {
-    vol.sfx = Math.max(0, Math.min(1, sfxVol));
-    try { localStorage.setItem(VOL_KEYS.sfx, String(Math.round(vol.sfx * 100))); } catch {}
-    if (sfxBus) sfxBus.gain.value = vol.sfx;
-  }
-  if (voice != null) {
-    vol.voice = Math.max(0, Math.min(1, voice));
-    try { localStorage.setItem(VOL_KEYS.voice, String(Math.round(vol.voice * 100))); } catch {}
-  }
-}
-export function getVolumes() { return { ...vol }; }
 
 function tone(freq, dur, type = 'square', gain = 0.08, slide = 0, opts = {}) {
   const a = ac(); if (!a || muted) return;

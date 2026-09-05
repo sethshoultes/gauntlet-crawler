@@ -1,8 +1,7 @@
 // Tiny standalone helper: render a Hero Builder hero's 8x8 pixel art (see shared/hero-builder.js
 // PALETTE + validateHero's `pixels` rule) onto a canvas. Split out of client/heroes.js into its
-// own module specifically so client/game.js can import just this (no builder UI, no /api/heroes
-// calls) once the sim/lobby integration lands — see README.md "Hero Builder" > "Integration
-// contract" part (d).
+// own module so client/game.js can import just this (no builder UI, no /api/heroes calls) to draw
+// a custom hero's portrait in game.
 const cache = new Map();
 
 /** Draw `pixels` (8 strings of 8 chars, each '.' or a palette index '0'-'7') onto a fresh canvas
@@ -33,8 +32,3 @@ export function spriteFromPixels(pixels, palette, scale = 4) {
   cache.set(key, c);
   return c;
 }
-
-/** Clear the sprite cache — useful after editing a hero's pixels in place so a stale canvas
- *  under the same content key (rare, but possible if a palette color itself was edited) isn't
- *  returned. Not needed in the common case since content changes naturally change the cache key. */
-export function clearSpriteCache() { cache.clear(); }

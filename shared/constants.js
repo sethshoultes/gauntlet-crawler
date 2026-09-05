@@ -11,9 +11,7 @@ export const MAX_MONSTERS = 48;
 export const MAX_SHOTS_PER_PLAYER = 3;
 export const SHOT_SPEED = 12;
 export const MONSTER_SHOT_SPEED = 7;
-export const GENERATOR_HP = 3;
 export const GENERATOR_RANGE = 14; // only generators near a player spawn
-export const MONSTER_WAKE_RANGE = 13;
 export const LEVEL_BONUS = 500;
 
 // Tile glyphs used in the ASCII level format.

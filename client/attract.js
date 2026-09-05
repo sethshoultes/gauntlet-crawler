@@ -6,8 +6,8 @@
 // and the shared game constants directly.
 import { sprite, GEN_TINT } from './sprites.js';
 import { renderFrame, getScene, HERO, HERO_ORDER } from './cutscenes.js';
-import { CLASSES, CLASS_IDS, T, SOLID_TILES } from '/shared/constants.js';
-import { drawText, wrapText } from './font.js';
+import { CLASSES, CLASS_IDS, SOLID_TILES } from '/shared/constants.js';
+import { drawText } from './font.js';
 
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');

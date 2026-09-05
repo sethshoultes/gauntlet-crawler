@@ -2,19 +2,18 @@
 // buy, a weapon, a trait, and an 8x8 pixel portrait. Used by the server (server/heroes.js) to
 // validate and price a saved hero, and by the client (client/heroes.js) to render the builder UI.
 // Nothing here touches the DOM, sqlite, or the network — see server/heroes.js and client/heroes.js
-// for the sides that do, and the "Hero Builder" section of README.md for the integration contract
-// that lets shared/game/sim.js consume a built hero without needing to import this file's
-// validation path.
+// for the sides that do, and the "Hero Builder" section of README.md for how a built hero reaches
+// server/game/sim.js at join time (via server/heroes.js's resolveCustomHero + toClassDef below).
 
 // ---------- stats ----------
 export const STATS = ['speed', 'shot', 'fireRate', 'armor', 'magic', 'health'];
-export const NOTCH_CAP = 5; // per-stat cap, regardless of budget
+const NOTCH_CAP = 5; // per-stat cap, regardless of budget
 
 // `BUDGET_BASE` is the notch total a rank-3 player starts with (see budgetFor). It was picked,
 // then the per-stat ranges below were tuned, so that converting each of the four classic
 // CLASSES entries through `notchesFromClass` lands at 11-13 total notches — i.e. a brand new
 // Hero Builder character can be built to roughly "as strong as a classic hero", not stronger.
-export const BUDGET_BASE = 12;
+const BUDGET_BASE = 12;
 
 // ---------- notch <-> raw-stat-value mapping ----------
 // Each stat is a linear scale from `lo` (notch 0) to `hi` (notch 5). `fireRate` is inverted:
@@ -106,14 +105,14 @@ export const WEAPONS = {
   dagger:   { name: 'Dagger',   shotSpeedMul: 1.1,  damageMul: 0.75, cooldownMul: 0.6,  range: 3.5, homing: false, splash: 0,   sprite: 'dagger',   desc: 'Short reach, very fast follow-up.' },
   skull:    { name: 'Skull',    shotSpeedMul: 0.95, damageMul: 0.9,  cooldownMul: 1.0,  range: 7,   homing: 0.35, splash: 0,   sprite: 'skull',    desc: 'Bone bolt that gently homes toward the nearest monster.' },
 };
-export const WEAPON_IDS = Object.keys(WEAPONS);
+const WEAPON_IDS = Object.keys(WEAPONS);
 
 // ---------- traits ----------
 // `requires` uses the same condition shape as shared/unlocks.js (rank/achievement/any/all) so the
 // server can reuse its evaluator; omitted means unlocked as soon as the builder itself is (rank 3).
 // Each effect field is read directly by server/game/sim.js off `classDef.traitDef` (see toClassDef
-// below and README.md "Hero Builder" > Sim integration) — never derived at runtime, so a trait's
-// mechanic can't silently drift out of sync with its own description here.
+// below) — never derived at runtime, so a trait's mechanic can't silently drift out of sync with
+// its own description here.
 export const TRAITS = {
   glutton:    { name: 'Glutton',    desc: 'Food heals for 50% more.',                              foodHealMul: 1.5,          requires: { achievement: 'glutton' } },
   scavenger:  { name: 'Scavenger',  desc: 'Treasure and generator score +50%.',                     lootScoreMul: 1.5,         requires: { rank: 3 } },
@@ -122,7 +121,7 @@ export const TRAITS = {
   sprinter:   { name: 'Sprinter',   desc: '+25% move speed while below 300 HP.',                     sprintSpeedMul: 1.25, sprintHpThreshold: 300, requires: { achievement: 'speedrunner' } },
   arcanist:   { name: 'Arcanist',   desc: 'Magic potion blast radius +30%.',                         potionRadiusMul: 1.3,      requires: { achievement: 'alchemist' } },
 };
-export const TRAIT_IDS = Object.keys(TRAITS);
+const TRAIT_IDS = Object.keys(TRAITS);
 
 function evalRequires(cond, ctx) {
   if (!cond) return true;

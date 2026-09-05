@@ -1,5 +1,5 @@
 // Shared client helpers: auth token, API fetch, nav, toasts.
-export const TOKEN_KEY = 'gc_token';
+const TOKEN_KEY = 'gc_token';
 export const NAME_KEY = 'gc_guest_name';
 export const CLASS_KEY = 'gc_class';
 export const PALETTE_KEY = 'gc_palette';

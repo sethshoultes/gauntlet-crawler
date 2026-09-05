@@ -21,7 +21,7 @@ function loadOrCreateSalt() {
 let SALT = null;
 function salt() { if (!SALT) SALT = loadOrCreateSalt(); return SALT; }
 
-export function hashIp(ip) {
+function hashIp(ip) {
   if (!ip) return null;
   return crypto.createHash('sha256').update(String(ip) + ':' + salt()).digest('hex');
 }

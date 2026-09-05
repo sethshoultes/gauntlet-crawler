@@ -1,6 +1,6 @@
-import { api, me, renderNav, authModal, toast, esc, CLASS_KEY } from './common.js';
+import { api, me, renderNav, authModal, toast, esc } from './common.js';
 import { sprite, TILE_SPRITE, GEN_TINT } from './sprites.js';
-import { T, CLASSES } from '/shared/constants.js';
+import { T } from '/shared/constants.js';
 import { validateLevel, LEGEND } from '/shared/level.js';
 
 const $ = (s) => document.querySelector(s);

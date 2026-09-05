@@ -5,8 +5,8 @@
 // Coverage: A-Z, 0-9, space and basic punctuation ( . , ! ? : ' - ). Unknown characters
 // render as a blank space-width cell so a stray character never throws.
 
-export const GLYPH_W = 5;
-export const GLYPH_H = 7;
+const GLYPH_W = 5;
+const GLYPH_H = 7;
 
 // Each glyph is 7 rows of a 5-bit string ('1' = pixel on). Authored by hand for a blocky
 // 1985-arcade look rather than lifted from any real typeface.

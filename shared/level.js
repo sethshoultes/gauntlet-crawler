@@ -1,4 +1,4 @@
-import { T, ALL_TILES, SOLID_TILES, EXIT_TILES } from './constants.js';
+import { T, ALL_TILES, EXIT_TILES } from './constants.js';
 
 export const MIN_SIZE = 12;
 export const MAX_SIZE = 64;
@@ -110,8 +110,6 @@ export function repairLevel(raw) {
   }
   return lvl;
 }
-
-export function isSolid(c) { return SOLID_TILES.has(c); }
 
 export const LEGEND = [
   [T.WALL, 'Wall'], [T.FLOOR, 'Floor'], [T.DOOR, 'Door (needs key)'], [T.KEY, 'Key'], [T.FOOD, 'Food (+100 health)'],

@@ -1,8 +1,8 @@
 // REST API for the Hero Builder (custom player-authored heroes). Mounted from server/index.js as
 // the single additive line `if (url.pathname.startsWith('/api/heroes')) return heroes.handle(req,
 // res, url, user);` placed at the top of api() right after `user` is resolved from the bearer
-// token — see README.md "Hero Builder" for the full route list and the integration contract that
-// lets the sim/room/lobby consume a saved hero later. This module is intentionally
+// token — see README.md "Hero Builder" for the full route list, and resolveCustomHero() below for
+// how server/game/room.js consumes a saved hero at join time. This module is intentionally
 // self-contained (its own json/readBody/rate-limit helpers) so it never imports from
 // server/index.js, avoiding a circular import.
 import { db, now } from './db.js';
@@ -187,16 +187,6 @@ export async function handle(req, res, url, user) {
   }
 
   json(res, 404, { error: 'No such endpoint' });
-}
-
-// Exported for the sim/room integration contract described in README.md — a room can build the
-// classDef for a stored hero row without re-importing rowToHero's shape from scratch. Does NOT
-// check ownership or re-validate against the caller's current rank — see resolveCustomHero below
-// for the safe path a `join`/`hero` message must actually use.
-export function classDefForHeroId(id) {
-  const row = selectOne.get(Number(id));
-  if (!row) return null;
-  return toClassDef(rowToHero(row));
 }
 
 /** The one safe way for server/game/room.js to turn a `custom:<heroId>` cls token into a classDef:
