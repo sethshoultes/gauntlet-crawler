@@ -670,8 +670,10 @@ nothing changes: the first-party `errors` table above remains the only sink. Set
   `source: 'client'`. The first-party table write always happens first and is unaffected by
   whether Sentry forwarding succeeds, fails, or is disabled.
 - **Scrubbing**: forwarded events never include Authorization headers, session tokens, cookies,
-  passwords, or raw IP addresses — any field whose key matches `/token|authorization|cookie
-  |password|ip/i`, at any depth, is stripped before the event is queued (`scrub()`/`beforeSend` in
+  passwords, or raw IP addresses — any field whose key names one of those (token, authorization,
+  cookie, password/passwd, secret, forwarded, remote-addr, or an `ip` word segment such as `userIp`,
+  `X-Real-IP` or `CF-Connecting-IP`; words that merely contain "ip" like `shipping` are kept), at
+  any depth, is stripped before the event is queued (`isSensitiveKey()`/`scrub()`/`beforeSend` in
   `server/sentry.js`, unit-tested in `test/sentry.test.js`). A client error's User-Agent is reduced
   to a coarse browser family (`Chrome`/`Firefox`/`Safari`/`Edge`/`Other`) rather than sent raw, and
   no username or user identity is attached to the event.

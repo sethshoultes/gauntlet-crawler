@@ -37,13 +37,21 @@ export function enabled() {
 }
 
 // Any key matching this, at any depth, is dropped before an event leaves the process: auth
-// headers/tokens, session cookies, passwords, and IP addresses. This is a name-pattern backstop
-// over *whatever* shape `fields` happens to have -- the fixed fields we forward on purpose
-// (message, stack, url, source, a coarse browser family) are handled explicitly below and never
-// carry these names.
-const SENSITIVE_KEY = /token|authorization|cookie|password|ip/i;
+// headers/tokens, session cookies, passwords/secrets, and IP addresses under the names they
+// actually travel as (`ip`, `userIp`, `ipAddress`, `X-Real-IP`, `CF-Connecting-IP`,
+// `X-Forwarded-For`, `REMOTE_ADDR`). Keys are normalised to kebab-case first so `ip` is matched
+// as a whole word segment: `shipping` or `description` must not be scrubbed, while `client-ip`
+// must be. This is a name-pattern backstop over *whatever* shape `fields` happens to have -- the
+// fixed fields we forward on purpose (message, stack, url, source, a coarse browser family) are
+// handled explicitly below and never carry these names.
+const SENSITIVE_SUBSTRING = /token|authorization|cookie|password|passwd|secret|forwarded|remote-?addr/;
+const IP_SEGMENT = /(^|-)ips?(-|$)/;
+export function isSensitiveKey(key) {
+  const norm = String(key).replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return SENSITIVE_SUBSTRING.test(norm) || IP_SEGMENT.test(norm);
+}
 
-/** Deep-copy `value`, dropping every object key whose name matches SENSITIVE_KEY. Never mutates
+/** Deep-copy `value`, dropping every object key for which isSensitiveKey() is true. Never mutates
  *  the input. Exported so it can be unit-tested directly, independent of Sentry being installed. */
 export function scrub(value, seen = new WeakSet()) {
   if (value && typeof value === 'object') {
@@ -53,7 +61,7 @@ export function scrub(value, seen = new WeakSet()) {
     if (Array.isArray(value)) return value.map((v) => scrub(v, seen));
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      if (SENSITIVE_KEY.test(k)) continue;
+      if (isSensitiveKey(k)) continue;
       out[k] = scrub(v, seen);
     }
     return out;

@@ -82,6 +82,9 @@ async function main() {
     };
     try {
       await api('/api/me/prefs', { method: 'PUT', body });
+      // Keep the in-memory copy current: the AI narrator toggle above merges onto `prefs` when it
+      // saves, so a stale copy here would let a later toggle re-save the values from page load.
+      Object.assign(prefs, body);
       // Apply immediately in this tab, same keys client/audio.js, client/voice.js and
       // client/game.js read directly — no reload needed to feel the change.
       try {

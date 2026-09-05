@@ -73,6 +73,7 @@ test('scrub() strips keys matching token/authorization/cookie/password/ip, at an
   assert.equal(out.nested.safe, 'kept-nested');
   assert.equal('apiToken' in out.nested, false);
   assert.equal('authorization_header' in out.nested.deeper, false);
+
   assert.equal(out.nested.deeper.fine, 1);
   assert.equal('password' in out.list[0], false);
   assert.equal(out.list[1].ok, true);
@@ -159,4 +160,17 @@ test('captureError, with a DSN pointing at a local server, posts an envelope wit
 process.on('exit', () => {
   if (ORIGINAL_DSN === undefined) delete process.env.SENTRY_DSN; else process.env.SENTRY_DSN = ORIGINAL_DSN;
   if (ORIGINAL_ENV === undefined) delete process.env.SENTRY_ENVIRONMENT; else process.env.SENTRY_ENVIRONMENT = ORIGINAL_ENV;
+});
+
+
+test('isSensitiveKey() catches IP-bearing header names but leaves words that merely contain "ip"', () => {
+  for (const k of ['ip', 'userIp', 'ipAddress', 'clientIP', 'X-Real-IP', 'CF-Connecting-IP', 'X-Forwarded-For', 'REMOTE_ADDR', 'remoteAddress', 'ips', 'apiSecret', 'passwd']) {
+    assert.equal(sentry.isSensitiveKey(k), true, `${k} should be scrubbed`);
+  }
+  for (const k of ['shipping', 'description', 'zip', 'recipe', 'tip', 'skipCount', 'message', 'stack', 'url']) {
+    assert.equal(sentry.isSensitiveKey(k), false, `${k} should be kept`);
+  }
+  const out = sentry.scrub({ request: { headers: { 'X-Forwarded-For': '203.0.113.9', 'CF-Connecting-IP': '203.0.113.9', 'User-Agent': 'ua' } }, shipping: 'kept' });
+  assert.deepEqual(out.request.headers, { 'User-Agent': 'ua' });
+  assert.equal(out.shipping, 'kept');
 });
