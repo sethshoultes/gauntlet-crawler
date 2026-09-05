@@ -100,6 +100,14 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   const ciderN = clamp((bias.cider ? rng.int(1, 2) : 0) + (rng.chance(0.25) ? 1 : 0), 0, 3);
   place(T.POISON_FOOD, poisonN);
   place(T.CIDER, ciderN);
+  // Amulets (README's "Features" section, "Amulets and boosts"): temporary power-ups, occasional
+  // from level 2 on and more likely the deeper the party goes. Permanent boosts are much rarer and
+  // only start appearing on level 4+, since they persist for the whole run.
+  const amuletTiles = [T.AMULET_INVIS, T.AMULET_REFLECT, T.AMULET_REPULSE, T.AMULET_SUPER];
+  const amuletN = diff >= 2 && rng.chance(clamp(0.12 + diff * 0.01 + (bias.amulet ? 0.25 : 0), 0, 0.6)) ? rng.int(1, 2) : 0;
+  for (let i = 0; i < amuletN; i++) place(rng.pick(amuletTiles), 1);
+  const boostTiles = [T.BOOST_SPEED, T.BOOST_ARMOR, T.BOOST_SHOT, T.BOOST_FIRE_RATE, T.BOOST_MAGIC];
+  if (diff >= 4 && rng.chance(clamp(0.06 + diff * 0.004 + (bias.boost ? 0.15 : 0), 0, 0.3))) place(rng.pick(boostTiles), 1);
   // Transporter pair (README's "Features" section, "Transporters"): teleports the party between two spots. Two X tiles must be placed
   // together, or not at all.
   if (diff >= 2 && rng.chance(0.15 + diff * 0.005 + (bias.teleport ? 0.3 : 0)) && cells.length >= 2) {
@@ -172,6 +180,8 @@ export function biasFromPrompt(prompt = '') {
     teleport: has('teleport', 'transporter', 'portal', 'warp') ? 1 : 0,
     poison: has('poison', 'toxic', 'venom', 'venomous') ? 1 : 0,
     cider: has('cider', 'ale', 'mead', 'tavern', 'drink') ? 1 : 0,
+    amulet: has('amulet', 'invisib', 'reflect', 'repuls', 'super shot', 'pierce') ? 1 : 0,
+    boost: has('boost', 'power up', 'power-up', 'powerup', 'upgrade') ? 1 : 0,
   };
 }
 

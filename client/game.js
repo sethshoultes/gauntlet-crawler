@@ -4,9 +4,18 @@
 import { api, me, token, toast, renderNav, esc, cssToken, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
-import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER } from '/shared/constants.js';
+import {
+  CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER,
+  AMULET_TILES, BOOST_TILES, AMULET_NAMES, BOOST_NAMES,
+} from '/shared/constants.js';
 import { PALETTES, requirementText } from '/shared/unlocks.js';
 import { BOOST_ICONS } from '/shared/chests.js';
+// HUD icon for each run-boost stat (permanent) and each amulet kind (temporary) — cosmetic only,
+// the actual glyph on the map comes from client/sprites.js's amulet_*/boost_* sprites.
+const RUN_BOOST_ICON = { speed: '💨', armor: '🛡️', shotPower: '⚔️', shotSpeed: '🔫', magic: '🔮' };
+const AMULET_ICON = { invis: '👻', reflect: '🪞', repulse: '🌀', super: '⭐' };
+// BOOST_TILES/AMULET_TILES (shared/constants.js) already map the snapshot's single-char tile
+// code (see sim.js snapshot()'s encodeBoosts/encodeAmulets) back to the internal kind/stat key.
 import { STATS as HERO_STATS, PALETTE as HERO_PALETTE } from '/shared/hero-builder.js';
 import { initAudio, sfx, setMuted } from './audio.js';
 import { say as voiceSay } from './voice.js';
@@ -425,12 +434,26 @@ function onEvent(e) {
     case 'tile': if (G.grid) G.grid[e.y][e.x] = e.c; if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); break;
     case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
     case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
-    case 'pickup':
+    case 'pickup': {
+      const amuletKind = AMULET_TILES[e.item];
+      const boostStat = BOOST_TILES[e.item];
       if (mine) {
-        sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : (e.item === 'F' || e.item === 'C') ? 'eat' : 'pick');
+        if (amuletKind) {
+          sfx('amulet');
+          // Each branch passes say() a literal id (see test/voice.test.js's simple id scan) rather
+          // than a computed one, so every amulet line is verified against voice-lines.json.
+          if (amuletKind === 'invis') say('amulet_invis', 'Invisibility!');
+          else if (amuletKind === 'reflect') say('amulet_reflect', 'Reflective shots!');
+          else if (amuletKind === 'repulse') say('amulet_repulse', 'Repulsion!');
+          else if (amuletKind === 'super') say('amulet_super', 'Super shots!');
+        } else if (boostStat) { sfx('boost'); say('boost_pickup', 'Permanent power up!'); }
+        else sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : (e.item === 'F' || e.item === 'C') ? 'eat' : 'pick');
         if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('save_keys', 'Save keys for later levels'); }
       }
+      if (amuletKind) log(`<span class="n">${esc(name)} picked up ${esc(AMULET_NAMES[amuletKind])}!</span>`);
+      else if (boostStat) log(`<span class="n">${esc(name)} found a permanent ${esc(BOOST_NAMES[boostStat])} boost!</span>`);
       break;
+    }
     case 'food': if (mine && e.lowHealth) say('saved_by_food', `${hLabel} was about to die… saved by food`); break;
     case 'poison': log(`<span class="n">${esc(name)} ate poisoned food!</span>`); if (mine) { sfx('poison'); say('poisoned', 'That was poisoned!'); } break;
     case 'steal': log(`<span class="n">A thief stole ${e.item === 'potion' ? 'a potion' : 'a key'} from ${esc(name)}!</span>`); if (mine) sfx('bad'); break;
@@ -898,6 +921,8 @@ function renderHud() {
       <div>SCORE <span class="sc">0</span></div>
       <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>
       ${p.boosts?.length ? `<div class="boosts" title="Active chest boosts this level">${p.boosts.map((b) => BOOST_ICONS[b] || '✨').join(' ')}</div>` : ''}
+      <div class="runboosts" title="Permanent run boosts"></div>
+      <div class="amulets" title="Active amulets"></div>
     </div>`).join('') + `<div class="muted" style="font-size:11px;text-align:center;margin-top:auto" id="hud-time"></div>`;
 }
 function updateHudValues(s) {
@@ -911,6 +936,21 @@ function updateHudValues(s) {
     const el = document.querySelector(`.pp[data-pid="${p[0]}"]`); if (!el) continue;
     el.querySelector('.hp').textContent = p[4]; el.querySelector('.sc').textContent = p[7]; el.querySelector('.k').textContent = p[5]; el.querySelector('.po').textContent = p[6];
     el.classList.toggle('low', p[4] < LOW_HEALTH && !p[8]); el.classList.toggle('dead', !!p[8]);
+    // 10th element: run-boost pip string (one letter per stack, see sim.js's encodeBoosts).
+    const rb = el.querySelector('.runboosts');
+    if (rb) rb.innerHTML = [...(p[9] || '')].map((ch) => RUN_BOOST_ICON[BOOST_TILES[ch]] || '✨').join(' ');
+    // 11th element: active-amulet string, pairs of (letter, 2-digit seconds remaining) — see
+    // sim.js's encodeAmulets — rendered as an icon plus a live countdown.
+    const am = el.querySelector('.amulets');
+    if (am) {
+      const parts = [];
+      const re = /([A-Z])(\d{2})/g; let mm;
+      while ((mm = re.exec(p[10] || ''))) {
+        const kind = AMULET_TILES[mm[1]];
+        parts.push(`${AMULET_ICON[kind] || '✨'} ${Number(mm[2])}s`);
+      }
+      am.innerHTML = parts.join(' &nbsp; ');
+    }
   }
   const t = $('#hud-time'); if (t) t.textContent = `Time ${Math.floor(s.lt / 60)}:${String(s.lt % 60).padStart(2, '0')}`;
 }

@@ -59,6 +59,20 @@ test('the new monster/item glyphs are accepted, and the skip-exit (8) counts as 
   assert.equal(parsed.exits.length, 1, "'8' is recognized as an exit tile");
 });
 
+test('the amulet and boost glyphs are accepted tiles', () => {
+  const rows = LEVEL1.rows.slice();
+  rows[1] = rows[1].slice(0, 20) + 'I' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + 'R' + rows[2].slice(21);
+  rows[4] = rows[4].slice(0, 20) + 'O' + rows[4].slice(21);
+  rows[6] = rows[6].slice(0, 20) + 'U' + rows[6].slice(21);
+  rows[8] = rows[8].slice(0, 20) + 'V' + rows[8].slice(21);
+  rows[10] = rows[10].slice(0, 20) + 'A' + rows[10].slice(21);
+  rows[12] = rows[12].slice(0, 20) + 'B' + rows[12].slice(21);
+  rows[14] = rows[14].slice(0, 20) + 'Q' + rows[14].slice(21);
+  rows[16] = rows[16].slice(0, 20) + 'N' + rows[16].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+});
+
 test('repairLevel fixes borders, missing start/exit and connectivity', () => {
   const broken = { name: 'x', rows: ['..........', '..####....', '..#..#....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
   const fixed = repairLevel(broken);

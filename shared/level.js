@@ -78,7 +78,7 @@ export function exitReachable(lvl) {
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */
 export function repairLevel(raw) {
-  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8]/g, '.'));
+  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN]/g, '.'));
   rows = rows.filter((r) => r.length > 0);
   let w = Math.max(...rows.map((r) => r.length), MIN_SIZE);
   w = Math.min(w, MAX_SIZE);
@@ -126,4 +126,13 @@ export const LEGEND = [
   [T.GHOST, 'Ghost'], [T.GRUNT, 'Grunt'], [T.DEMON, 'Demon'], [T.DEATH, 'Death'],
   [T.LOBBER, 'Lobber'], [T.SORCERER, 'Sorcerer'], [T.THIEF, 'Thief'],
   [T.TRAP, 'Secret wall (crumbles when a player touches it)'],
+  [T.AMULET_INVIS, 'Invisibility amulet (20s: monsters ignore you)'],
+  [T.AMULET_REFLECT, 'Reflective shots amulet (20s: shots bounce off a wall once)'],
+  [T.AMULET_REPULSE, "Repulsiveness amulet (20s: pushes monsters away, they can't touch you)"],
+  [T.AMULET_SUPER, 'Super shots amulet (20s: shots pierce through monsters)'],
+  [T.BOOST_SPEED, 'Speed boost (permanent, rare)'],
+  [T.BOOST_ARMOR, 'Armor boost (permanent, rare)'],
+  [T.BOOST_SHOT, 'Shot power boost (permanent, rare)'],
+  [T.BOOST_FIRE_RATE, 'Shot speed boost (permanent, rare)'],
+  [T.BOOST_MAGIC, 'Magic power boost (permanent, rare)'],
 ];

@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';
 import { generateLevel, generateTreasureRoom } from '../../shared/procgen.js';
-import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T, LOW_HEALTH } from '../../shared/constants.js';
+import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T, LOW_HEALTH, AMULET_TILES } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
 import { rollChests, applyChest } from '../../shared/chests.js';
@@ -275,6 +275,7 @@ export class Room {
 
   /** Move a lobby client into the running sim (on start, or on late join into a live room). */
   enterGame(c) {
+    c.amuletKinds = new Set(); // fresh run: see the 'pickup' case in onEvent() for amulet_kinds_run
     this.sim.addPlayer(c.pid, {
       name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title,
       palette: c.palette, classDef: c.classDef || null, custom: c.custom || null,
@@ -515,7 +516,21 @@ export class Room {
       case 'generator': bump('generators'); this.awardXp(c, uidOf, XP_GENERATOR); break;
       case 'food': bump('food'); if (e.lowHealth) bump('food_low'); break;
       case 'food_shot': bump('food_shot'); break;
-      case 'pickup': if (e.item === 'T') { bump('treasure'); this.awardXp(c, uidOf, XP_TREASURE); } if (e.item === 'K') bump('keys'); break;
+      case 'pickup': {
+        if (e.item === 'T') { bump('treasure'); this.awardXp(c, uidOf, XP_TREASURE); }
+        if (e.item === 'K') bump('keys');
+        // Amulet Collector achievement (README's "Amulets and boosts"): all four amulet kinds
+        // collected within one run — `c.amuletKinds` is reset at the start of every run in
+        // enterGame(), so raising this run's distinct-kind count is really "the most distinct
+        // kinds ever collected in a single run" once accumulated across the account's history.
+        const amuletKind = AMULET_TILES[e.item];
+        if (amuletKind && c) {
+          c.amuletKinds = c.amuletKinds || new Set();
+          c.amuletKinds.add(amuletKind);
+          if (uidOf) this.unlock(c, stats.raise(uidOf, 'amulet_kinds_run', c.amuletKinds.size));
+        }
+        break;
+      }
       case 'door': bump('doors'); break;
       case 'secret': bump('secrets'); break;
       case 'potion': if (!e.weak) bump('potions'); break;

@@ -42,10 +42,50 @@ export const T = {
   POISON_FOOD: '!', // looks like food, costs health instead
   CIDER: 'C', // +50 health drink
   EXIT_SKIP: '8', // exit variant that jumps the party ahead 4 levels instead of 1
+  // ---- amulets: temporary (AMULET_DURATION seconds), see server/game/sim.js player.amulets ----
+  AMULET_INVIS: 'I',   // monsters ignore you entirely: no targeting/aggro, they wander instead
+  AMULET_REFLECT: 'R', // your shots bounce off one wall instead of dying there
+  AMULET_REPULSE: 'O', // monsters within REPULSE_RANGE tiles are pushed away each tick and can't touch you
+  AMULET_SUPER: 'U',   // your shots pierce through monsters, damaging each one they pass
+  // ---- boosts: permanent for the run, rare, stack up to BOOST_STACK_CAP, see player.runBoosts ----
+  BOOST_SPEED: 'V',
+  BOOST_ARMOR: 'A',
+  BOOST_SHOT: 'B',      // shot power (damage)
+  BOOST_FIRE_RATE: 'Q', // shot speed (reload rate)
+  BOOST_MAGIC: 'N',     // magic power
 };
 
 export const SOLID_TILES = new Set([T.WALL, T.DOOR, T.TRAP]);
-export const PICKUP_TILES = new Set([T.KEY, T.FOOD, T.POTION, T.TREASURE, T.POISON_FOOD, T.CIDER]);
+export const PICKUP_TILES = new Set([
+  T.KEY, T.FOOD, T.POTION, T.TREASURE, T.POISON_FOOD, T.CIDER,
+  T.AMULET_INVIS, T.AMULET_REFLECT, T.AMULET_REPULSE, T.AMULET_SUPER,
+  T.BOOST_SPEED, T.BOOST_ARMOR, T.BOOST_SHOT, T.BOOST_FIRE_RATE, T.BOOST_MAGIC,
+]);
+// tile -> internal kind/stat key (see server/game/sim.js pickup handling in stepPlayers).
+export const AMULET_TILES = { [T.AMULET_INVIS]: 'invis', [T.AMULET_REFLECT]: 'reflect', [T.AMULET_REPULSE]: 'repulse', [T.AMULET_SUPER]: 'super' };
+export const BOOST_TILES = { [T.BOOST_SPEED]: 'speed', [T.BOOST_ARMOR]: 'armor', [T.BOOST_SHOT]: 'shotPower', [T.BOOST_FIRE_RATE]: 'shotSpeed', [T.BOOST_MAGIC]: 'magic' };
+// Inverse of the above — the single-char snapshot code for each amulet/boost (see sim.js
+// snapshot()'s compact per-player amulet/boost strings and client/game.js's decoder).
+export const AMULET_LETTER = Object.fromEntries(Object.entries(AMULET_TILES).map(([tile, kind]) => [kind, tile]));
+export const BOOST_LETTER = Object.fromEntries(Object.entries(BOOST_TILES).map(([tile, stat]) => [stat, tile]));
+
+export const AMULET_DURATION = 20; // seconds a temporary amulet effect lasts once picked up
+export const AMULET_SCORE = 150;   // score awarded for picking up an amulet
+export const BOOST_SCORE = 300;    // score awarded for picking up a permanent boost (rarer, worth more)
+export const BOOST_STACK_CAP = 3;  // a run-boost stat can't stack past this many pickups
+export const REPULSE_RANGE = 3;    // tiles — the repulsiveness amulet's push/no-touch radius
+// Display names, used by the client's HUD tooltips and the narrator's pickup line lookup (see
+// client/game.js's onEvent 'pickup' handling and voice-lines.json's amulet_<kind>/boost_pickup ids).
+export const AMULET_NAMES = { invis: 'Invisibility', reflect: 'Reflective Shots', repulse: 'Repulsion', super: 'Super Shots' };
+export const BOOST_NAMES = { speed: 'Speed', armor: 'Armor', shotPower: 'Shot Power', shotSpeed: 'Shot Speed', magic: 'Magic Power' };
+// Per-stack magnitude of each permanent run-boost stat (see server/game/sim.js's use of these).
+export const BOOST_EFFECT = {
+  speed: 0.12,     // +12% move speed per stack
+  armor: 0.12,     // -12% damage taken per stack
+  shotPower: 1,    // +1 flat shot damage per stack
+  shotSpeed: 0.12, // -12% shot cooldown (faster reload) per stack
+  magic: 0.5,      // +0.5 magic power per stack
+};
 export const GENERATOR_TILES = new Set([T.GEN_GRUNT, T.GEN_GHOST, T.GEN_DEMON, T.GEN_LOBBER, T.GEN_SORCERER]);
 export const MONSTER_TILES = new Set([T.GHOST, T.GRUNT, T.DEMON, T.DEATH, T.LOBBER, T.SORCERER, T.THIEF]);
 export const EXIT_TILES = new Set([T.EXIT, T.EXIT_SKIP]);

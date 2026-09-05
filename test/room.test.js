@@ -639,4 +639,30 @@ test('chat trims/caps text, drops empty messages, and throttles a flooding clien
   } finally { room.close(); }
 });
 
+test('collecting all four amulet kinds in one run unlocks the Amulet Collector achievement', () => {
+  const room = makeRoom({ id: 'amulets-1' });
+  try {
+    const ws = fakeWs();
+    const user = makeUser();
+    room.join(ws, { pid: 'a', user, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    ws.sent.length = 0;
+
+    for (const item of ['I', 'R']) room.onEvent({ type: 'pickup', pid: 'a', item, x: 1, y: 1 });
+    assert.equal(ws.sent.some((m) => m.t === 'ach'), false, 'not unlocked with only two of the four kinds');
+
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'O', x: 1, y: 1 });
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'U', x: 1, y: 1 });
+    const ach = ws.sent.find((m) => m.t === 'ach');
+    assert.ok(ach, 'the achievement unlocked once the fourth distinct kind was collected');
+    assert.equal(ach.ach.id, 'amulet_collector');
+    assert.ok(stats.getAchievementIds(user.id).has('amulet_collector'));
+
+    // Re-collecting the same kind again doesn't re-fire it.
+    ws.sent.length = 0;
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'I', x: 1, y: 1 });
+    assert.equal(ws.sent.some((m) => m.t === 'ach'), false);
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });

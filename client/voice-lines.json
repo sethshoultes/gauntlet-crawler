@@ -12,5 +12,10 @@
   "bravery": "I've not seen such bravery.",
   "level_n": "Let's see how you do in this level.",
   "wave_n": "Wave incoming!",
-  "died": "Hero has died. Insert coin to continue."
+  "died": "Hero has died. Insert coin to continue.",
+  "amulet_invis": "Invisibility!",
+  "amulet_reflect": "Reflective shots!",
+  "amulet_repulse": "Repulsion!",
+  "amulet_super": "Super shots!",
+  "boost_pickup": "Permanent power up!"
 }

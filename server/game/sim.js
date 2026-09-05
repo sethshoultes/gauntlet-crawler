@@ -4,6 +4,8 @@ import {
   START_HEALTH, HEALTH_DRAIN_PER_SEC, FOOD_HEALTH, LOW_HEALTH, MAX_MONSTERS, MAX_SHOTS_PER_PLAYER,
   SHOT_SPEED, MONSTER_SHOT_SPEED, LEVEL_BONUS, DIRS, dirIndex, GENERATOR_TILES, PICKUP_TILES, MONSTER_TILES,
   generatorTier, GENERATOR_TIER_HP, GENERATOR_TIER_HP_BONUS, GENERATOR_TIER_SCORE_MUL,
+  AMULET_TILES, BOOST_TILES, AMULET_DURATION, AMULET_SCORE, BOOST_SCORE, BOOST_STACK_CAP, BOOST_EFFECT,
+  REPULSE_RANGE, AMULET_LETTER, BOOST_LETTER,
 } from '../../shared/constants.js';
 import { parseLevel } from '../../shared/level.js';
 
@@ -76,6 +78,11 @@ export class Sim {
       // whatever was active for the level that just ended is discarded here.
       p.boosts = p.pendingBoosts || {};
       p.pendingBoosts = null;
+      // Amulets are picked up within a level and don't make sense to carry into the next one
+      // (new positions, new dangers) — they're cleared on every level load. `runBoosts` (the
+      // permanent per-run stat boosts) is deliberately NOT touched here: it persists for the
+      // whole run and only resets when addPlayer() creates a fresh player (a new run/join).
+      p.amulets = {};
       if (p.pendingCurse === 'spawn') {
         const type = ['ghost', 'grunt', 'demon'][Math.floor(Math.random() * 3)];
         const side = Math.random() < 0.5 ? -1 : 1;
@@ -106,6 +113,12 @@ export class Sim {
       input: { dx: 0, dy: 0, fire: false, potion: false, respawn: false },
       lastPotion: 0, stats: {}, perks: mergedPerks, rank, title,
       boosts: {}, pendingBoosts: null, pendingCurse: null, // temporary chest effects, see shared/chests.js
+      // Arcade parity (#10): `amulets` is {kind: secondsRemaining} for the temporary pickups
+      // (invis/reflect/repulse/super — see AMULET_TILES), cleared every level load. `runBoosts` is
+      // {stat: stackCount} for the permanent per-run pickups (speed/armor/shotPower/shotSpeed/magic
+      // — see BOOST_TILES), which persists across loadLevel() and only resets here, i.e. on a
+      // fresh addPlayer() for a new run/join.
+      amulets: {}, runBoosts: {},
     };
     this.players.set(id, p);
     this.placeAtStart(p);
@@ -171,10 +184,14 @@ export class Sim {
     }
     return false;
   }
-  nearestPlayer(x, y, maxDist = Infinity) {
+  /** Nearest living player to (x,y). `opts.skipInvisible` (invisibility amulet, see
+   *  AMULET_TILES/README's "Amulets and boosts") excludes a player currently invisible — used by
+   *  every monster AI target search so an invisible player gets no targeting/aggro at all. */
+  nearestPlayer(x, y, maxDist = Infinity, opts = {}) {
     let best = null, bd = maxDist * maxDist;
     for (const p of this.players.values()) {
       if (p.dead) continue;
+      if (opts.skipInvisible && p.amulets?.invis > 0) continue;
       const d = (p.x - x) ** 2 + (p.y - y) ** 2;
       if (d < bd) { bd = d; best = p; }
     }
@@ -216,7 +233,8 @@ export class Sim {
   hurtPlayer(p, amount, source) {
     if (p.dead) return;
     const c = classOf(p);
-    let dmg = amount * c.armor * p.perks.damageTakenMul * (p.boosts?.damageTakenMul || 1);
+    const armorBoostMul = Math.max(0.1, 1 - (p.runBoosts?.armor || 0) * BOOST_EFFECT.armor);
+    let dmg = amount * c.armor * p.perks.damageTakenMul * (p.boosts?.damageTakenMul || 1) * armorBoostMul;
     // thick_skin (Hero Builder trait): only softens a ghost's touch attack, not damage in general.
     if (source === 'ghost' && c.traitDef?.ghostDamageTakenMul != null) dmg *= c.traitDef.ghostDamageTakenMul;
     p.hp -= dmg;
@@ -276,10 +294,40 @@ export class Sim {
   step(dt) {
     this.time += dt; this.levelTime += dt;
     if (this.completed) return;
+    this.stepAmulets(dt);
     this.stepPlayers(dt);
     this.stepMonsters(dt);
+    this.stepRepulsion(dt);
     this.stepGenerators(dt);
     this.stepShots(dt);
+  }
+
+  /** Tick down every player's active temporary amulets (README's "Amulets and boosts"); runs
+   *  regardless of dead/alive so a death doesn't pause or reset the clock. */
+  stepAmulets(dt) {
+    for (const p of this.players.values()) {
+      if (!p.amulets) continue;
+      for (const kind of Object.keys(p.amulets)) {
+        p.amulets[kind] -= dt;
+        if (p.amulets[kind] <= 0) delete p.amulets[kind];
+      }
+    }
+  }
+
+  /** Repulsiveness amulet: push every monster within REPULSE_RANGE of a player who has it active
+   *  away each tick — paired with stepMonsters' touch-damage guard for the "cannot touch you"
+   *  half of the effect (a push alone couldn't guarantee a fast/cornered monster never grazes). */
+  stepRepulsion(dt) {
+    for (const p of this.players.values()) {
+      if (p.dead || !(p.amulets?.repulse > 0)) continue;
+      for (const m of this.monsters.values()) {
+        const dx = m.x - p.x, dy = m.y - p.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist >= REPULSE_RANGE || dist < 0.001) continue;
+        const push = (REPULSE_RANGE - dist) * 3 * dt;
+        this.moveEntity(m, dx / dist * push, dy / dist * push, 'monster');
+      }
+    }
   }
 
   stepPlayers(dt) {
@@ -314,16 +362,22 @@ export class Sim {
           const sid = uid();
           const wpn = c.weaponDef || null; // Hero Builder weapon (see shared/hero-builder.js WEAPONS)
           const shotSpeed = SHOT_SPEED * (wpn?.shotSpeedMul || 1);
-          const dmg = (c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0)) * (wpn?.damageMul || 1);
+          const dmg = (c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0)
+            + (p.runBoosts?.shotPower || 0) * BOOST_EFFECT.shotPower) * (wpn?.damageMul || 1);
           // `range` (tiles) -> shot lifetime, so a weapon's reach stays constant regardless of its
           // own speed multiplier; classics (no weaponDef) keep the old fixed 3s lifetime.
           const life = wpn?.range != null ? wpn.range / shotSpeed : 3;
+          // Amulet effects are baked into the shot at fire time (see stepShots): reflective shots
+          // bounce off one wall instead of dying there, super shots pierce through every monster
+          // they pass instead of stopping at the first one.
           this.shots.set(sid, {
             id: sid, owner: p.id, cls: p.cls, shotKey: c.shotKey, x: p.x + dx * 0.5, y: p.y + dy * 0.5,
             vx: dx / len * shotSpeed, vy: dy / len * shotSpeed, dmg, dir: p.dir, hostile: false, life,
             homing: wpn?.homing || 0, splash: wpn?.splash || 0,
+            reflect: !!(p.amulets?.reflect > 0), pierce: !!(p.amulets?.super > 0),
           });
-          p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1) * (wpn?.cooldownMul || 1);
+          const shotSpeedBoostMul = Math.max(0.2, 1 - (p.runBoosts?.shotSpeed || 0) * BOOST_EFFECT.shotSpeed);
+          p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1) * shotSpeedBoostMul * (wpn?.cooldownMul || 1);
           // Custom heroes have no per-class synth tone; fall back to the weapon's own sound (the
           // weapon id doubles as its sprite/sound key — see shared/hero-builder.js WEAPONS).
           this.onEvent({ type: 'sound', name: 'shoot_' + (p.classDef ? c.weapon : p.cls), x: p.x, y: p.y });
@@ -332,7 +386,8 @@ export class Sim {
         const len = Math.hypot(inp.dx, inp.dy);
         // sprinter (Hero Builder trait): a speed boost that only kicks in below its HP threshold.
         const sprint = (c.traitDef?.sprintSpeedMul && p.hp < (c.traitDef.sprintHpThreshold ?? Infinity)) ? c.traitDef.sprintSpeedMul : 1;
-        const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1) * sprint;
+        const runSpeedMul = 1 + (p.runBoosts?.speed || 0) * BOOST_EFFECT.speed;
+        const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1) * runSpeedMul * sprint;
         const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
         for (const [tx, ty, tc] of touched) {
           if (tc === T.DOOR && p.keys > 0) {
@@ -358,6 +413,21 @@ export class Sim {
         else if (here === T.TREASURE) p.score += TREASURE_SCORE * (c.traitDef?.lootScoreMul || 1);
         else if (here === T.POISON_FOOD) { p.hp = Math.max(1, p.hp - 100); this.onEvent({ type: 'poison', pid: p.id }); }
         else if (here === T.CIDER) p.hp += 50;
+        else if (AMULET_TILES[here]) {
+          // Temporary amulet: (re)start its full duration — a second pickup of the same kind just
+          // refreshes the clock rather than stacking, since these are on/off effects, not stats.
+          const kind = AMULET_TILES[here];
+          p.amulets = p.amulets || {};
+          p.amulets[kind] = AMULET_DURATION;
+          p.score += AMULET_SCORE;
+        } else if (BOOST_TILES[here]) {
+          // Permanent per-run boost: stacks up to BOOST_STACK_CAP, persists across levels (see
+          // loadLevel — this field is never reset there) until a fresh addPlayer() (a new run).
+          const stat = BOOST_TILES[here];
+          p.runBoosts = p.runBoosts || {};
+          p.runBoosts[stat] = Math.min(BOOST_STACK_CAP, (p.runBoosts[stat] || 0) + 1);
+          p.score += BOOST_SCORE;
+        }
         this.onEvent({ type: 'pickup', pid: p.id, item: here, x: tx, y: ty });
       } else if (here === T.TRANSPORTER) {
         this.tryTeleport(p);
@@ -370,7 +440,11 @@ export class Sim {
       }
       if (inp.potion) {
         inp.potion = false;
-        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic + p.perks.magicAdd, 7.5 * (c.potionRadiusMul || 1) * (c.traitDef?.potionRadiusMul || 1)); }
+        if (p.potions > 0) {
+          p.potions--;
+          const magic = c.magic + p.perks.magicAdd + (p.runBoosts?.magic || 0) * BOOST_EFFECT.magic;
+          this.usePotion(p, magic, 7.5 * (c.potionRadiusMul || 1) * (c.traitDef?.potionRadiusMul || 1));
+        }
       }
     }
   }
@@ -406,8 +480,8 @@ export class Sim {
   /** Lobber AI (README's "Features" section, "New monster types"): holds 4-7 tiles from its target and lobs an arcing shot every ~2s that flies
    *  clean over walls, landing on the target's launch-time position (see stepShots's `arc` path). */
   stepLobber(m, def, dt) {
-    const target = this.nearestPlayer(m.x, m.y, def.wakeRange);
-    if (!target) return;
+    const target = this.nearestPlayer(m.x, m.y, def.wakeRange, { skipInvisible: true });
+    if (!target) { if (this.nearestPlayer(m.x, m.y, def.wakeRange)) this.wander(m, def, dt); return; }
     const dx = target.x - m.x, dy = target.y - m.y;
     const dist = Math.hypot(dx, dy) || 0.001;
     if (dist < def.minRange) this.moveEntity(m, -dx / dist * def.speed * dt, -dy / dist * def.speed * dt, 'monster');
@@ -442,13 +516,15 @@ export class Sim {
     let target = null, td = Infinity;
     for (const p of this.players.values()) {
       if (p.dead || (p.keys <= 0 && p.potions <= 0)) continue;
+      if (p.amulets?.invis > 0) continue; // invisibility: the thief can't sense you either
       const d = Math.hypot(p.x - m.x, p.y - m.y);
       if (d < td) { td = d; target = p; }
     }
-    if (!target) return; // nothing worth stealing right now
+    if (!target) return; // nothing worth stealing right now (or nobody it can perceive)
     const dx = target.x - m.x, dy = target.y - m.y;
     const dist = Math.hypot(dx, dy) || 0.001;
     if (dist < 0.8) {
+      if (target.amulets?.repulse > 0) return; // repulsiveness amulet: the thief can't touch you to steal
       if (target.potions > 0) { target.potions--; m.stolen = 'potion'; }
       else { target.keys--; m.stolen = 'key'; }
       this.onEvent({ type: 'steal', pid: target.id, item: m.stolen });
@@ -456,6 +532,15 @@ export class Sim {
     }
     this.moveEntity(m, dx / dist * def.speed * dt, dy / dist * def.speed * dt, 'monster');
     m.dir = dirIndex(dx, dy);
+  }
+
+  /** Invisibility amulet: a monster with nobody it can target (its only nearby player is
+   *  invisible) doesn't just freeze like it would when simply out of wakeRange — it wanders in a
+   *  slowly-changing random direction instead, per the "monsters ignore you" arcade parity spec. */
+  wander(m, def, dt) {
+    if (m.wanderDir == null || Math.random() < 0.02) m.wanderDir = Math.random() * Math.PI * 2;
+    const speed = (def.speed || 2) * 0.4;
+    this.moveEntity(m, Math.cos(m.wanderDir) * speed * dt, Math.sin(m.wanderDir) * speed * dt, 'monster');
   }
 
   stepMonsters(dt) {
@@ -466,12 +551,16 @@ export class Sim {
       if (m.type === 'sorcerer') this.stepSorcererBlink(m, def, dt);
       if (m.type === 'lobber') { this.stepLobber(m, def, dt); continue; }
       if (m.type === 'thief') { this.stepThief(m, def, dt); continue; }
-      const target = this.nearestPlayer(m.x, m.y, def.wakeRange);
-      if (!target) continue;
+      const target = this.nearestPlayer(m.x, m.y, def.wakeRange, { skipInvisible: true });
+      if (!target) {
+        if (this.nearestPlayer(m.x, m.y, def.wakeRange)) this.wander(m, def, dt);
+        continue;
+      }
       const dx = target.x - m.x, dy = target.y - m.y;
       const dist = Math.hypot(dx, dy) || 0.001;
-      // contact
-      if (dist < 0.8) {
+      // contact — the repulsiveness amulet makes the target untouchable regardless of distance
+      // (stepRepulsion() also actively pushes monsters away from that player each tick)
+      if (dist < 0.8 && !(target.amulets?.repulse > 0)) {
         if (def.touchKills) {
           this.hurtPlayer(target, def.damage, m.type);
           this.monsters.delete(m.id);
@@ -580,6 +669,7 @@ export class Sim {
       const steps = 2; // sub-step so fast shots don't tunnel through 1-tile walls
       let done = false;
       for (let k = 0; k < steps && !done; k++) {
+        const px = s.x, py = s.y; // pre-substep position, for reflect's axis-of-impact check below
         s.x += s.vx * dt / steps; s.y += s.vy * dt / steps;
         const tx = Math.floor(s.x), ty = Math.floor(s.y);
         const c = this.tile(tx, ty);
@@ -593,21 +683,41 @@ export class Sim {
         }
         const owner = this.players.get(s.owner);
         if (GENERATOR_TILES.has(c)) { const g = this.generators.get(`${tx},${ty}`); if (g) this.damageGenerator(g, s.dmg, owner); done = true; break; }
-        if (c === T.WALL || c === T.DOOR || c === T.TRAP) { done = true; break; }
+        if (c === T.WALL || c === T.DOOR || c === T.TRAP) {
+          // Reflective shots amulet: bounce off a wall once (mirror the axis that was actually
+          // blocked, so a shot hitting a wall square-on bounces straight back, and one clipping a
+          // corner bounces diagonally) instead of dying here.
+          if (s.reflect && !s.bounced) {
+            const hitX = this.isSolidFor(this.tile(Math.floor(s.x), Math.floor(py)), 'shot');
+            const hitY = this.isSolidFor(this.tile(Math.floor(px), Math.floor(s.y)), 'shot');
+            if (hitX) s.vx = -s.vx;
+            if (hitY || (!hitX && !hitY)) s.vy = -s.vy;
+            s.bounced = true;
+            s.x = px; s.y = py; // undo this substep's move so the shot isn't left embedded in the wall
+            s.dir = dirIndex(s.vx, s.vy);
+            continue;
+          }
+          done = true; break;
+        }
         if (c === T.FOOD || c === T.CIDER) { this.setTile(tx, ty, T.FLOOR); if (owner) this.onEvent({ type: 'food_shot', pid: s.owner, x: tx, y: ty }); done = true; break; }
         if (c === T.POISON_FOOD) { this.setTile(tx, ty, T.FLOOR); done = true; break; } // harmless — no penalty for shooting the poison
         if (c === T.POTION) { this.setTile(tx, ty, T.FLOOR); if (owner) this.usePotion({ ...owner, x: tx + 0.5, y: ty + 0.5, id: owner.id }, 1, 4, true); done = true; break; }
         for (const m of this.monsters.values()) {
           if (Math.abs(m.x - s.x) < HALF + 0.15 && Math.abs(m.y - s.y) < HALF + 0.15) {
             if (m.type === 'sorcerer' && m.visible === false) continue; // shot passes through while blinked out
-            done = true;
-            if (MONSTERS[m.type].immune) { this.onEvent({ type: 'sound', name: 'clank', x: m.x, y: m.y }); break; }
+            // Super shots amulet: pierce straight through instead of stopping, damaging every
+            // monster it passes exactly once (the `hit` set below keeps a slow-moving shot from
+            // re-damaging the same monster across several sub-steps/ticks while still overlapping it).
+            if (s.pierce) { s.hit = s.hit || new Set(); if (s.hit.has(m.id)) continue; s.hit.add(m.id); }
+            else done = true;
+            if (MONSTERS[m.type].immune) { this.onEvent({ type: 'sound', name: 'clank', x: m.x, y: m.y }); if (s.pierce) continue; break; }
             m.hp -= s.dmg;
             if (m.hp <= 0) this.killMonster(m, owner); else this.onEvent({ type: 'sound', name: 'hit', mtype: m.type, x: m.x, y: m.y });
             // splash (Hero Builder fireball-style weapons): also damage OTHER monsters near the
             // impact point for `s.splash` fraction of the shot's damage — a single hit can't
             // double-dip the primary target through this.
             if (s.splash > 0) this.applySplash(m, s.dmg * s.splash, owner);
+            if (s.pierce) continue;
             break;
           }
         }
@@ -629,11 +739,41 @@ export class Sim {
   }
 
   // ---------- network view ----------
+  /** Compact per-player boost-pip string for the snapshot's `p` array: each stacked run-boost
+   *  contributes its BOOST_LETTER repeated once per stack (e.g. speed x2 + armor x1 -> "VVA") —
+   *  see client/game.js's HUD boost pips. Empty string when there are no run-boosts. */
+  encodeBoosts(runBoosts) {
+    if (!runBoosts) return '';
+    let out = '';
+    for (const stat of Object.keys(BOOST_EFFECT)) {
+      const n = runBoosts[stat] || 0;
+      if (n > 0) out += BOOST_LETTER[stat].repeat(n);
+    }
+    return out;
+  }
+  /** Compact per-player amulet string for the snapshot's `p` array: each active amulet contributes
+   *  its AMULET_LETTER plus its remaining whole seconds, zero-padded to 2 digits (e.g. invis with
+   *  12.4s left + reflect with 5s left -> "I12R05") — see client/game.js's HUD countdown. Empty
+   *  string when nothing is active. */
+  encodeAmulets(amulets) {
+    if (!amulets) return '';
+    let out = '';
+    for (const kind of Object.keys(AMULET_LETTER)) {
+      const left = amulets[kind];
+      if (left > 0) out += AMULET_LETTER[kind] + String(Math.min(99, Math.ceil(left))).padStart(2, '0');
+    }
+    return out;
+  }
   snapshot() {
     const r2 = (v) => Math.round(v * 100) / 100;
     return {
       t: 's', tick: Math.round(this.time * 20), lt: Math.round(this.levelTime),
-      p: [...this.players.values()].map((p) => [p.id, r2(p.x), r2(p.y), p.dir, Math.round(p.hp), p.keys, p.potions, p.score, p.dead ? 1 : 0]),
+      // 10th element: compact run-boost pip string (encodeBoosts). 11th: compact active-amulet
+      // string with remaining seconds (encodeAmulets). See README's "Amulets and boosts" section.
+      p: [...this.players.values()].map((p) => [
+        p.id, r2(p.x), r2(p.y), p.dir, Math.round(p.hp), p.keys, p.potions, p.score, p.dead ? 1 : 0,
+        this.encodeBoosts(p.runBoosts), this.encodeAmulets(p.amulets),
+      ]),
       // 6th element: 1 while a sorcerer is blinked invisible (client draws it at 20% alpha); omitted otherwise.
       m: [...this.monsters.values()].map((m) => [m.id, MONSTERS[m.type].snapKey, r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined]),
       g: [...this.generators.values()].map((g) => [g.x, g.y, g.hp]),

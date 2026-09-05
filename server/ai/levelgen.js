@@ -33,6 +33,10 @@ Tile legend (use ONLY these characters):
   g grunt generator   h ghost generator   m demon generator   l lobber generator   s sorcerer generator   (generators spawn monsters until destroyed)
   1 ghost   2 grunt   3 demon   4 lobber (keeps its distance, lobs shots over walls)   5 sorcerer (blinks invisible)
   6 thief (steals a key/potion then flees; never placed by a generator)   Z Death (rare, only if asked)   W secret wall (crumbles when touched)
+  I invisibility amulet (20s, monsters ignore the holder)   R reflective-shots amulet (20s, shots bounce off a wall once)
+  O repulsiveness amulet (20s, pushes monsters away)   U super-shots amulet (20s, shots pierce monsters)
+  V permanent speed boost   A permanent armor boost   B permanent shot-power boost   Q permanent shot-speed boost   N permanent magic-power boost
+  (amulets/boosts are optional flavor: use at most 0-2 amulets and at most 1 boost tile, only on deeper/harder levels)
 Rules: outer border is all #. There must be a walkable path from S to E (or 8) (doors are fine if there is a key before them).
 Every door must have at least one key reachable before it. Put 2-6 food, 3-10 treasure, 1-2 potions, 2-8 generators depending on the requested difficulty.
 Make rooms and corridors that are fun to fight in: choke points, side rooms with loot, generators guarding treasure.

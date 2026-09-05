@@ -137,6 +137,21 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   with no monsters and several exits (`generateTreasureRoom` in `shared/procgen.js`) instead of a regular
   dungeon. A 30s timer runs from the moment it loads; find any exit early or let the timer expire — either
   way there's no chest intermission afterward. Clearing 5 of them earns the *Bonus Hunter* achievement.
+- **Amulets and boosts** (`server/game/sim.js` player `amulets`/`runBoosts`): rare arcade-parity pickups
+  sprinkled by `shared/procgen.js` (amulets occasionally from level 2 on, boosts much more rarely from
+  level 4 on, both scaling with depth). Four **amulets** are temporary, lasting 20 seconds with the
+  remaining time shown in the HUD: **Invisibility** (tile `I`) makes every monster ignore you entirely —
+  no targeting or aggro, they just wander — until it wears off; **Reflective Shots** (tile `R`) makes your
+  shots bounce off one wall instead of dying there; **Repulsiveness** (tile `O`) pushes every monster
+  within 3 tiles away each tick and makes you untouchable to them; **Super Shots** (tile `U`) makes your
+  shots pierce straight through monsters, damaging each one they pass instead of stopping at the first.
+  Five **permanent boosts** are rare and last the whole run (reset only when a fresh run starts), stacking
+  up to 3 times each and shown as HUD pips: **Speed** (tile `V`, +12%/stack), **Armor** (tile `A`,
+  -12% damage taken/stack), **Shot Power** (tile `B`, +1 damage/stack), **Shot Speed** (tile `Q`, -12%
+  reload time/stack) and **Magic Power** (tile `N`, +0.5 magic/stack) — all apply immediately and work
+  identically for Hero Builder custom heroes, since they live on the shared player object rather than any
+  class-specific field. Collecting all four amulet kinds in a single run earns the *Amulet Collector*
+  achievement.
 - **Players block each other**: bumping into a teammate cancels that axis of movement (soft collision within
   0.7 tiles) so the party can't stack on top of one another — player shots still pass straight through
   teammates, only movement is blocked.
@@ -363,7 +378,8 @@ The catalogue covers a shot per weapon (axe whirr, sword slash, fireball whoosh,
 hammer thud, dagger tick, skull wail), a hit/death pair per monster (ghost pop, grunt grunt, demon
 roar, death moan, lobber plop, sorcerer blink, thief snicker), and one-shot cues for generator
 crumble, doors, keys, food/cider, poison (a sour, wavering tone), potions, teleports, chest opens,
-the wave banner, level fanfare, victory/game-over stingers, rank-ups and achievements.
+amulets (a magical shimmer) and permanent boosts (a brighter fanfare), the wave banner, level
+fanfare, victory/game-over stingers, rank-ups and achievements.
 
 The **master / SFX / narrator-voice** mixer lives in Settings (see below) and persists to
 `localStorage` (`gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`, `gc_mute`) so it works for guests
@@ -379,7 +395,8 @@ have one — and falls back to `speechSynthesis` (the same low, slow, robotic se
 always used) when there's no clip yet. `client/game.js` calls `say(id, text)` with a stable id for
 every narrator line (`welcome`, `needs_food`, `about_to_die`, `saved_by_food`, `poisoned`,
 `dont_shoot_food`, `dont_shoot_food_again`, `save_keys`, `use_magic`, `bravery`, `level_n`,
-`wave_n`, `died`, plus `cutscene` for cutscene captions) instead of hard-coding the line's text —
+`wave_n`, `died`, `amulet_invis`, `amulet_reflect`, `amulet_repulse`, `amulet_super`,
+`boost_pickup`, plus `cutscene` for cutscene captions) instead of hard-coding the line's text —
 `text` is still passed through as the speechSynthesis fallback and as the source for generating a
 clip, but a pre-rendered clip is looked up by id alone. Every line runs through the narrator-voice
 mixer volume from Settings.
@@ -528,6 +545,8 @@ Levels are arrays of equal-length strings. Border must be walls; a start `S` and
 P potion   T treasure   E exit   8 skip-exit (+4 levels)   S start   X transporter
 g grunt generator   h ghost generator   m demon generator   l lobber generator   s sorcerer generator
 1 ghost   2 grunt   3 demon   4 lobber   5 sorcerer   6 thief (no generator)   Z Death   W secret wall
+I invisibility amulet (20s)   R reflective-shots amulet (20s)   O repulsiveness amulet (20s)   U super-shots amulet (20s)
+V speed boost (permanent)   A armor boost (permanent)   B shot-power boost (permanent)   Q shot-speed boost (permanent)   N magic-power boost (permanent)
 ```
 
 The same legend is exported as `LEGEND` from `shared/level.js` for the editor's tile palette and
