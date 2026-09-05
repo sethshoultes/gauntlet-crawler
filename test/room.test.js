@@ -609,4 +609,28 @@ test('an in-lobby hero switch (setHero) to a custom hero works the same as join'
   } finally { room.close(); }
 });
 
+test('chat trims/caps text, drops empty messages, and throttles a flooding client', () => {
+  const room = makeRoom({ id: 'chat-1' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    ws.sent.length = 0;
+
+    room.chat('a', '   ');
+    assert.equal(ws.sent.filter((m) => m.t === 'chat').length, 0, 'a blank/whitespace-only message is dropped');
+
+    room.chat('a', '  hello  ' + 'x'.repeat(300));
+    const first = ws.sent.find((m) => m.t === 'chat');
+    assert.ok(first, 'a real message is broadcast');
+    assert.equal(first.text.length, 200, 'text is capped at 200 chars');
+    assert.equal(first.text.startsWith('hello'), true, 'leading/trailing whitespace is trimmed');
+
+    ws.sent.length = 0;
+    for (let i = 0; i < 20; i++) room.chat('a', `msg ${i}`);
+    const got = ws.sent.filter((m) => m.t === 'chat').length;
+    assert.ok(got <= 10, `a flooding client is throttled well below 20 messages (got ${got})`);
+    assert.ok(got >= 1, 'at least the first few messages still get through');
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });

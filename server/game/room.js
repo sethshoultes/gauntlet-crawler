@@ -413,7 +413,14 @@ export class Room {
   chat(pid, text) {
     const c = this.clients.get(pid);
     if (!c) return;
-    this.broadcast({ t: 'chat', from: c.name, text: String(text).slice(0, 200) });
+    const clean = String(text ?? '').trim().slice(0, 200);
+    if (!clean) return;
+    // Simple per-client throttle so one connection can't flood every player in the room.
+    const now = Date.now();
+    const recent = (c.chatTimes || []).filter((t) => now - t < 10_000);
+    if (recent.length >= 10) return;
+    recent.push(now); c.chatTimes = recent;
+    this.broadcast({ t: 'chat', from: c.name, text: clean });
   }
 
   creditTime() {

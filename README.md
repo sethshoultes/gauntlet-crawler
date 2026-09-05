@@ -15,7 +15,9 @@ Deliberately simple graphics: every sprite is 8x8 pixel art drawn in code, no as
 ```bash
 npm install
 npm start            # http://localhost:3000
-npm test             # unit tests (level format, procgen, simulation, achievements, progression, death mode)
+npm test             # unit tests: level format, procgen, simulation, achievements, progression, death
+                      # mode, chests, unlocks, Hero Builder, admin, settings, stats, telemetry,
+                      # voice lines, cutscenes, WS heartbeat, and room/lobby integration
 ```
 
 Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/gauntlet.sqlite`.
@@ -36,6 +38,7 @@ Optional environment variables:
 | `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
 | `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Auto-generated and persisted if unset — see [Analytics and privacy](#analytics-and-privacy) |
+| `GAUNTLET_DEBUG` | Set to `1` to enable test-only hooks used by `test/e2e.mjs` (the WS `debug` message's `clear`/`killall` actions, and `POST /api/heroes/debug/xp`). Never set this in production. |
 
 ## How to play
 
@@ -219,6 +222,12 @@ tab of `/admin.html`.
 monitoring and container health checks — `deploy/deploy.sh` and the `Dockerfile`'s `HEALTHCHECK`
 both poll it instead of the old `/api/ai/status`.
 
+**WebSocket protocol hardening**: the `/ws` server caps incoming message size (`maxPayload`, since
+every legitimate message is tiny) so a single hostile client can't force a huge allocation per
+message; `POST /api/register`, `POST /api/login`, room creation (`POST /api/rooms`,
+`POST /api/levels/:id/play`, and the WS `join` message's `create: true`), and in-room chat are all
+rate-limited per IP/user/connection for the same reason every other write endpoint is.
+
 ## Level format
 
 Levels are arrays of equal-length strings. Border must be walls; a start `S` and exit `E` are required.
@@ -330,34 +339,68 @@ Custom heroes are wired end to end, per the plan this section used to lay out:
 
 ```
 server/            Node HTTP + WebSocket server
-  index.js         static files, REST API (/api/*), WebSocket protocol (/ws)
+  index.js         static files, REST API (/api/*), WebSocket protocol (/ws), rate limits, maxPayload
   game/sim.js      authoritative simulation: movement, combat, generators, pickups, doors, potions, exits
-  game/room.js     a running dungeon: tick loop, level progression, stats and achievement hooks
+  game/room.js     a running dungeon: tick loop, level progression, chests, waves, stats/achievement hooks
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
+  heroes.js        Hero Builder REST API (/api/heroes/*), server-side validation/re-validation
   db.js / auth.js / stats.js   node:sqlite persistence, sessions, counters + achievement unlocks
   account.js       settings-page ops: password change + session rotation, prefs, account deletion, data export
   admin.js         admin dashboard API (mounted under /api/admin/*), admin designation
   telemetry.js     first-party analytics: events table, IP hashing, aggregations, 90-day retention
   log.js           structured JSON logger + persisted `errors` table
+  ws-heartbeat.js  WebSocket liveness sweep (ping/terminate dead sockets), unit-testable in isolation
 shared/            code used by both server and browser
   constants.js     tiles, classes, monsters, tuning
   level.js         parse / validate / repair
-  procgen.js       seeded endless generator (rooms + corridors + loot + generators)
+  procgen.js       seeded endless generator (rooms + corridors + loot + generators), bonus treasure rooms
+  rng.js           seeded PRNG (mulberry32) used everywhere gameplay randomness must be reproducible
   levels/level1.js the hand-built opener
   achievements.js  achievement definitions
   progression.js   XP curve, rank titles/thresholds, perk caps — shared by server and dashboard/HUD
   chests.js        intermission chest pool, seeded rolling, and applying picked chests to a player
   unlocks.js       palette + hero-archetype unlock catalogue, requirement evaluation, dashboard catalogue
-client/            static browser app (no build step): game, dashboard, editor, sprites, audio, settings, admin
-test/              node:test suites
+  hero-builder.js  Hero Builder rules: notch stats, weapons, traits, validation, classDef conversion
+client/            static browser app (no build step)
+  game.js / index.html         the game itself: lobby, room screen, canvas renderer, HUD, input
+  dashboard.js / settings.js   career stats/achievements/leaderboards; prefs, password, export, delete
+  editor.js / heroes.js        Level Builder (paint/validate/AI generate/publish); Hero Builder UI
+  admin.js                     admin dashboard (overview, users, levels, errors, analytics)
+  sprites.js / font.js / pixelsprite.js   procedural 8x8 sprites, bitmap font, Hero Builder pixel art
+  audio.js / voice.js          synthesized SFX + mixer; narrator voice (pre-rendered clip or speechSynthesis)
+  cutscenes.js / attract.js    pixel-art cutscene engine; arcade attract-mode title/roster/high-scores
+  common.js                    shared helpers: auth token, API fetch, nav, toasts, telemetry/error beacons
+test/              node:test suites (test/**/*.test.js) plus test/smoke.mjs and test/e2e.mjs (Playwright,
+                   run explicitly via `npm run smoke` / `npm run e2e`, not part of `npm test`)
 ```
 
 ## Roadmap
 
-Tracked as GitHub issues: hero level-ups (#2). The full pre-game lobby with ready-up, private rooms and reconnect
-(#5), the chest selection intermission between levels (#3), character unlocks — alternate palettes and new hero
-archetypes (#1) — and Endless / Death mode with timed waves and a rank-gated level cap (#4) are implemented above.
+Tracked as GitHub issues. Hero level-ups (#2), the full pre-game lobby with ready-up, private rooms
+and reconnect (#5), the chest selection intermission between levels (#3), character unlocks —
+alternate palettes and new hero archetypes (#1) — and Endless / Death mode with timed waves and a
+rank-gated level cap (#4) are all implemented above (issues closed).
+
+Open issues, roughly in the order they'd land:
+
+- **Small polish** (#7-#9): durable guest kicks, palette tint in the lobby roster/room list, and
+  offering chests to a player who joins mid-intermission — all three are actually implemented
+  already (see "Rooms", "Character unlocks" and "Chest intermission" above); the issues remain open
+  pending someone verifying and closing them.
+- **Arcade parity with the original Gauntlet/Gauntlet II** (#10-#13): amulets and power-ups, trap
+  tiles that dissolve walls and timed walls, acid puddles/stun tiles/force fields, and an "It" tag
+  mode plus mystery treasure rooms.
+- **Presentation** (#14-#15): an original-style attract mode with high-score entry (partially covered
+  by `/attract.html`, see "Cutscenes and attract mode" above) and a full mobile touch layout/gamepad
+  support.
+- **AI-assisted content** (#16-#18): describe-a-hero-get-a-build-and-sprite, remixing/tuning an
+  existing level, and optional AI narrator commentary.
+- **Sound and voice** (#19-#20): pre-rendered narrator audio and arcade-grade SFX synthesis — both
+  shipped (see "Sound" and "Narrator voice" above); issues remain open pending closure.
+- **Ops and media** (#21-#22): an optional AI-generated launch trailer/title backdrop, and optional
+  Sentry-compatible error reporting (the first-party `errors` table and admin Errors tab above cover
+  the "see failures" need in the meantime).
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.
 
@@ -563,10 +606,5 @@ node tools/generate-voice.mjs [id ...]  # omit ids to (re)generate every line
 It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
 additionally down-samples each clip to 8kHz mono Ogg/Vorbis (a cheap-DAC "bit-crush" pass that
 matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing the
-manifest.
-
-> **Known gap**: `server/index.js`'s static-file `Content-Type` table doesn't list an `.ogg`
-> extension yet (it falls back to `application/octet-stream`), which most browsers still play
-> fine from an `<audio>` element via file-signature sniffing but isn't guaranteed everywhere. If
-> you generate real clips, add `'.ogg': 'audio/ogg'` (and `'.mp3': 'audio/mpeg'`, if you skip the
-> `ffmpeg` pass) to that server's `MIME` map.
+manifest. `server/index.js`'s static-file `Content-Type` table already lists `.ogg`/`.mp3`/`.wav`/
+`.webm`, so a generated clip is served with the right MIME type as soon as it lands on disk.

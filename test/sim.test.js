@@ -490,6 +490,28 @@ test('sprinter trait boosts speed only while below its HP threshold', () => {
   assert.ok(distLow > distFull * 1.2, 'moved noticeably farther per tick while below the sprint HP threshold');
 });
 
+// ---------- performance sanity ----------
+test('snapshot() JSON stays compact even at max load (4 players, 48 monsters, many shots)', () => {
+  const rowsBig = Array.from({ length: 40 }, (_, y) => (y === 0 || y === 39 ? '#'.repeat(60) : '#' + '.'.repeat(58) + '#'));
+  rowsBig[2] = '#S' + '.'.repeat(56) + 'E#';
+  const BIG = { name: 'big', rows: rowsBig };
+  const sim = new Sim(BIG);
+  const classes = ['warrior', 'valkyrie', 'wizard', 'elf'];
+  for (let i = 0; i < 4; i++) {
+    const p = sim.addPlayer('p' + i, { name: 'Player' + i, cls: classes[i] });
+    p.x = 2 + i; p.y = 2; p.dir = 2;
+    sim.setInput('p' + i, { dx: 0, dy: 0, fire: true });
+  }
+  for (let i = 0; i < 48; i++) sim.spawnMonster(['ghost', 'grunt', 'demon', 'lobber', 'sorcerer'][i % 5], 5 + (i % 40), 5 + Math.floor(i / 40));
+  // A few ticks so every player's shots are actually in flight (MAX_SHOTS_PER_PLAYER * 4 players).
+  for (let i = 0; i < 3; i++) sim.step(DT);
+  const snap = sim.snapshot();
+  const json = JSON.stringify(snap);
+  assert.ok(snap.p.length === 4, 'sanity: 4 players present');
+  assert.ok(snap.m.length > 0 && snap.m.length <= 48, `sanity: monsters present and capped at MAX_MONSTERS (got ${snap.m.length})`);
+  assert.ok(json.length < 6 * 1024, `snapshot JSON should stay under ~6KB at max load, got ${json.length} bytes`);
+});
+
 test('arcanist trait extends potion blast radius by 30%', () => {
   const sim = new Sim(ARENA);
   const classDef = customClassDef({ magic: 1, trait: 'arcanist', traitDef: TRAITS.arcanist });

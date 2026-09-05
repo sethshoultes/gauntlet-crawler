@@ -3,3 +3,8 @@ data/
 *.log
 .env
 .claude/worktrees/
+.wolf/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/

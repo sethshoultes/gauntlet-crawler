@@ -14,6 +14,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 function log(msg) {
@@ -50,7 +51,10 @@ function waitForServer(url, timeoutMs = 20_000) {
 async function main() {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-smoke-'));
   const port = await findFreePort();
-  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  // fileURLToPath (not URL#pathname) so a repo path containing spaces or other characters that
+  // get percent-encoded in a file: URL (e.g. "Local%20Sites") resolves to a real, spawnable
+  // directory instead of a literal "%20" that doesn't exist on disk.
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const baseUrl = `http://127.0.0.1:${port}`;
 
   log(`starting server on ${baseUrl} (DATA_DIR=${dataDir})`);

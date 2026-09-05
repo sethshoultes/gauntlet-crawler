@@ -107,8 +107,19 @@ async function api(req, res, url) {
     });
   }
 
-  if (m === 'POST' && url.pathname === '/api/register') { const b = await readBody(req); return json(res, 200, auth.register(b.username, b.password)); }
-  if (m === 'POST' && url.pathname === '/api/login') { const b = await readBody(req); return json(res, 200, auth.login(b.username, b.password)); }
+  if (m === 'POST' && url.pathname === '/api/register') {
+    const ip = req.socket.remoteAddress || 'x';
+    if (!rateLimit('register:' + ip, 10, 60_000)) return json(res, 429, { error: 'Slow down' });
+    const b = await readBody(req); return json(res, 200, auth.register(b.username, b.password));
+  }
+  if (m === 'POST' && url.pathname === '/api/login') {
+    const ip = req.socket.remoteAddress || 'x';
+    // Rate-limited by IP (rather than by attempted username) so this can't be trivially sidestepped
+    // by trying many different usernames, and so it doesn't let an attacker lock out a real user's
+    // account by hammering their name from elsewhere.
+    if (!rateLimit('login:' + ip, 20, 60_000)) return json(res, 429, { error: 'Slow down' });
+    const b = await readBody(req); return json(res, 200, auth.login(b.username, b.password));
+  }
   if (m === 'POST' && url.pathname === '/api/logout') { auth.logout(auth.bearer(req)); return json(res, 200, { ok: true }); }
   if (m === 'GET' && url.pathname === '/api/me') {
     if (!user) return json(res, 200, { user: null, unlocks: { classes: [...unlockedFor(null).classes], palettes: [] }, catalogue: catalogueFor(null), isAdmin: false });
@@ -220,12 +231,16 @@ async function api(req, res, url) {
     }
     if (m === 'POST' && seg[3] === 'play') {
       if (!level.published && level.owner_id !== user?.id) return json(res, 403, { error: 'This level is private' });
+      const ip = req.socket.remoteAddress || 'x';
+      if (!rateLimit('createroom:' + (user ? 'u' + user.id : ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
       const b = await readBody(req);
       const room = lobby.create({ name: b.name || level.name, source: { type: 'custom', levelId: level.id, level: { name: level.name, description: level.description, rows: level.rows } }, isPublic: b.public !== false });
       return json(res, 200, { room: room.info() });
     }
   }
   if (m === 'POST' && url.pathname === '/api/rooms') {
+    const ip = req.socket.remoteAddress || 'x';
+    if (!rateLimit('createroom:' + (user ? 'u' + user.id : ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
     const b = await readBody(req);
     let source = { type: 'campaign' };
     if (b.level) {
@@ -259,7 +274,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ---------- WebSocket game protocol ----------
-const wss = new WebSocketServer({ server, path: '/ws' });
+// Every legitimate message on this protocol (input/chat/join/hero/settings/pick/...) is tiny
+// (chat text alone is capped at 200 chars server-side); `ws`'s default maxPayload is 100MiB, so
+// without an explicit cap a single client could force a huge allocation per message.
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
 wss.on('connection', (ws, req) => {
   let pid = crypto.randomBytes(4).toString('hex');
   let room = null;
@@ -286,7 +304,13 @@ wss.on('connection', (ws, req) => {
             const resumed = target.resume(ws, msg.resume);
             if (resumed) { pid = resumed.pid; room = target; break; }
           }
-          if (!target) target = msg.create ? lobby.create({ name: msg.roomName, isPublic: msg.public !== false }) : lobby.quick();
+          if (!target && msg.create) {
+            // Room creation persists a live sim + timers in memory until the room empties out — cap
+            // how fast one connection can mint new rooms so a hostile client can't grow the process's
+            // memory/timer footprint without bound.
+            if (!rateLimit('createroom:' + ip, 10, 60_000)) throw new Error('Slow down: too many rooms created');
+            target = lobby.create({ name: msg.roomName, isPublic: msg.public !== false });
+          } else if (!target) target = lobby.quick();
           target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null });
           room = target;
           telemetry.recordEvent({ kind: 'join', userId: user?.id || null, guestId: msg.guestId || null, ip, data: { roomId: target.id } });
@@ -329,8 +353,6 @@ wss.on('connection', (ws, req) => {
             telemetry.recordEvent({ kind: 'leave', userId: uid, ip, data: { roomId } });
           }
           break;
-        case 'rooms': send({ t: 'rooms', rooms: lobby.list() }); break;
-        case 'ping': send({ t: 'pong', ts: msg.ts }); break;
       }
     } catch (e) { send({ t: 'error', error: e.message }); }
   });
