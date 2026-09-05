@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateLevel, biasFromPrompt } from '../shared/procgen.js';
+import { generateLevel, biasFromPrompt, generateTreasureRoom } from '../shared/procgen.js';
 import { validateLevel } from '../shared/level.js';
 
 test('procedural levels are valid across a wide difficulty range', () => {
@@ -51,4 +51,48 @@ test('prompt bias extraction', () => {
   assert.equal(b.ghost, 1); assert.equal(b.maze, 1); assert.equal(b.treasure, 1); assert.equal(b.monsters, 1);
   const lvl = generateLevel({ seed: 'p', level: 4, bias: b });
   assert.deepEqual(validateLevel(lvl), []);
+});
+
+test('prompt bias extraction recognizes the new monster/item words', () => {
+  const b = biasFromPrompt('A lobber and a sorcerer guard a teleporter, watch for poison and grab the cider');
+  assert.equal(b.lobber, 1); assert.equal(b.sorcerer, 1); assert.equal(b.teleport, 1);
+  assert.equal(b.poison, 1); assert.equal(b.cider, 1);
+  const b2 = biasFromPrompt('a sneaky thief lurks here');
+  assert.equal(b2.thief, 1);
+});
+
+test('levels with the new monster/item glyphs still validate across a wide difficulty range', () => {
+  for (let level = 2; level <= 80; level += 3) {
+    for (const seed of ['a', 'b', 'zeta']) {
+      const lvl = generateLevel({ seed, level, bias: { lobber: 1, sorcerer: 1, thief: 1, teleport: 1, poison: 1, cider: 1 } });
+      assert.deepEqual(validateLevel(lvl), [], `seed ${seed} level ${level}`);
+    }
+  }
+});
+
+test('a skip-exit (8) can appear on deeper levels and still counts as a valid exit', () => {
+  // Deterministic seeds don't guarantee a hit at 8% — just assert that whenever one does appear
+  // (searching a range of seeds), the level still validates and the tile is present.
+  let sawSkip = false;
+  for (let seed = 0; seed < 60 && !sawSkip; seed++) {
+    const lvl = generateLevel({ seed: `skip-${seed}`, level: 5 });
+    if (lvl.rows.some((r) => r.includes('8'))) {
+      sawSkip = true;
+      assert.deepEqual(validateLevel(lvl), []);
+    }
+  }
+  assert.ok(sawSkip, 'a skip-exit tile appeared in at least one of the sampled seeds');
+});
+
+test('generateTreasureRoom produces an open, monster-free room with several exits that validates', () => {
+  const room = generateTreasureRoom({ seed: 'bonus', level: 6 });
+  assert.deepEqual(validateLevel(room), []);
+  const joined = room.rows.join('');
+  assert.ok(!/[123456ghlms]/.test(joined), 'no monsters or generators in a treasure room');
+  const exits = joined.split('').filter((c) => c === 'E').length;
+  assert.ok(exits >= 3, `several exits: ${exits}`);
+  assert.ok(room.rows.join('').split('').filter((c) => c === 'T').length > 50, 'the room is full of treasure');
+  // deterministic for a given seed/level
+  const again = generateTreasureRoom({ seed: 'bonus', level: 6 });
+  assert.deepEqual(again.rows, room.rows);
 });

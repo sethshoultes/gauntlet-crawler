@@ -5,10 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Gauntlet Crawler</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<meta property="og:title" content="Gauntlet Crawler" />
+<meta property="og:description" content="A 1985-style online multiplayer dungeon crawler for four heroes — endless procedural levels, Death mode, a Hero Builder and an AI level generator." />
+<meta property="og:image" content="/media/title-card.webp" />
+<meta name="twitter:card" content="summary_large_image" />
 <link rel="stylesheet" href="/style.css" />
 <style>
+  #intro-cutscene { display: block; width: 100%; max-width: 960px; aspect-ratio: 4 / 3; background: #000; margin: 0 auto 16px; border: 4px solid var(--line); }
+  #intro-cutscene[hidden] { display: none; }
   #lobby .heroes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 12px 0; }
   @media (max-width: 800px) { #lobby .heroes { grid-template-columns: repeat(2, 1fr); } }
+  .hero-tabs { display: flex; gap: 8px; margin-top: 10px; }
+  .hero-tabs button { font-size: 12px; padding: 4px 12px; background: transparent; border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+  .hero-tabs button.sel { color: #000; background: var(--yellow); border-color: var(--yellow); font-weight: bold; }
+  .hero .notches { font-size: 10px; color: var(--muted); line-height: 1.5; text-align: left; margin-top: 8px; }
+  .hero .notches b { color: var(--fg, #e8e6d8); }
   .hero { border: 2px solid var(--line); padding: 12px; cursor: pointer; text-align: center; background: #000; }
   .hero.sel { border-color: var(--yellow); box-shadow: 0 0 0 3px #000, 0 0 0 5px var(--yellow); }
   .hero canvas { width: 64px; height: 64px; }
@@ -42,7 +53,10 @@
   #game { display: none; flex-direction: column; align-items: center; gap: 8px; }
   #game.on { display: flex; }
   .stage { display: flex; gap: 8px; align-items: stretch; max-width: 100%; }
-  #cv { background: #000; border: 4px solid var(--line); width: min(960px, calc(100vw - 260px)); height: auto; aspect-ratio: 4 / 3; }
+  .cv-wrap { position: relative; background: #000; border: 4px solid var(--line); width: min(960px, calc(100vw - 260px)); aspect-ratio: 4 / 3; }
+  #cv { display: block; width: 100%; height: 100%; }
+  #scene-cutscene { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; }
+  #scene-cutscene[hidden] { display: none; }
   #hud { width: 220px; background: #000; border: 4px solid var(--line); padding: 8px; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
   #hud .pp { border: 1px solid var(--line); padding: 6px; }
   #hud .pp .nm { font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
@@ -70,9 +84,15 @@
 <nav class="top"></nav>
 <main>
   <section id="lobby">
+    <canvas id="intro-cutscene" width="640" height="480" class="pixel" hidden></canvas>
     <div class="panel">
       <h2>Choose your hero</h2>
+      <div class="hero-tabs" id="hero-tabs">
+        <button type="button" class="sel" data-tab="classic">Classic</button>
+        <button type="button" data-tab="custom">Custom</button>
+      </div>
       <div class="heroes" id="heroes"></div>
+      <div class="heroes" id="heroes-custom" style="display:none"></div>
       <div class="row">
         <label class="muted" for="gname">Guest name</label>
         <input id="gname" maxlength="12" placeholder="Guest" style="width:160px" />
@@ -141,7 +161,10 @@
     </div>
     <div id="game">
       <div class="stage">
-        <canvas id="cv" width="640" height="480" class="pixel"></canvas>
+        <div class="cv-wrap">
+          <canvas id="cv" width="640" height="480" class="pixel"></canvas>
+          <canvas id="scene-cutscene" width="640" height="480" class="pixel" hidden></canvas>
+        </div>
         <div id="hud"></div>
       </div>
     </div>

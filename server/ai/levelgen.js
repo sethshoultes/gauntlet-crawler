@@ -24,10 +24,13 @@ const SYSTEM = `You design levels for a Gauntlet (1985 arcade) style top-down du
 Output a rectangular ASCII map. Every row must have the same length. Size between ${MIN_SIZE}x${MIN_SIZE} and ${MAX_SIZE}x${MAX_SIZE}; 28x22 is a good default.
 Tile legend (use ONLY these characters):
   # wall     . floor     D door (locked, opened by a key)   K key
-  F food (+100 health)   P magic potion   T treasure   E exit   S player start (place 2-4 S tiles together)
-  g grunt generator   h ghost generator   m demon generator   (generators spawn monsters until destroyed)
-  1 ghost   2 grunt   3 demon   Z Death (rare, only if asked)   W secret wall (crumbles when touched)
-Rules: outer border is all #. There must be a walkable path from S to E (doors are fine if there is a key before them).
+  F food (+100 health)   ! poison food (looks like food, -100 health — use sparingly, it's a trap)
+  C cider (+50 health)   P magic potion   T treasure   E exit   8 skip-exit (jumps the party ahead 4 levels; rare, deep levels only)
+  S player start (place 2-4 S tiles together)   X transporter (teleports to another X tile; always place exactly 2, or none)
+  g grunt generator   h ghost generator   m demon generator   l lobber generator   s sorcerer generator   (generators spawn monsters until destroyed)
+  1 ghost   2 grunt   3 demon   4 lobber (keeps its distance, lobs shots over walls)   5 sorcerer (blinks invisible)
+  6 thief (steals a key/potion then flees; never placed by a generator)   Z Death (rare, only if asked)   W secret wall (crumbles when touched)
+Rules: outer border is all #. There must be a walkable path from S to E (or 8) (doors are fine if there is a key before them).
 Every door must have at least one key reachable before it. Put 2-6 food, 3-10 treasure, 1-2 potions, 2-8 generators depending on the requested difficulty.
 Make rooms and corridors that are fun to fight in: choke points, side rooms with loot, generators guarding treasure.
 Keep the map readable, avoid giant open squares, avoid unreachable pockets.`;

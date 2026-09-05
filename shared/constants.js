@@ -11,9 +11,7 @@ export const MAX_MONSTERS = 48;
 export const MAX_SHOTS_PER_PLAYER = 3;
 export const SHOT_SPEED = 12;
 export const MONSTER_SHOT_SPEED = 7;
-export const GENERATOR_HP = 3;
 export const GENERATOR_RANGE = 14; // only generators near a player spawn
-export const MONSTER_WAKE_RANGE = 13;
 export const LEVEL_BONUS = 500;
 
 // Tile glyphs used in the ASCII level format.
@@ -30,17 +28,27 @@ export const T = {
   GEN_GRUNT: 'g',
   GEN_GHOST: 'h',
   GEN_DEMON: 'm',
+  GEN_LOBBER: 'l',
+  GEN_SORCERER: 's',
   GHOST: '1',
   GRUNT: '2',
   DEMON: '3',
   DEATH: 'Z',
   TRAP: 'W', // secret wall: solid to monsters and shots, crumbles (whole group) when a player touches it
+  LOBBER: '4',
+  SORCERER: '5',
+  THIEF: '6', // no generator tile — the thief only appears loose, placed by procgen/editor
+  TRANSPORTER: 'X', // steps onto another X tile in the level, see Sim#tryTeleport
+  POISON_FOOD: '!', // looks like food, costs health instead
+  CIDER: 'C', // +50 health drink
+  EXIT_SKIP: '8', // exit variant that jumps the party ahead 4 levels instead of 1
 };
 
 export const SOLID_TILES = new Set([T.WALL, T.DOOR, T.TRAP]);
-export const PICKUP_TILES = new Set([T.KEY, T.FOOD, T.POTION, T.TREASURE]);
-export const GENERATOR_TILES = new Set([T.GEN_GRUNT, T.GEN_GHOST, T.GEN_DEMON]);
-export const MONSTER_TILES = new Set([T.GHOST, T.GRUNT, T.DEMON, T.DEATH]);
+export const PICKUP_TILES = new Set([T.KEY, T.FOOD, T.POTION, T.TREASURE, T.POISON_FOOD, T.CIDER]);
+export const GENERATOR_TILES = new Set([T.GEN_GRUNT, T.GEN_GHOST, T.GEN_DEMON, T.GEN_LOBBER, T.GEN_SORCERER]);
+export const MONSTER_TILES = new Set([T.GHOST, T.GRUNT, T.DEMON, T.DEATH, T.LOBBER, T.SORCERER, T.THIEF]);
+export const EXIT_TILES = new Set([T.EXIT, T.EXIT_SKIP]);
 export const ALL_TILES = new Set(Object.values(T));
 
 // `shotKey` picks the shot sprite/snapshot letter for a class (see server/game/sim.js snapshot()
@@ -69,16 +77,44 @@ export const CLASSES = {
 };
 export const CLASS_IDS = Object.keys(CLASSES);
 
+// `snapKey` is the single unique character server/game/sim.js's snapshot() sends for this
+// monster type in the compact `m` array (see SNAP_KEY_TO_MONSTER below and client/game.js) —
+// kept explicit (rather than derived from the type name's first letter) because several monster
+// names share a first letter (ghost/grunt both 'g', demon/death both 'd') and a first-letter
+// scheme silently collides them on the wire.
 export const MONSTERS = {
-  ghost: { hp: 1, speed: 3.2, damage: 15, touchKills: true,  score: 10,  wakeRange: 13 },
-  grunt: { hp: 2, speed: 2.6, damage: 12, touchKills: false, score: 20,  wakeRange: 12, hitCooldown: 0.6 },
-  demon: { hp: 3, speed: 2.3, damage: 20, touchKills: false, score: 30,  wakeRange: 12, hitCooldown: 0.8, shoots: true, shotDamage: 15, range: 5.5, shotCooldown: 1.6 },
-  death: { hp: 9999, speed: 3.0, damage: 4, touchKills: false, score: 1000, wakeRange: 16, drainTotal: 200, immune: true },
+  ghost: { hp: 1, speed: 3.2, damage: 15, touchKills: true,  score: 10,  wakeRange: 13, snapKey: 'g' },
+  grunt: { hp: 2, speed: 2.6, damage: 12, touchKills: false, score: 20,  wakeRange: 12, hitCooldown: 0.6, snapKey: 'r' },
+  demon: { hp: 3, speed: 2.3, damage: 20, touchKills: false, score: 30,  wakeRange: 12, hitCooldown: 0.8, shoots: true, shotDamage: 15, range: 5.5, shotCooldown: 1.6, snapKey: 'd' },
+  death: { hp: 9999, speed: 3.0, damage: 4, touchKills: false, score: 1000, wakeRange: 16, drainTotal: 200, immune: true, snapKey: 'e' },
+  // Lobber: keeps its distance (4-7 tiles) and lobs an arcing shot that flies over walls — see
+  // Sim#stepLobber / stepShots's `arc` handling and client/game.js's growing/shrinking shot scale.
+  lobber: { hp: 2, speed: 2.0, damage: 0, touchKills: false, score: 50, wakeRange: 14, shotDamage: 15, shotCooldown: 2.0, minRange: 4, maxRange: 7, snapKey: 'l' },
+  // Sorcerer: a grunt that blinks in and out of visibility (see Sim#stepSorcererBlink) — while
+  // invisible it can't be hit by a shot or a potion, and the client draws it at 20% alpha.
+  sorcerer: { hp: 2, speed: 2.6, damage: 12, touchKills: false, score: 40, wakeRange: 12, hitCooldown: 0.6, blinkVisible: 1.5, blinkInvisible: 1.0, snapKey: 's' },
+  // Thief: hunts down whichever player carries a key or potion, steals it on contact, then flees
+  // (see Sim#stepThief). Never spawns from a generator.
+  thief: { hp: 2, speed: 4.2, damage: 0, touchKills: false, score: 60, wakeRange: 16, snapKey: 't' },
 };
+// Inverse of the above, keyed by snapKey — used by client/game.js to turn a snapshot monster
+// entry's single-char type back into a real monster type name for sprite lookup.
+export const SNAP_KEY_TO_MONSTER = Object.fromEntries(Object.entries(MONSTERS).map(([type, def]) => [def.snapKey, type]));
 
-export const GENERATOR_SPAWNS = { [T.GEN_GRUNT]: 'grunt', [T.GEN_GHOST]: 'ghost', [T.GEN_DEMON]: 'demon' };
+export const GENERATOR_SPAWNS = { [T.GEN_GRUNT]: 'grunt', [T.GEN_GHOST]: 'ghost', [T.GEN_DEMON]: 'demon', [T.GEN_LOBBER]: 'lobber', [T.GEN_SORCERER]: 'sorcerer' };
 export const GENERATOR_SCORE = 100;
 export const TREASURE_SCORE = 100;
+
+// Generator tiers (see shared/procgen.js and server/game/sim.js loadLevel/stepGenerators): a
+// generator's tier is derived from the level index, not stored per-tile (a 1-char grid has no
+// room for a digit suffix). Tier raises the generator's own hp, the hp bonus it grants monsters
+// it spawns, and the score it's worth when destroyed.
+export function generatorTier(levelIndex) {
+  return Math.min(3, 1 + Math.floor((Math.max(1, levelIndex) - 1) / 6));
+}
+export const GENERATOR_TIER_HP = { 1: 3, 2: 5, 3: 7 };
+export const GENERATOR_TIER_HP_BONUS = { 1: 0, 2: 1, 3: 2 };
+export const GENERATOR_TIER_SCORE_MUL = { 1: 1, 2: 1.5, 3: 2 };
 
 export const DIRS = [
   [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1],

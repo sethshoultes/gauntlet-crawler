@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Settings · Gauntlet Crawler</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 1px; }
+  .field input[type="text"], .field input[type="password"] { width: 100%; max-width: 320px; }
+  .switch-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .switch-row input { width: 18px; height: 18px; }
+  .keys { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-top: 6px; }
+  .keys .field input { width: 100%; max-width: none; text-transform: uppercase; text-align: center; }
+  .danger-zone { border: 2px solid var(--red); padding: 14px; }
+  .danger-zone h2 { color: var(--red); }
+  #msg { font-size: 12px; margin-top: 10px; min-height: 14px; }
+  #msg.ok { color: var(--green); }
+  #msg.err { color: var(--red); }
+  .range-row { display: flex; align-items: center; gap: 12px; }
+  .range-row input[type="range"] { flex: 1; max-width: 320px; }
+</style>
+</head>
+<body>
+<nav class="top"></nav>
+<main>
+  <div id="guest" class="panel" style="display:none">
+    <h2>Settings</h2>
+    <p>Log in to change your password, save preferences across devices, or manage your account.</p>
+    <button class="primary" id="login">Log in / Register</button>
+  </div>
+
+  <div id="mine" style="display:none">
+    <div class="panel"><h2>Settings</h2><p class="muted" style="margin:0">Signed in as <b id="uname"></b>.</p></div>
+
+    <div class="panel" style="margin-top:18px">
+      <h2>Preferences</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 12px">Saved to your account and applied automatically whenever you play, on any device.</p>
+      <div class="field">
+        <label>Master volume</label>
+        <div class="range-row"><input type="range" id="p-volume" min="0" max="100" step="5" /><span id="p-volume-val" class="muted"></span></div>
+      </div>
+      <div class="field">
+        <label>Sound effects volume</label>
+        <div class="range-row"><input type="range" id="p-sfx-volume" min="0" max="100" step="5" /><span id="p-sfx-volume-val" class="muted"></span></div>
+      </div>
+      <div class="field">
+        <label>Narrator voice volume</label>
+        <div class="range-row"><input type="range" id="p-voice-volume" min="0" max="100" step="5" /><span id="p-voice-volume-val" class="muted"></span></div>
+      </div>
+      <div class="switch-row"><input type="checkbox" id="p-narrator" /><label for="p-narrator" style="margin:0;text-transform:none;font-size:14px">Narrator ("Elf needs food badly")</label></div>
+      <div class="switch-row"><input type="checkbox" id="p-cutscenes" /><label for="p-cutscenes" style="margin:0;text-transform:none;font-size:14px">Cutscenes</label></div>
+      <div class="switch-row"><input type="checkbox" id="p-colorblind" /><label for="p-colorblind" style="margin:0;text-transform:none;font-size:14px">Colour-blind palette</label></div>
+      <div class="switch-row"><input type="checkbox" id="p-reduced-motion" /><label for="p-reduced-motion" style="margin:0;text-transform:none;font-size:14px">Reduced motion</label></div>
+      <div class="field" style="margin-top:14px">
+        <label>Key bindings</label>
+        <div class="keys">
+          <div class="field"><label style="font-size:11px">Up</label><input type="text" id="k-up" maxlength="12" /></div>
+          <div class="field"><label style="font-size:11px">Down</label><input type="text" id="k-down" maxlength="12" /></div>
+          <div class="field"><label style="font-size:11px">Left</label><input type="text" id="k-left" maxlength="12" /></div>
+          <div class="field"><label style="font-size:11px">Right</label><input type="text" id="k-right" maxlength="12" /></div>
+          <div class="field"><label style="font-size:11px">Fire</label><input type="text" id="k-fire" maxlength="12" /></div>
+          <div class="field"><label style="font-size:11px">Potion</label><input type="text" id="k-potion" maxlength="12" /></div>
+        </div>
+      </div>
+      <button class="primary" id="save-prefs">Save preferences</button>
+      <span id="prefs-msg" style="margin-left:10px;font-size:12px"></span>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
+      <h2>Change password</h2>
+      <div class="field"><label>Current password</label><input type="password" id="cur-pw" autocomplete="current-password" /></div>
+      <div class="field"><label>New password</label><input type="password" id="new-pw" autocomplete="new-password" /></div>
+      <button id="change-pw">Change password</button>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
+      <h2>Your data</h2>
+      <p class="muted" style="font-size:12px">Download everything Gauntlet Crawler has stored about your account: profile, stats, achievements, run history, levels and preferences.</p>
+      <button id="export">Download my data</button>
+    </div>
+
+    <div class="danger-zone" style="margin-top:18px">
+      <h2>Delete account</h2>
+      <p class="muted" style="font-size:12px">This permanently deletes your account, stats, achievements, run history and levels (unpublishing anything you shared). This cannot be undone.</p>
+      <div class="field"><label>Confirm password</label><input type="password" id="del-pw" autocomplete="current-password" /></div>
+      <button class="danger" id="delete-account">Delete my account</button>
+    </div>
+
+    <div id="msg"></div>
+  </div>
+</main>
+<footer>Gauntlet Crawler &middot; a fan tribute, not affiliated with Atari.</footer>
+<script type="module" src="/settings.js"></script>
+</body>
+</html>

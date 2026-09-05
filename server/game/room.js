@@ -1,7 +1,10 @@
+// A running dungeon: one Room per game, owning a Sim, the tick loop, level progression (campaign,
+// procedural, Death mode, bonus treasure rooms), the chest intermission, and the stats/achievement
+// hooks that fire as players play.
 import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';
-import { generateLevel } from '../../shared/procgen.js';
+import { generateLevel, generateTreasureRoom } from '../../shared/procgen.js';
 import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
@@ -9,6 +12,9 @@ import { rollChests, applyChest } from '../../shared/chests.js';
 import { isClassUnlocked, isPaletteUnlocked, unlockedFor, requirementText, PALETTE_BY_ID } from '../../shared/unlocks.js';
 import * as stats from '../stats.js';
 import { db } from '../db.js';
+import { resolveCustomHero } from '../heroes.js';
+
+const CUSTOM_CLS_RE = /^custom:(\d+)$/;
 
 const SPEEDRUN_SECONDS = 45;
 const LEVEL_CHANGE_DELAY_MS = 2500;
@@ -20,6 +26,7 @@ const WAVE_BANNER_SECONDS = 3;   // "WAVE N" banner shown before a wave's monste
 const WAVE_TIMEOUT_MS = 40000;  // a wave advances automatically after this even if not fully cleared
 const WIPE_GRACE_MS = 10000;    // Death mode: end the run if everyone stays dead this long, uncontested
 const WAVE_SPAWN_MIN_DIST = 6;  // tiles a wave spawn must be from every player
+const TREASURE_ROOM_SECONDS = 30; // bonus level timer (README's "Features" section, "Bonus treasure rooms") — auto-completes with no bonus at 0
 
 export class Room {
   constructor({ id, name, seed, source = { type: 'campaign' }, isPublic = true, onEmpty }) {
@@ -47,7 +54,12 @@ export class Room {
     this.waveBannerTimer = null;  // "WAVE N" banner delay before monsters actually spawn
     this.waveTimer = null;        // forces the wave to advance after WAVE_TIMEOUT_MS
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
-    this.sim = new Sim(this.levelFor(1), { levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign' });
+    this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (see README's "Level format" section)
+    this.treasureTimer = null;    // bonus-level 30s auto-complete timer (README's "Features" section, "Bonus treasure rooms")
+    this.sim = new Sim(this.levelFor(1), {
+      levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign',
+      rng: makeRng(`${seed}|sim`),
+    });
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
     this.secondsTimer = setInterval(this.guard('creditTime', () => this.creditTime()), 30000);
     this.changing = false;
@@ -65,12 +77,17 @@ export class Room {
 
   levelFor(n) {
     if (this.source.type === 'death') return generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) });
+    if (this.isTreasureLevel(n)) return generateTreasureRoom({ seed: this.seed, level: n });
     if (n === 1) {
       if (this.source.type === 'custom' && this.source.level) return this.source.level;
       return LEVEL1;
     }
     return generateLevel({ seed: this.seed, level: n });
   }
+
+  /** Bonus level (README's "Features" section, "Bonus treasure rooms"): every 6th level (i.e. after every 5 regular levels) in any non-Death mode
+   *  is a generated treasure room instead — see shared/procgen.js generateTreasureRoom(). */
+  isTreasureLevel(n) { return this.source.type !== 'death' && n > 1 && n % 6 === 0; }
 
   /** Death mode generator bias: arena layout, and monster mix shifting ghost -> grunt -> demon as
    *  the party goes deeper, with a Death appearing every 5th level. */
@@ -99,8 +116,9 @@ export class Room {
         ? { id: this.source.levelId || null, name: this.source.level.name } : null,
       customName: this.source.level?.name || null, public: this.isPublic, hostPid: this.hostPid,
       roster: [...this.clients.values()].map((c) => ({
-        pid: c.pid, name: c.name, cls: c.cls, rank: c.rank, title: c.title,
+        pid: c.pid, name: c.name, cls: c.cls, palette: c.palette, rank: c.rank, title: c.title,
         ready: !!c.ready, away: !!c.away, host: c.pid === this.hostPid,
+        custom: c.custom || undefined, weapon: c.classDef?.weapon || undefined,
       })),
     };
   }
@@ -123,8 +141,17 @@ export class Room {
 
   /** Validate a requested hero/palette against what `user` has actually unlocked. Anything
    *  locked (or an unknown class) silently falls back to warrior/no-palette, and `error` carries
-   *  a human message for the client toast — same rule for `join` and the in-lobby `hero` switch. */
+   *  a human message for the client toast — same rule for `join` and the in-lobby `hero` switch.
+   *  A `cls` of `custom:<heroId>` (Hero Builder — see README.md "Hero Builder") takes a separate
+   *  path: it never falls through to `CLASSES`, since it names a row in the `heroes` table, not a
+   *  fixed archetype. */
   pickHero(user, cls, palette) {
+    const customId = typeof cls === 'string' ? cls.match(CUSTOM_CLS_RE)?.[1] : null;
+    if (customId != null) {
+      const resolved = resolveCustomHero(customId, user);
+      if (!resolved.ok) return { cls: 'warrior', palette: null, error: resolved.error, classDef: null, custom: null };
+      return { cls, palette: null, error: null, classDef: resolved.classDef, custom: { ...resolved.hero, color: resolved.classDef.color } };
+    }
     const profile = this.profileFor(user);
     const requestedCls = CLASSES[cls] ? cls : 'warrior';
     let outCls = requestedCls, error = null;
@@ -137,7 +164,7 @@ export class Room {
       const p = PALETTE_BY_ID[palette];
       if (p) error = `That palette is locked: ${requirementText({ requires: p.requires })}`;
     }
-    return { cls: outCls, palette: outPalette, error };
+    return { cls: outCls, palette: outPalette, error, classDef: null, custom: null };
   }
 
   resolvePalette(profile, cls, palette) {
@@ -163,13 +190,21 @@ export class Room {
   }
 
   // ---------- joining / reconnecting ----------
-  join(ws, { pid, user, name, cls, resume, palette }) {
+  /** Guest identity token: 16 random bytes as lowercase hex (32 chars). Issued once per guest on
+   *  their first join and echoed back on every later one so a host kick can durably block them —
+   *  this is the only thing it is ever used for; it grants no other trust. */
+  isValidGuestId(id) { return typeof id === 'string' && /^[0-9a-f]{32}$/.test(id); }
+
+  join(ws, { pid, user, name, cls, resume, palette, guestId }) {
     if (resume) {
       const c = this.resume(ws, resume);
       if (c) return c;
     }
     if (this.full) throw new Error('Room is full');
     if (user && this.kickedIds.has('u' + user.id)) throw new Error('You were removed from this room');
+    const requestedGuestId = this.isValidGuestId(guestId) ? guestId : null;
+    if (!user && requestedGuestId && this.kickedIds.has('g' + requestedGuestId)) throw new Error('You were removed from this room');
+    const finalGuestId = user ? null : (requestedGuestId || crypto.randomBytes(16).toString('hex'));
     let rank = null, title = null, perks = null;
     if (user) {
       rank = rankForXp(stats.getStats(user.id).xp || 0);
@@ -178,19 +213,22 @@ export class Room {
     }
     const picked = this.pickHero(user, cls, palette);
     const c = {
-      ws, pid, user, name, cls: picked.cls, palette: picked.palette, joinedAt: Date.now(), streak: 0, rank, title, perks,
+      ws, pid, user, name, cls: picked.cls, palette: picked.palette, classDef: picked.classDef || null, custom: picked.custom || null,
+      guestId: finalGuestId, joinedAt: Date.now(), streak: 0, rank, title, perks,
       ready: false, away: false, awaySince: null, awayTimer: null, resume: crypto.randomBytes(8).toString('hex'),
     };
     this.clients.set(pid, c);
     if (!this.hostPid) this.hostPid = pid;
     this.emptySince = null;
     if (this.state !== 'lobby') this.enterGame(c);
-    this.send(c, { t: 'welcome', pid, resume: c.resume, room: this.info() });
+    this.send(c, { t: 'welcome', pid, resume: c.resume, guestId: c.guestId || undefined, room: this.info() });
     if (picked.error) this.send(c, { t: 'error', error: picked.error });
     if (this.state !== 'lobby') this.send(c, this.sim.levelPacket());
+    if (this.state === 'intermission') this.offerChestsTo(c);
     this.broadcastRoom();
     if (this.state !== 'lobby') this.broadcast(this.playersPacket());
-    this.broadcast({ t: 'notice', text: `${name} the ${cap(picked.cls)} enters the dungeon` });
+    const heroLabel = picked.custom ? picked.custom.name : cap(picked.cls);
+    this.broadcast({ t: 'notice', text: `${name} the ${heroLabel} enters the dungeon` });
     this.checkAutoStart();
     return c;
   }
@@ -201,7 +239,7 @@ export class Room {
       if (c.away && c.resume === token) {
         if (c.awayTimer) { clearTimeout(c.awayTimer); c.awayTimer = null; }
         c.ws = ws; c.away = false; c.awaySince = null;
-        this.send(c, { t: 'welcome', pid: c.pid, resume: c.resume, room: this.info(), resumed: true });
+        this.send(c, { t: 'welcome', pid: c.pid, resume: c.resume, guestId: c.guestId || undefined, room: this.info(), resumed: true });
         if (this.state !== 'lobby') this.send(c, this.sim.levelPacket());
         if (this.state === 'intermission' && !this.chestPicks.has(c.pid)) {
           const chests = this.chestOffers.get(c.pid);
@@ -229,9 +267,16 @@ export class Room {
 
   /** Move a lobby client into the running sim (on start, or on late join into a live room). */
   enterGame(c) {
-    this.sim.addPlayer(c.pid, { name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title, palette: c.palette });
+    this.sim.addPlayer(c.pid, {
+      name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title,
+      palette: c.palette, classDef: c.classDef || null, custom: c.custom || null,
+    });
     if (c.user) {
-      const fresh = stats.raise(c.user.id, `class_${c.cls}`, 1);
+      // Every custom hero shares one 'class_custom' stat key rather than one per hero id — an
+      // unbounded, colon-bearing key per hero would be a poor fit for the classes_played/unlock
+      // machinery below, which only ever knows about the fixed CLASSES roster anyway.
+      const classKey = c.classDef ? 'class_custom' : `class_${c.cls}`;
+      const fresh = stats.raise(c.user.id, classKey, 1);
       const played = db.prepare("SELECT COUNT(*) AS n FROM stats WHERE user_id = ? AND key LIKE 'class_%' AND value > 0").get(c.user.id).n;
       this.unlock(c, [...fresh, ...stats.raise(c.user.id, 'classes_played', played)]);
       this.unlock(c, stats.raise(c.user.id, this.source.type === 'death' ? 'deepest_death_level' : 'deepest_level', this.levelIndex));
@@ -251,7 +296,7 @@ export class Room {
     const c = this.clients.get(pid);
     if (!c || this.state !== 'lobby') return;
     const picked = this.pickHero(c.user, cls, palette);
-    c.cls = picked.cls; c.palette = picked.palette;
+    c.cls = picked.cls; c.palette = picked.palette; c.classDef = picked.classDef || null; c.custom = picked.custom || null;
     if (picked.error) this.send(c, { t: 'error', error: picked.error });
     this.broadcastRoom();
   }
@@ -326,6 +371,7 @@ export class Room {
     const c = this.clients.get(targetPid);
     if (!c) return;
     if (c.user) this.kickedIds.add('u' + c.user.id);
+    else if (c.guestId) this.kickedIds.add('g' + c.guestId);
     this.send(c, { t: 'kicked', reason: 'Removed by the host' });
     this.leave(targetPid);
   }
@@ -370,7 +416,14 @@ export class Room {
   chat(pid, text) {
     const c = this.clients.get(pid);
     if (!c) return;
-    this.broadcast({ t: 'chat', from: c.name, text: String(text).slice(0, 200) });
+    const clean = String(text ?? '').trim().slice(0, 200);
+    if (!clean) return;
+    // Simple per-client throttle so one connection can't flood every player in the room.
+    const now = Date.now();
+    const recent = (c.chatTimes || []).filter((t) => now - t < 10_000);
+    if (recent.length >= 10) return;
+    recent.push(now); c.chatTimes = recent;
+    this.broadcast({ t: 'chat', from: c.name, text: clean });
   }
 
   creditTime() {
@@ -426,7 +479,7 @@ export class Room {
     const uidOf = c?.user?.id || null;
     const bump = (k, n = 1) => { if (uidOf && c) this.unlock(c, stats.bump(uidOf, k, n)); };
     switch (e.type) {
-      case 'kill': bump('kills'); bump(`kills_${e.monster}`); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5); break;
+      case 'kill': bump('kills'); bump(`kills_${e.monster}`); if (e.monster === 'thief') bump('thief_kills'); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5); break;
       case 'generator': bump('generators'); this.awardXp(c, uidOf, XP_GENERATOR); break;
       case 'food': bump('food'); if (e.lowHealth) bump('food_low'); break;
       case 'food_shot': bump('food_shot'); break;
@@ -436,6 +489,7 @@ export class Room {
       case 'potion': if (!e.weak) bump('potions'); break;
       case 'death': bump('deaths'); if (c) c.streak = 0; break;
       case 'coin': bump('coins'); break;
+      case 'teleport': bump('teleports'); break;
       case 'exit': this.onLevelComplete(e); break;
     }
   }
@@ -443,10 +497,17 @@ export class Room {
   onLevelComplete(e) {
     if (this.changing) return;
     this.changing = true;
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
+    const wasTreasure = this.sim.treasureRoom;
+    const skipAmt = e.skip === 4 ? 4 : 1; // exit variant '8' jumps the party ahead 4 levels (see README's "Level format" section)
+    this.pendingSkip = skipAmt;
     const n = this.clients.size;
+    let totalKills = 0, anyDeaths = false;
     for (const c of this.clients.values()) {
       const p = this.sim.players.get(c.pid);
       if (!p) continue;
+      totalKills += p.levelKills || 0;
+      if (p.levelDeaths > 0) anyDeaths = true;
       if (p.levelDeaths === 0) c.streak++; else c.streak = 0;
       if (!c.user) continue;
       const u = c.user.id;
@@ -456,13 +517,14 @@ export class Room {
       const depthKey = this.source.type === 'death' ? 'deepest_death_level' : 'deepest_level';
       const fresh = [
         ...stats.bump(u, 'levels_cleared'),
-        ...stats.raise(u, depthKey, this.levelIndex + 1),
+        ...stats.raise(u, depthKey, this.levelIndex + skipAmt),
         ...(e.levelTime < SPEEDRUN_SECONDS ? stats.bump(u, 'speed_clears') : []),
         ...(p.levelKills === 0 ? stats.bump(u, 'pacifist_clears') : []),
         ...(n === MAX_PLAYERS ? stats.bump(u, 'squad_clears') : []),
         ...(n === 1 ? stats.bump(u, 'solo_clears') : []),
         ...stats.raise(u, 'no_death_clears', c.streak),
         ...stats.raise(u, 'best_score', p.score),
+        ...(wasTreasure ? stats.bump(u, 'treasure_rooms_cleared') : []),
       ];
       this.unlock(c, fresh);
     }
@@ -475,17 +537,34 @@ export class Room {
       }
     }
     const who = this.clients.get(e.pid);
-    this.broadcast({ t: 'levelclear', by: who?.name || '?', level: this.levelIndex, time: Math.round(e.levelTime), next: this.levelIndex + 1 });
-    // Death mode: clearing the rank-gated cap level ends the run (victory) instead of continuing
-    // into another intermission/level — skip the chest pick entirely.
-    const atCap = this.source.type === 'death' && this.levelIndex >= this.computeDeathCap();
+    this.broadcast({
+      t: 'levelclear', by: who?.name || '?', level: this.levelIndex, time: Math.round(e.levelTime),
+      next: this.levelIndex + skipAmt, kills: totalKills, deaths: anyDeaths ? 1 : 0,
+    });
+    // Death mode: clearing (or skip-jumping past) the rank-gated cap level ends the run (victory)
+    // instead of continuing into another intermission/level — skip the chest pick entirely.
+    const atCap = this.source.type === 'death' && (this.levelIndex + skipAmt) > this.computeDeathCap();
     this.levelChangeTimer = setTimeout(this.guard('level change', () => {
       this.levelChangeTimer = null;
-      if (atCap) this.endRun('cap'); else this.startIntermission();
+      if (atCap) this.endRun('cap');
+      else if (wasTreasure) this.advanceLevel();
+      else this.startIntermission();
     }), LEVEL_CHANGE_DELAY_MS);
   }
 
   // ---------- chest intermission ----------
+  /** Roll and send one player's hidden chest offer from the same seeded scheme (room seed +
+   *  level index + pid) — used both to open the intermission for everyone already in the room
+   *  and for a player who joins/resumes mid-intermission (#9, see join()/resume() above). Requires
+   *  a sim entity to exist for them (enterGame() must already have run). */
+  offerChestsTo(c) {
+    if (!this.sim.players.has(c.pid)) return;
+    const rng = makeRng(`${this.seed}|${this.levelIndex}|${c.pid}`);
+    const chests = rollChests(rng, this.levelIndex);
+    this.chestOffers.set(c.pid, chests);
+    this.send(c, { t: 'chests', seconds: this.intermissionSeconds, chests: chests.map((ch) => ({ id: ch.id, label: '???', icon: '📦' })) });
+  }
+
   /** Roll three hidden chest offers per player and open the pick window. */
   startIntermission() {
     if (this.levelChangeTimer) { clearTimeout(this.levelChangeTimer); this.levelChangeTimer = null; }
@@ -493,16 +572,9 @@ export class Room {
     this.intermissionEnding = false;
     this.chestOffers = new Map();
     this.chestPicks = new Map();
-    for (const c of this.clients.values()) {
-      const p = this.sim.players.get(c.pid);
-      if (!p) continue;
-      const rng = makeRng(`${this.seed}|${this.levelIndex}|${c.pid}`);
-      const chests = rollChests(rng, this.levelIndex);
-      this.chestOffers.set(c.pid, chests);
-      this.send(c, { t: 'chests', seconds: INTERMISSION_SECONDS, chests: chests.map((ch) => ({ id: ch.id, label: '???', icon: '📦' })) });
-    }
-    this.broadcastRoom();
     this.intermissionSeconds = INTERMISSION_SECONDS;
+    for (const c of this.clients.values()) this.offerChestsTo(c);
+    this.broadcastRoom();
     this.intermissionTimer = setInterval(this.guard('intermission tick', () => {
       this.intermissionSeconds--;
       if (this.intermissionSeconds <= 0) {
@@ -571,14 +643,42 @@ export class Room {
     }
     this.broadcast({ t: 'chestsdone' });
     this.chestOffers = new Map(); this.chestPicks = new Map();
-    this.levelIndex++;
-    this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex);
+    this.advanceLevel();
+  }
+
+  /** Load the next level (honoring a pending skip-exit jump — see README's "Level format" section) and, if it's a bonus treasure
+   *  room (README's "Features" section, "Bonus treasure rooms"), start its 30s timer. Shared by the normal post-intermission path and the
+   *  no-intermission path a treasure room takes straight from onLevelComplete(). */
+  advanceLevel() {
+    this.levelIndex += this.pendingSkip || 1;
+    this.pendingSkip = 1;
+    const treasure = this.isTreasureLevel(this.levelIndex);
+    this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex, { treasureRoom: treasure });
     this.state = 'playing';
     this.changing = false;
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     this.broadcastRoom();
+    if (treasure) { this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS }); this.startTreasureTimer(); }
     if (this.source.type === 'death') this.startWaves();
+  }
+
+  /** Arm (or re-arm) the bonus-level auto-complete timer. */
+  startTreasureTimer() {
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
+    this.treasureTimer = setTimeout(this.guard('finishTreasureRoom', () => this.finishTreasureRoom()), TREASURE_ROOM_SECONDS * 1000);
+  }
+
+  /** The bonus level's timer ran out with nobody having found an exit: move on with no bonus,
+   *  and — since a treasure room never offers chests — skip the intermission entirely. */
+  finishTreasureRoom() {
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
+    if (this.state !== 'playing' || this.changing || !this.sim.treasureRoom) return;
+    this.changing = true;
+    for (const c of this.clients.values()) if (c.user) this.unlock(c, stats.bump(c.user.id, 'treasure_rooms_cleared'));
+    this.broadcast({ t: 'notice', text: 'Time is up in the treasure vault!' });
+    this.pendingSkip = 1;
+    this.advanceLevel();
   }
 
   // ---------- Death mode: timed waves, rank-gated cap, wipe/cap run-ending ----------
@@ -675,6 +775,7 @@ export class Room {
   endRun(reason) {
     if (this.state !== 'playing') return;
     this.clearWaveTimers();
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
     this.waveMonsterIds = null;
     this.allDeadSince = null;
     const cap = this.computeDeathCap();
@@ -721,6 +822,7 @@ export class Room {
     if (this.levelChangeTimer) clearTimeout(this.levelChangeTimer);
     if (this.intermissionTimer) clearInterval(this.intermissionTimer);
     if (this.intermissionEndTimer) clearTimeout(this.intermissionEndTimer);
+    if (this.treasureTimer) clearTimeout(this.treasureTimer);
     this.clearWaveTimers();
     for (const c of this.clients.values()) { if (c.awayTimer) clearTimeout(c.awayTimer); this.send(c, { t: 'kicked', reason: 'Room closed' }); }
     this.onEmpty?.(this);

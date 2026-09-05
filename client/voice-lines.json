@@ -1,0 +1,16 @@
+{
+  "cutscene": "A cutscene caption line — actual text is supplied per-scene by client/cutscenes.js.",
+  "welcome": "Welcome, adventurer!",
+  "needs_food": "Hero needs food badly!",
+  "about_to_die": "Hero is about to die!",
+  "saved_by_food": "That was close, saved by food.",
+  "poisoned": "That was poisoned!",
+  "dont_shoot_food": "Don't shoot the food!",
+  "dont_shoot_food_again": "Remember, don't shoot food.",
+  "save_keys": "Save keys for later levels.",
+  "use_magic": "Hero, use magic!",
+  "bravery": "I've not seen such bravery.",
+  "level_n": "Let's see how you do in this level.",
+  "wave_n": "Wave incoming!",
+  "died": "Hero has died. Insert coin to continue."
+}

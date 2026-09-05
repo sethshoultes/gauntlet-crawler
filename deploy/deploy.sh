@@ -30,7 +30,7 @@ ATTEMPTS=30
 SLEEP_SECONDS=2
 ok=0
 for i in $(seq 1 "$ATTEMPTS"); do
-  if docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/ai/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
+  if docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
     ok=1
     break
   fi
@@ -38,7 +38,7 @@ for i in $(seq 1 "$ATTEMPTS"); do
 done
 
 if [ "$ok" -ne 1 ]; then
-  echo "Deploy failed: /api/ai/status did not respond after $((ATTEMPTS * SLEEP_SECONDS))s" >&2
+  echo "Deploy failed: /api/health did not respond after $((ATTEMPTS * SLEEP_SECONDS))s" >&2
   docker compose logs --tail=100 app >&2 || true
   exit 1
 fi

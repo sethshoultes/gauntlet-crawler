@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Admin · Gauntlet Crawler</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tabs button { padding: 4px 10px; font-size: 11px; }
+  .tabs button.on { border-color: var(--yellow); color: var(--yellow); }
+  .tabpage { display: none; }
+  .tabpage.on { display: block; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 8px; }
+  .stat { background: #000; border: 2px solid var(--line); padding: 10px; }
+  .stat .v { font-size: 24px; font-weight: bold; color: var(--yellow); }
+  .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+  .search-row { margin-bottom: 10px; }
+  .search-row input { width: 100%; max-width: 320px; }
+  table button { font-size: 10px; padding: 3px 8px; margin-right: 4px; }
+  .chart-block { margin-bottom: 20px; }
+  .chart-block h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 0 0 8px; }
+  .chart-wrap { overflow-x: auto; }
+  .badge { display: inline-block; padding: 2px 6px; font-size: 10px; border: 1px solid var(--line); text-transform: uppercase; }
+  .badge.pub { border-color: var(--green); color: var(--green); }
+  .badge.priv { border-color: var(--muted); color: var(--muted); }
+</style>
+</head>
+<body>
+<nav class="top"></nav>
+<main>
+  <div id="denied" class="panel" style="display:none">
+    <h2>Access denied</h2>
+    <p>This page is for admins only. Ask whoever runs this server to add your username to <code>GAUNTLET_ADMINS</code>.</p>
+  </div>
+
+  <div id="app" style="display:none">
+    <div class="panel"><h2>Admin dashboard</h2></div>
+    <div class="tabs" id="tabs">
+      <button data-t="overview" class="on">Overview</button>
+      <button data-t="users">Users</button>
+      <button data-t="levels">Levels</button>
+      <button data-t="errors">Errors</button>
+      <button data-t="analytics">Analytics</button>
+    </div>
+
+    <div class="tabpage on" id="page-overview">
+      <div class="stats" id="ov-stats"></div>
+      <div class="panel"><h2>Live rooms</h2><div class="chart-wrap"><table id="ov-rooms"></table></div></div>
+    </div>
+
+    <div class="tabpage" id="page-users">
+      <div class="panel">
+        <div class="search-row"><input type="text" id="user-search" placeholder="Search username..." /></div>
+        <div class="chart-wrap"><table id="users-table"></table></div>
+      </div>
+    </div>
+
+    <div class="tabpage" id="page-levels">
+      <div class="panel">
+        <div class="search-row"><input type="text" id="level-search" placeholder="Search levels or authors..." /></div>
+        <div class="chart-wrap"><table id="levels-table"></table></div>
+      </div>
+    </div>
+
+    <div class="tabpage" id="page-errors">
+      <div class="panel"><div class="chart-wrap"><table id="errors-table"></table></div></div>
+    </div>
+
+    <div class="tabpage" id="page-analytics">
+      <div class="panel chart-block"><h3>Daily active users (last 30 days)</h3><div id="chart-dau" class="chart-wrap"></div></div>
+      <div class="panel chart-block"><h3>Runs per day (last 30 days)</h3><div id="chart-runs" class="chart-wrap"></div></div>
+      <div class="stats" style="margin-bottom:20px"><div class="stat"><div class="v" id="avg-run-length"></div><div class="l">Avg run length</div></div></div>
+      <div class="panel chart-block"><h3>Deepest level reached (histogram)</h3><div id="chart-depth" class="chart-wrap"></div></div>
+      <div class="panel chart-block"><h3>Hero pick rates</h3><div id="chart-heroes" class="chart-wrap"></div></div>
+      <div class="panel chart-block"><h3>Most played custom levels</h3><div class="chart-wrap"><table id="top-levels"></table></div></div>
+    </div>
+  </div>
+</main>
+<footer>Gauntlet Crawler &middot; admin dashboard</footer>
+<script type="module" src="/admin.js"></script>
+</body>
+</html>

@@ -170,6 +170,86 @@ const SPR = {
     '.kkkkkk.',
     '.k.kk.k.',
   ],
+  lobber: [ // squat blob that keeps its distance and lobs shots over walls
+    '........',
+    '..pppp..',
+    '.pPppPp.',
+    '.pppppp.',
+    'ppkppkpp',
+    '.pppppp.',
+    '.p.pp.p.',
+    '........',
+  ],
+  sorcerer: [ // hooded caster; blinks in and out of visibility
+    '...LL...',
+    '..LllL..',
+    '.LlkklL.',
+    '.Lllllt.',
+    '.ltlllt.',
+    '..ltlt..',
+    '..l..l..',
+    '.k....k.',
+  ],
+  thief: [ // fast, sneaky, hooded
+    '..dddd..',
+    '.dkkkkd.',
+    '.dkrrkd.',
+    '.dkkkkd.',
+    'ddnnnndd',
+    'd.nnnn.d',
+    '..dd.dd.',
+    '..d..d..',
+  ],
+  transporter: [ // swirling portal — drawn with a time-based pulse in client/game.js
+    '.cccccc.',
+    'cclLllcc',
+    'clLccLlc',
+    'clLcccLc',
+    'clLcccLc',
+    'clLccLlc',
+    'cclLllcc',
+    '.cccccc.',
+  ],
+  poisonfood: [ // looks like food, but green — costs health instead
+    '........',
+    '...eee..',
+    '..eeeee.',
+    '.eeeeeee',
+    '.eEeeeEe',
+    '..eeeee.',
+    '...ww...',
+    '..w..w..',
+  ],
+  cider: [ // +50 health drink
+    '........',
+    '.NNNNN..',
+    '.NyyyN..',
+    '.NyyyN..',
+    '.NyyyN..',
+    '.NNNNN..',
+    '..NN....',
+    '........',
+  ],
+  exit2: [ // skip-exit variant: jumps the party ahead 4 levels
+    'yyyyyyyy',
+    'ydddddyy',
+    'ydokkkoy',
+    'ydokkkoy',
+    'ydokkkoy',
+    'ydokkkoy',
+    'yddddddy',
+    'yyyyyyyy',
+  ],
+  lob: [ // lobber's arcing shot
+    '........',
+    '..nnnn..',
+    '.nNnnNn.',
+    '.nnnnnn.',
+    '.nNnnNn.',
+    '.nnnnnn.',
+    '..nnnn..',
+    '........',
+  ],
   hero: [ // body tinted per class (colour 'r' replaced), skin 's'
     '..ssss..',
     '..sksk..',
@@ -282,6 +362,12 @@ export function sprite(name, tint = null, scale = 2) {
   return c;
 }
 
-export const GEN_TINT = { g: '#c97b3a', h: '#f4f4f4', m: '#e03c31' };
-export const TILE_SPRITE = { '#': 'wall', '.': 'floor', 'D': 'door', 'K': 'key', 'F': 'food', 'P': 'potion', 'T': 'treasure', 'E': 'exit', 'S': 'floor', 'W': 'trap' };
-export const SHOT_SPRITE = { w: 'axe', v: 'sword', z: 'fireball', e: 'arrow', d: 'dfire', p: 'hammer', r: 'dagger', n: 'skull' };
+export const GEN_TINT = { g: '#c97b3a', h: '#f4f4f4', m: '#e03c31', l: '#a05cff', s: '#3b7dff' };
+export const TILE_SPRITE = {
+  '#': 'wall', '.': 'floor', 'D': 'door', 'K': 'key', 'F': 'food', 'P': 'potion', 'T': 'treasure',
+  'E': 'exit', 'S': 'floor', 'W': 'trap', 'X': 'transporter', '!': 'poisonfood', 'C': 'cider', '8': 'exit2',
+};
+// 'c' = a Hero Builder custom hero's shot (see shared/hero-builder.js toClassDef's shotKey) — every
+// custom hero shares this one letter regardless of weapon, so client/game.js overrides this default
+// per-shot using the owner's own `weapon` id (which doubles as its sprite name — see WEAPONS below).
+export const SHOT_SPRITE = { w: 'axe', v: 'sword', z: 'fireball', e: 'arrow', d: 'dfire', p: 'hammer', r: 'dagger', n: 'skull', a: 'lob', c: 'dagger' };

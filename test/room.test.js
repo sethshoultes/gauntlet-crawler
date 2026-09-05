@@ -8,10 +8,30 @@ import path from 'node:path';
 // a scratch directory before the (dynamic) import so we never touch the real ./data.
 process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), 'gauntlet-room-test-'));
 const { Room } = await import('../server/game/room.js');
+const { db, now } = await import('../server/db.js');
+const stats = await import('../server/stats.js');
 
 function fakeWs() {
   const sent = [];
   return { readyState: 1, sent, send(s) { sent.push(JSON.parse(s)); } };
+}
+
+// ---------- Hero Builder test fixtures ----------
+let nextTestUser = 1;
+function makeUser(username = `hero_tester_${nextTestUser++}`) {
+  const r = db.prepare('INSERT INTO users (username, pass_hash, salt, created_at) VALUES (?, ?, ?, ?)').run(username, 'x', 'x', now());
+  return { id: Number(r.lastInsertRowid), username };
+}
+const VALID_HERO_STATS = { speed: 2, shot: 2, fireRate: 2, armor: 2, magic: 2, health: 2 }; // 12 notches
+const VALID_HERO_PIXELS = new Array(8).fill('.222222.');
+function makeHeroRow(ownerId, overrides = {}) {
+  const r = db.prepare(`INSERT INTO heroes (owner_id, name, title, motto, stats, weapon, trait, pixels, published, clones, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`).run(
+    ownerId, overrides.name || 'Test Hero', overrides.title || 'The Tester', overrides.motto || '',
+    JSON.stringify(overrides.stats || VALID_HERO_STATS), overrides.weapon || 'axe', overrides.trait || '',
+    JSON.stringify(overrides.pixels || VALID_HERO_PIXELS), now(), now(),
+  );
+  return Number(r.lastInsertRowid);
 }
 
 function makeRoom(overrides = {}) {
@@ -138,6 +158,12 @@ test('level clear enters intermission, offers chests, and a pick moves everyone 
     assert.ok(chestsMsg, 'client receives a chests offer');
     assert.equal(chestsMsg.chests.length, 3);
     assert.ok(chestsMsg.chests.every((c) => c.label === '???' && c.icon === '📦'), 'contents are hidden until picked');
+    for (const c of chestsMsg.chests) {
+      assert.deepEqual(Object.keys(c).sort(), ['icon', 'id', 'label'], 'the outgoing chests message reveals nothing but id/label/icon');
+      assert.equal(c.kind, undefined, 'kind must never leave the server before a pick');
+      assert.equal(c.value, undefined, 'value must never leave the server before a pick');
+      assert.equal(c.cursed, undefined, 'cursed must never leave the server before a pick');
+    }
 
     const offeredId = room.chestOffers.get('a')[0].id;
     room.pick('a', offeredId);
@@ -231,6 +257,44 @@ test('intermission timeout auto-picks for anyone who has not chosen, including a
   } finally { room.close(); }
 });
 
+test('a player who joins mid-intermission gets a chest offer, counts toward "all picked", and the timeout auto-picks them too (#9)', () => {
+  const room = makeRoom({ id: 'intermission-late' });
+  try {
+    const wsA = fakeWs();
+    room.join(wsA, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a'); // solo host
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 12 });
+    room.startIntermission();
+    assert.equal(room.intermissionSeconds, 15);
+    room.intermissionSeconds = 9; // simulate a few seconds having ticked by
+
+    const wsB = fakeWs();
+    const late = room.join(wsB, { pid: 'b', user: null, name: 'Bob', cls: 'elf' });
+    assert.ok(late, 'a late joiner is accepted mid-intermission');
+    assert.equal(room.chestOffers.get('b')?.length, 3, 'the late joiner rolled their own three-chest offer');
+    const chestsMsg = wsB.sent.find((m) => m.t === 'chests');
+    assert.ok(chestsMsg, 'the late joiner receives a chests message');
+    assert.equal(chestsMsg.seconds, 9, 'the remaining countdown, not a fresh 15s, is sent');
+    assert.ok(chestsMsg.chests.every((c) => c.label === '???'), 'contents stay hidden until picked, same as everyone else');
+
+    // Ann already picked long ago in a real game, but here neither has — checkIntermissionDone
+    // must not fire early just because Bob is present without a pick yet.
+    assert.equal(room.intermissionEnding, false, 'still waiting on both players');
+
+    room.pick('a', room.chestOffers.get('a')[0].id);
+    assert.equal(room.intermissionEnding, false, 'Bob (the late joiner) still has not picked');
+
+    // Timeout auto-pick must cover the late joiner exactly like everyone else.
+    room.autoPickRemaining();
+    assert.ok(room.chestPicks.has('b'), 'the late joiner is auto-picked at timeout, not skipped');
+    assert.equal(room.intermissionEnding, true);
+
+    room.finishIntermission();
+    assert.equal(room.state, 'playing');
+    assert.ok(room.sim.players.has('b'), 'the late joiner is still in the sim after the level advances');
+  } finally { room.close(); }
+});
+
 test('a locked hero request falls back to warrior and the player is told why', () => {
   const room = makeRoom({ id: 'locked-1' });
   try {
@@ -293,6 +357,43 @@ test('kick removes the player and records a fresh sim state should they somehow 
   } finally { room.close(); }
 });
 
+test('a fresh guest gets a minted guestId back in welcome, and a kicked guest is durably refused (#7)', () => {
+  const room = makeRoom({ id: 'guestkick-1' });
+  try {
+    room.join(fakeWs(), { pid: 'host', user: null, name: 'Host', cls: 'warrior' });
+    const wsGuest = fakeWs();
+    const guest = room.join(wsGuest, { pid: 'g1', user: null, name: 'Guest', cls: 'elf' });
+    assert.match(guest.guestId, /^[0-9a-f]{32}$/, 'a hex guestId of the expected length was minted');
+    const welcomeMsg = wsGuest.sent.find((m) => m.t === 'welcome');
+    assert.equal(welcomeMsg.guestId, guest.guestId, 'the guestId is echoed back in welcome');
+
+    room.kick('host', 'g1');
+    assert.equal(room.clients.has('g1'), false);
+
+    // The same guest reloads the invite link (no resume token survives a kick) but their client
+    // resends the stored guestId on the fresh join — they must be refused, not let back in.
+    const wsRejoin = fakeWs();
+    assert.throws(
+      () => room.join(wsRejoin, { pid: 'g2', user: null, name: 'Guest', cls: 'elf', guestId: guest.guestId }),
+      /removed/i,
+      'a kicked guestId stays refused across a fresh join',
+    );
+
+    // A different, never-kicked guest is unaffected.
+    const wsOther = fakeWs();
+    assert.doesNotThrow(() => room.join(wsOther, { pid: 'g3', user: null, name: 'Other', cls: 'valkyrie' }));
+  } finally { room.close(); }
+});
+
+test('a malformed guestId is never trusted for a kick check — a fresh one is minted instead (#7)', () => {
+  const room = makeRoom({ id: 'guestkick-2' });
+  try {
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior', guestId: 'not-hex-and-wrong-length!' });
+    assert.match(c.guestId, /^[0-9a-f]{32}$/, 'an invalid guestId format is replaced, never used as-is');
+  } finally { room.close(); }
+});
+
 test('tick() contains an exception from the sim instead of letting it crash the process', () => {
   const room = makeRoom({ id: 'tick-crash' });
   try {
@@ -330,6 +431,211 @@ test('a timer callback (e.g. the countdown tick) that throws is contained, not f
     } finally { console.error = realError; }
     assert.ok(logged.length >= 1);
     assert.match(String(logged[0][0]), /unit-test label failed/);
+  } finally { room.close(); }
+});
+
+test('a skip-exit (e.skip) advances the level by 4 instead of 1', () => {
+  const room = makeRoom({ id: 'skip-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5, skip: 4 });
+    room.startIntermission();
+    room.finishIntermission();
+    assert.equal(room.levelIndex, 5, 'level 1 + a skip of 4 = level 5');
+  } finally { room.close(); }
+});
+
+test('a regular exit still advances the level by 1', () => {
+  const room = makeRoom({ id: 'skip-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    room.startIntermission();
+    room.finishIntermission();
+    assert.equal(room.levelIndex, 2);
+  } finally { room.close(); }
+});
+
+test('every 6th campaign level (after 5 regular ones) is a bonus treasure room, skipping the chest intermission', () => {
+  const room = makeRoom({ id: 'treasure-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    assert.equal(room.isTreasureLevel(6), true);
+    assert.equal(room.isTreasureLevel(5), false);
+    assert.equal(room.isTreasureLevel(12), true);
+
+    room.levelIndex = 5;
+    room.sim.loadLevel(room.levelFor(5), 5);
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    room.startIntermission();
+    room.finishIntermission(); // -> level 6, a treasure room
+
+    assert.equal(room.levelIndex, 6);
+    assert.equal(room.sim.treasureRoom, true, 'level 6 loaded as a treasure room');
+    assert.equal(room.state, 'playing');
+    assert.ok(room.treasureTimer, 'the 30s bonus timer was armed');
+
+    // Clearing the treasure room (finding an exit) skips straight to level 7 with no intermission.
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 3 });
+    assert.equal(room.state, 'playing', 'the level-clear celebration delay has not fired yet');
+    clearTimeout(room.levelChangeTimer); room.levelChangeTimer = null;
+    room.advanceLevel();
+    assert.equal(room.levelIndex, 7);
+    assert.equal(room.state, 'playing', 'went straight back into play, no intermission');
+    assert.equal(room.sim.treasureRoom, false);
+  } finally { room.close(); }
+});
+
+test("the treasure room's timer auto-completes the level with no bonus if nobody finds an exit in time", () => {
+  const room = makeRoom({ id: 'treasure-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.levelIndex = 6;
+    room.sim.loadLevel(room.levelFor(6), 6, { treasureRoom: true });
+    room.state = 'playing';
+    room.startTreasureTimer();
+    assert.ok(room.treasureTimer);
+
+    room.finishTreasureRoom(); // simulates the 30s timeout firing
+    assert.equal(room.levelIndex, 7);
+    assert.equal(room.state, 'playing');
+    assert.equal(room.treasureTimer, null);
+  } finally { room.close(); }
+});
+
+test('Death mode never gets a treasure room, however the levelIndex lines up', () => {
+  const room = new Room({ id: 'no-treasure-death', name: 'D', seed: 'nd1', source: { type: 'death' }, isPublic: true, onEmpty: () => {} });
+  try {
+    for (const n of [6, 12, 30, 60]) assert.equal(room.isTreasureLevel(n), false, `level ${n} in Death mode is never a treasure room`);
+  } finally { room.close(); }
+});
+
+// ---------- Hero Builder integration (#24) ----------
+test('a custom hero is accepted for its owner once they meet the builder rank', () => {
+  const room = makeRoom({ id: 'custom-1' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700); // lands at rank 3, the Hero Builder's unlock rank
+    const heroId = makeHeroRow(owner.id, { name: 'Boltclaw', title: 'The Bolt', trait: 'thick_skin' });
+
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: owner, name: owner.username, cls: `custom:${heroId}` });
+    assert.equal(c.cls, `custom:${heroId}`, 'the custom cls token is kept, not squashed to warrior');
+    assert.ok(c.classDef, 'a classDef was resolved for the owner');
+    assert.equal(c.classDef.custom, true);
+    assert.equal(c.classDef.shotKey, 'c');
+    assert.ok(c.custom && c.custom.name === 'Boltclaw', 'display info (name/pixels/color) is carried for the roster');
+    assert.equal(ws.sent.find((m) => m.t === 'error'), undefined, 'no error for a valid owned hero');
+
+    // Starting the room threads the same classDef into the sim player.
+    room.start('a');
+    const p = room.sim.players.get('a');
+    assert.equal(p.classDef.custom, true);
+    assert.equal(p.custom.name, 'Boltclaw');
+
+    const info = room.info();
+    const row = info.roster.find((r) => r.pid === 'a');
+    assert.ok(row.custom && row.custom.name === 'Boltclaw', 'room.info() roster carries the custom display info');
+    assert.equal(row.weapon, 'axe');
+  } finally { room.close(); }
+});
+
+test('a custom hero is rejected for a non-owner, falling back to warrior with an error', () => {
+  const room = makeRoom({ id: 'custom-2' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700);
+    const heroId = makeHeroRow(owner.id);
+
+    const intruder = makeUser();
+    stats.bumpXp(intruder.id, 700); // plenty of rank — ownership is the thing that must fail, not rank
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: intruder, name: intruder.username, cls: `custom:${heroId}` });
+    assert.equal(c.cls, 'warrior', 'falls back to warrior — the hero belongs to someone else');
+    assert.equal(c.classDef, null);
+    const err = ws.sent.find((m) => m.t === 'error');
+    assert.ok(err, 'an error message is sent to the client');
+    assert.match(err.error, /not yours/i);
+  } finally { room.close(); }
+});
+
+test('a guest cannot use a custom hero at all, even one that exists and would validate', () => {
+  const room = makeRoom({ id: 'custom-3' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700);
+    const heroId = makeHeroRow(owner.id);
+
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: null, name: 'Guest', cls: `custom:${heroId}` });
+    assert.equal(c.cls, 'warrior');
+    assert.equal(c.classDef, null);
+    const err = ws.sent.find((m) => m.t === 'error');
+    assert.ok(err);
+    assert.match(err.error, /guest/i);
+  } finally { room.close(); }
+});
+
+test('a custom hero is downgraded to warrior when the owner no longer meets the builder rank', () => {
+  const room = makeRoom({ id: 'custom-4' });
+  try {
+    // The owner never reached rank 3 (or dropped back below it) — re-validation at join time must
+    // catch this exactly like the publish-time re-check does, never trusting a stored classDef.
+    const owner = makeUser();
+    const heroId = makeHeroRow(owner.id);
+
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: owner, name: owner.username, cls: `custom:${heroId}` });
+    assert.equal(c.cls, 'warrior', 'falls back to warrior — the owner no longer meets the rank requirement');
+    assert.equal(c.classDef, null);
+    const err = ws.sent.find((m) => m.t === 'error');
+    assert.ok(err);
+    assert.match(err.error, /rank 3/i);
+  } finally { room.close(); }
+});
+
+test('an in-lobby hero switch (setHero) to a custom hero works the same as join', () => {
+  const room = makeRoom({ id: 'custom-5' });
+  try {
+    const owner = makeUser();
+    stats.bumpXp(owner.id, 700);
+    const heroId = makeHeroRow(owner.id, { name: 'Switcheroo' });
+
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: owner, name: owner.username, cls: 'warrior' });
+    room.setHero('a', `custom:${heroId}`);
+    const c = room.clients.get('a');
+    assert.equal(c.cls, `custom:${heroId}`);
+    assert.ok(c.classDef);
+    assert.equal(c.custom.name, 'Switcheroo');
+  } finally { room.close(); }
+});
+
+test('chat trims/caps text, drops empty messages, and throttles a flooding client', () => {
+  const room = makeRoom({ id: 'chat-1' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    ws.sent.length = 0;
+
+    room.chat('a', '   ');
+    assert.equal(ws.sent.filter((m) => m.t === 'chat').length, 0, 'a blank/whitespace-only message is dropped');
+
+    room.chat('a', '  hello  ' + 'x'.repeat(300));
+    const first = ws.sent.find((m) => m.t === 'chat');
+    assert.ok(first, 'a real message is broadcast');
+    assert.equal(first.text.length, 200, 'text is capped at 200 chars');
+    assert.equal(first.text.startsWith('hello'), true, 'leading/trailing whitespace is trimmed');
+
+    ws.sent.length = 0;
+    for (let i = 0; i < 20; i++) room.chat('a', `msg ${i}`);
+    const got = ws.sent.filter((m) => m.t === 'chat').length;
+    assert.ok(got <= 10, `a flooding client is throttled well below 20 messages (got ${got})`);
+    assert.ok(got >= 1, 'at least the first few messages still get through');
   } finally { room.close(); }
 });
 

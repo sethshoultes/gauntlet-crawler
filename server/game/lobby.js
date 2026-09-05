@@ -1,3 +1,4 @@
+// Room registry: create/find/list rooms, quick play (join an open public room or make one).
 import crypto from 'node:crypto';
 import { Room } from './room.js';
 

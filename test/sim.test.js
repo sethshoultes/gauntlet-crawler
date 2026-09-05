@@ -1,7 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Sim } from '../server/game/sim.js';
-import { CLASSES, START_HEALTH, DT } from '../shared/constants.js';
+import { CLASSES, MONSTERS, SNAP_KEY_TO_MONSTER, START_HEALTH, DT, SHOT_SPEED, FOOD_HEALTH, GENERATOR_SCORE } from '../shared/constants.js';
+import { WEAPONS, TRAITS } from '../shared/hero-builder.js';
+
+/** A Hero Builder-shaped classDef (see shared/hero-builder.js toClassDef) with sane defaults —
+ *  tests override just the fields they're exercising. Deliberately hand-built rather than routed
+ *  through toClassDef()/validateHero(): those already have their own coverage in
+ *  test/hero-builder.test.js, so here we only need sim.js's *consumption* of the shape. */
+function customClassDef(overrides = {}) {
+  return {
+    name: 'Custom', hero: 'Custom', color: '#ffffff',
+    speed: 5, shotDamage: 2, shotCooldown: 0.3, armor: 1, magic: 1,
+    weapon: 'axe', shotKey: 'c', custom: true,
+    maxHealthBonus: 0, trait: null, traitDef: null, weaponDef: null,
+    ...overrides,
+  };
+}
 
 const ARENA = {
   name: 'arena',
@@ -167,6 +182,144 @@ test('necromancer\'s wider potion radius reaches monsters a normal potion would 
   assert.equal(sim.monsters.size, 0, "necromancer's wider potion radius reached the distant ghost");
 });
 
+test('lobber arc shot flies over a wall and damages the target on landing', () => {
+  const events = [];
+  const sim = new Sim(ARENA, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 8.5; p.y = 10.5; // behind the wall at column 7, inside the little room with food/potion
+  const m = sim.spawnMonster('lobber', 3.5, 10.5); // outside the walled room, on the other side of the wall
+  // The lobber should hold its distance rather than walking through/around the wall to melee.
+  run(sim, 25); // ~1.25s: its first shot (fired ~1s in) should be in flight now
+  assert.equal(sim.monsters.has(m.id), true, 'lobber is still alive, not adjacent to melee');
+  const arc = [...sim.shots.values()].find((s) => s.arc);
+  assert.ok(arc, 'the lobber fired an arcing shot within a couple of seconds');
+  assert.equal(arc.tx, p.x); assert.equal(arc.ty, p.y);
+  const before = p.hp;
+  run(sim, 20); // its 0.9s flight time has now elapsed
+  assert.equal([...sim.shots.values()].some((s) => s.arc), false, 'the arc shot landed and was removed');
+  assert.ok(p.hp < before, 'the landing shot damaged the target through the wall');
+});
+
+test('sorcerer cannot be hit by a shot or potion while blinked invisible', () => {
+  const sim = new Sim(ARENA);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 2.5; p.y = 2.5; p.dir = 2; p.potions = 1;
+  const m = sim.spawnMonster('sorcerer', 6.5, 2.5);
+  m.visible = false; m.blinkTimer = 10; // force (and hold) invisible for this test
+  sim.setInput('a', { dx: 0, dy: 0, fire: true });
+  run(sim, 20); // several shots would have crossed its position by now
+  assert.equal(sim.monsters.has(m.id), true, 'shots pass through an invisible sorcerer');
+  sim.setInput('a', { fire: false });
+  sim.setInput('a', { potion: true });
+  run(sim, 1);
+  assert.equal(sim.monsters.has(m.id), true, 'a potion cannot hit an invisible sorcerer either');
+  m.visible = true; m.blinkTimer = 10;
+  p.x = 2.5; p.y = 2.5; p.dir = 2; m.x = 6.5; m.y = 2.5;
+  sim.setInput('a', { fire: true });
+  run(sim, 20);
+  assert.equal(sim.monsters.has(m.id), false, 'once visible again, a shot kills it normally');
+});
+
+test('thief steals a potion, flees, and drops it when killed', () => {
+  const events = [];
+  const sim = new Sim(ARENA, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 5.5; p.y = 5.5; p.potions = 1;
+  const m = sim.spawnMonster('thief', 5.6, 5.5);
+  run(sim, 5);
+  assert.equal(p.potions, 0, 'the thief stole the potion on contact');
+  assert.equal(m.stolen, 'potion');
+  assert.ok(events.some((e) => e.type === 'steal' && e.item === 'potion'));
+  // Kill it while it's fleeing with the loot — it should drop a potion tile where it died.
+  m.hp = 1;
+  const tx = Math.floor(m.x), ty = Math.floor(m.y);
+  sim.grid[ty][tx] = '.';
+  sim.killMonster(m, p);
+  assert.equal(sim.grid[ty][tx], 'P', 'the stolen potion is dropped as a tile on death');
+});
+
+test('a transporter teleports a player to the other pad, with a cooldown against ping-pong', () => {
+  const TP = {
+    name: 'tp',
+    rows: [
+      '################',
+      '#S.............#',
+      '#..............#',
+      '#..X...........#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#............E.#',
+      '#............X.#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '################',
+    ],
+  };
+  const events = [];
+  const sim = new Sim(TP, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 3.5; p.y = 3.5;
+  run(sim, 1);
+  assert.ok(p.x > 10 || p.y > 9, 'teleported to the other pad');
+  assert.ok(events.some((e) => e.type === 'teleport' && e.pid === 'a'));
+  const afterFirst = { x: p.x, y: p.y };
+  run(sim, 1); // still standing on the destination pad — cooldown must block an immediate bounce-back
+  assert.equal(p.x, afterFirst.x); assert.equal(p.y, afterFirst.y);
+});
+
+test('poison food costs health (floored at 1) and cider heals', () => {
+  const sim = new Sim(ARENA);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  sim.grid[3][3] = '!';
+  p.x = 3.5; p.y = 3.5; p.hp = 50;
+  run(sim, 1);
+  assert.equal(p.hp, 1, 'poison food costs 100 health but floors at 1');
+  sim.grid[3][4] = 'C';
+  p.hp = 500;
+  p.x = 4.5; p.y = 3.5;
+  run(sim, 1);
+  assert.ok(p.hp > 545 && p.hp <= 550, `cider heals ~50: ${p.hp}`);
+});
+
+test('shooting poison food is harmless (no food_shot event); shooting cider counts as shooting food', () => {
+  const events = [];
+  const sim = new Sim(ARENA, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  sim.grid[2][6] = '!';
+  p.x = 2.5; p.y = 2.5; p.dir = 2;
+  sim.setInput('a', { fire: true });
+  run(sim, 12);
+  assert.equal(sim.grid[2][6], '.', 'the poison food was destroyed');
+  assert.equal(events.some((e) => e.type === 'food_shot'), false, 'no penalty for shooting the poison');
+  events.length = 0;
+  sim.setInput('a', { fire: false });
+  sim.grid[2][6] = 'C';
+  sim.setInput('a', { fire: true });
+  run(sim, 12);
+  assert.ok(events.some((e) => e.type === 'food_shot'), 'shooting cider is treated like shooting food');
+});
+
+test('players block each other: a move that would overlap another player within 0.7 tiles is cancelled on that axis', () => {
+  const sim = new Sim(ARENA);
+  const a = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  const b = sim.addPlayer('b', { name: 'B', cls: 'warrior' });
+  a.x = 5; a.y = 5; b.x = 5.5; b.y = 5;
+  sim.moveEntity(a, 0.3, 0, 'player'); // would land a.x=5.3, within 0.7 of b.x=5.5
+  assert.equal(a.x, 5, 'the move into another player is cancelled');
+  sim.moveEntity(a, 0, 1, 'player'); // orthogonal move, no other player nearby on that axis
+  assert.equal(a.y, 6);
+  // Player shots still pass through teammates: standing shoulder to shoulder does not block fire.
+  a.x = 5; a.y = 5; a.dir = 2; b.x = 6; b.y = 5;
+  sim.setInput('a', { dx: 0, dy: 0, fire: true });
+  run(sim, 1);
+  assert.ok(b.hp > b.maxHealth - 1, "a teammate's shot never damages another player (only the 1-tick health drain applies)");
+});
+
 test('snapshot is compact and level packet round-trips', () => {
   const sim = new Sim(ARENA);
   sim.addPlayer('a', { name: 'A', cls: 'valkyrie' });
@@ -174,4 +327,199 @@ test('snapshot is compact and level packet round-trips', () => {
   assert.equal(s.t, 's'); assert.equal(s.p.length, 1); assert.equal(s.p[0].length, 9);
   const lp = sim.levelPacket();
   assert.equal(lp.rows.length, 16); assert.equal(lp.rows[0].length, 16);
+});
+
+test('every monster type has a unique snapKey, and snapshot() maps each back to its real type', () => {
+  const types = Object.keys(MONSTERS);
+  const keys = types.map((t) => MONSTERS[t].snapKey);
+  for (const k of keys) assert.equal(typeof k, 'string');
+  for (const k of keys) assert.equal(k.length, 1, `snapKey "${k}" must be a single character`);
+  assert.equal(new Set(keys).size, keys.length, `snapKeys must be unique: ${keys.join(',')}`);
+  // ghost/grunt (both start with "g") and demon/death (both start with "d") are exactly the
+  // collision this test guards against — see shared/constants.js's MONSTERS comment.
+  assert.notEqual(MONSTERS.ghost.snapKey, MONSTERS.grunt.snapKey);
+  assert.notEqual(MONSTERS.demon.snapKey, MONSTERS.death.snapKey);
+
+  const sim = new Sim(ARENA);
+  let x = 2.5;
+  for (const type of types) { sim.spawnMonster(type, x, 2.5); x += 1; }
+  const snap = sim.snapshot();
+  assert.equal(snap.m.length, types.length);
+  for (const row of snap.m) {
+    const [, snapKey] = row;
+    const resolved = SNAP_KEY_TO_MONSTER[snapKey];
+    assert.ok(resolved, `snapKey "${snapKey}" should resolve back to a monster type`);
+    const m = sim.monsters.get(row[0]);
+    assert.equal(resolved, m.type, `snapshot key for a ${m.type} must map back to "${m.type}", got "${resolved}"`);
+  }
+});
+
+// ---------- Hero Builder integration (#24): classDef/weaponDef/traitDef effects ----------
+test('classic classes are unaffected by Hero Builder plumbing (no classDef => every default holds)', () => {
+  const sim = new Sim(ARENA);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  assert.equal(p.classDef, null);
+  p.x = 2.5; p.y = 2.5; p.dir = 2; // face east
+  sim.setInput('a', { fire: true });
+  run(sim, 1);
+  const shot = [...sim.shots.values()][0];
+  // life starts at 3 and stepShots() ticks it down once in the same step() call that created it.
+  assert.ok(Math.abs(shot.life - (3 - DT)) < 1e-9, 'default shot lifetime unchanged for a classic class');
+  assert.ok(Math.abs(Math.hypot(shot.vx, shot.vy) - SHOT_SPEED) < 1e-6, 'default shot speed unchanged');
+  assert.ok(Math.abs(shot.dmg - CLASSES.warrior.shotDamage) < 1e-9, 'default shot damage unchanged');
+  assert.ok(Math.abs(p.shotCd - CLASSES.warrior.shotCooldown) < 1e-9, 'default shot cooldown unchanged');
+});
+
+test('a classDef overrides speed, and its weaponDef scales shot damage/cooldown/speed/range', () => {
+  const sim = new Sim(ARENA);
+  const classDef = customClassDef({ speed: 8, shotDamage: 2, shotCooldown: 0.2, weapon: 'hammer', weaponDef: WEAPONS.hammer });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'custom:1', classDef });
+  p.x = 2.5; p.y = 2.5; p.dir = 2;
+  sim.setInput('a', { dx: 1, dy: 0 });
+  run(sim, 1);
+  assert.ok(p.x - 2.5 > 5 * DT, 'moved at the classDef speed, not some default');
+
+  sim.setInput('a', { dx: 0, dy: 0, fire: true });
+  run(sim, 1);
+  const shot = [...sim.shots.values()][0];
+  assert.ok(shot, 'a shot was fired');
+  const speedMag = Math.hypot(shot.vx, shot.vy);
+  assert.ok(Math.abs(shot.dmg - 2 * WEAPONS.hammer.damageMul) < 1e-9, 'damage scaled by weaponDef.damageMul');
+  assert.ok(Math.abs(speedMag - SHOT_SPEED * WEAPONS.hammer.shotSpeedMul) < 1e-6, 'shot speed scaled by weaponDef.shotSpeedMul');
+  assert.ok(Math.abs(p.shotCd - 0.2 * WEAPONS.hammer.cooldownMul) < 1e-9, 'cooldown scaled by weaponDef.cooldownMul');
+  // life starts at range/speed and stepShots() ticks it down once in the same step() call.
+  assert.ok(Math.abs(shot.life - (WEAPONS.hammer.range / speedMag - DT)) < 1e-6, 'shot life derived from weapon range / effective speed');
+});
+
+test('a homing weapon (skull) gently steers its shot toward the nearest monster', () => {
+  const sim = new Sim(ARENA);
+  const classDef = customClassDef({ shotDamage: 5, shotCooldown: 0.1, weapon: 'skull', weaponDef: WEAPONS.skull });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'custom:1', classDef });
+  p.x = 2.5; p.y = 2.5; p.dir = 2; // fires straight east — the monster sits off that line
+  sim.spawnMonster('grunt', 6.5, 4.5);
+  sim.setInput('a', { fire: true });
+  run(sim, 1);
+  const shot = [...sim.shots.values()].find((s) => s.owner === 'a');
+  assert.ok(shot, 'shot fired');
+  assert.ok(shot.vy > 0, 'homing bent the shot toward the monster (positive y, same side as the monster)');
+});
+
+test('a splash weapon (fireball-style) also damages other monsters near the impact point', () => {
+  const sim = new Sim(ARENA);
+  const classDef = customClassDef({ shotDamage: 10, shotCooldown: 0.1, weapon: 'fireball', weaponDef: WEAPONS.fireball });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'custom:1', classDef });
+  p.x = 2.5; p.y = 2.5; p.dir = 2;
+  const primary = sim.spawnMonster('grunt', 4.5, 2.5);
+  const near1 = sim.spawnMonster('grunt', 4.9, 2.5);   // well within the splash radius
+  const near2 = sim.spawnMonster('grunt', 4.5, 2.9);   // also well within the splash radius
+  const far = sim.spawnMonster('grunt', 30, 30);        // out of range, never wakes at this distance
+  sim.setInput('a', { fire: true });
+  run(sim, 6);
+  assert.equal(sim.monsters.has(primary.id), false, 'the directly hit monster dies');
+  assert.equal(sim.monsters.has(near1.id), false, 'an adjacent monster also takes splash damage and dies');
+  assert.equal(sim.monsters.has(near2.id), false, 'a second adjacent monster also takes splash damage and dies');
+  assert.equal(sim.monsters.has(far.id), true, 'a far-away monster is untouched by the splash');
+});
+
+test('glutton trait heals 50% more from food', () => {
+  const sim = new Sim(ARENA);
+  const classDef = customClassDef({ trait: 'glutton', traitDef: TRAITS.glutton });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'custom:1', classDef });
+  p.hp = 100; p.x = 10.5; p.y = 7.5; // same food tile as the classic pickups test above
+  sim.setInput('a', { dx: 0, dy: 1 });
+  run(sim, 8);
+  assert.ok(p.hp > 100 + FOOD_HEALTH, 'healed for noticeably more than the base FOOD_HEALTH');
+  assert.ok(Math.abs((p.hp - 100) - FOOD_HEALTH * 1.5) < 5, 'roughly 1.5x the base heal (minus a little drain)');
+});
+
+test('scavenger trait boosts generator score by 50%', () => {
+  const sim = new Sim(ARENA);
+  const classDef = customClassDef({ trait: 'scavenger', traitDef: TRAITS.scavenger, shotDamage: 5, shotCooldown: 0.05 });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'custom:1', classDef });
+  p.x = 2.5; p.y = 2.5; p.dir = 2;
+  sim.grid[2][10] = 'g'; sim.generators.set('10,2', { x: 10, y: 2, type: 'grunt', tile: 'g', hp: 3, timer: 99 });
+  sim.setInput('a', { fire: true });
+  run(sim, 40);
+  assert.equal(sim.generators.size, 0, 'generator destroyed');
+  assert.equal(p.score, Math.round(GENERATOR_SCORE * 1.5), "score reflects scavenger's +50%");
+});
+
+test("thick_skin trait halves damage specifically from a ghost's touch (not damage in general)", () => {
+  const sim = new Sim(ARENA);
+  const base = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  const classDef = customClassDef({ armor: CLASSES.warrior.armor, trait: 'thick_skin', traitDef: TRAITS.thick_skin });
+  const guarded = sim.addPlayer('b', { name: 'B', cls: 'custom:1', classDef });
+  base.x = 3.5; base.y = 3.5; sim.spawnMonster('ghost', 4.2, 3.5);
+  guarded.x = 10.5; guarded.y = 10.5; sim.spawnMonster('ghost', 10.9, 10.5);
+  run(sim, 3);
+  const baseDamage = START_HEALTH - base.hp;
+  const guardedDamage = START_HEALTH - guarded.hp;
+  assert.ok(baseDamage > 0, 'the unguarded control player actually took ghost damage');
+  assert.ok(Math.abs(guardedDamage - baseDamage * 0.5) < 1, 'thick_skin took ~half the ghost-touch damage of an identical, unguarded hit');
+});
+
+test("locksmith trait sometimes saves the door key, using the sim's rng consistently", () => {
+  function doorKeysLeftAfter(rng) {
+    const sim = new Sim(ARENA, { rng });
+    const classDef = customClassDef({ trait: 'locksmith', traitDef: TRAITS.locksmith });
+    const p = sim.addPlayer('a', { name: 'A', cls: 'custom:1', classDef });
+    p.keys = 1; p.x = 13.5; p.y = 4.5; // same door tile as the classic keys/doors test above
+    sim.setInput('a', { dx: 0, dy: 1 });
+    run(sim, 10);
+    return p.keys;
+  }
+  assert.equal(doorKeysLeftAfter({ chance: () => true }), 1, 'a guaranteed save keeps the key');
+  assert.equal(doorKeysLeftAfter({ chance: () => false }), 0, 'a guaranteed miss still consumes the key, same as a classic hero');
+});
+
+test('sprinter trait boosts speed only while below its HP threshold', () => {
+  const full = new Sim(ARENA);
+  const pFull = full.addPlayer('a', { name: 'A', cls: 'custom:1', classDef: customClassDef({ speed: 5, trait: 'sprinter', traitDef: TRAITS.sprinter }) });
+  pFull.x = 2.5; pFull.y = 2.5; pFull.hp = 1000; // above the 300 threshold — no bonus
+  full.setInput('a', { dx: 1, dy: 0 });
+  run(full, 1);
+  const distFull = pFull.x - 2.5;
+
+  const low = new Sim(ARENA);
+  const pLow = low.addPlayer('a', { name: 'A', cls: 'custom:1', classDef: customClassDef({ speed: 5, trait: 'sprinter', traitDef: TRAITS.sprinter }) });
+  pLow.x = 2.5; pLow.y = 2.5; pLow.hp = 200; // below the threshold — sprint bonus active
+  low.setInput('a', { dx: 1, dy: 0 });
+  run(low, 1);
+  const distLow = pLow.x - 2.5;
+
+  assert.ok(distLow > distFull * 1.2, 'moved noticeably farther per tick while below the sprint HP threshold');
+});
+
+// ---------- performance sanity ----------
+test('snapshot() JSON stays compact even at max load (4 players, 48 monsters, many shots)', () => {
+  const rowsBig = Array.from({ length: 40 }, (_, y) => (y === 0 || y === 39 ? '#'.repeat(60) : '#' + '.'.repeat(58) + '#'));
+  rowsBig[2] = '#S' + '.'.repeat(56) + 'E#';
+  const BIG = { name: 'big', rows: rowsBig };
+  const sim = new Sim(BIG);
+  const classes = ['warrior', 'valkyrie', 'wizard', 'elf'];
+  for (let i = 0; i < 4; i++) {
+    const p = sim.addPlayer('p' + i, { name: 'Player' + i, cls: classes[i] });
+    p.x = 2 + i; p.y = 2; p.dir = 2;
+    sim.setInput('p' + i, { dx: 0, dy: 0, fire: true });
+  }
+  for (let i = 0; i < 48; i++) sim.spawnMonster(['ghost', 'grunt', 'demon', 'lobber', 'sorcerer'][i % 5], 5 + (i % 40), 5 + Math.floor(i / 40));
+  // A few ticks so every player's shots are actually in flight (MAX_SHOTS_PER_PLAYER * 4 players).
+  for (let i = 0; i < 3; i++) sim.step(DT);
+  const snap = sim.snapshot();
+  const json = JSON.stringify(snap);
+  assert.ok(snap.p.length === 4, 'sanity: 4 players present');
+  assert.ok(snap.m.length > 0 && snap.m.length <= 48, `sanity: monsters present and capped at MAX_MONSTERS (got ${snap.m.length})`);
+  assert.ok(json.length < 6 * 1024, `snapshot JSON should stay under ~6KB at max load, got ${json.length} bytes`);
+});
+
+test('arcanist trait extends potion blast radius by 30%', () => {
+  const sim = new Sim(ARENA);
+  const classDef = customClassDef({ magic: 1, trait: 'arcanist', traitDef: TRAITS.arcanist });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'custom:1', classDef });
+  p.x = 1.5; p.y = 1.5; p.potions = 1;
+  // 8.4 tiles away: outside the base 7.5 radius but inside arcanist's boosted 7.5*1.3=9.75
+  sim.spawnMonster('ghost', 1.5, 9.9);
+  sim.setInput('a', { potion: true });
+  run(sim, 1);
+  assert.equal(sim.monsters.size, 0, "arcanist's wider potion radius reached the distant ghost");
 });

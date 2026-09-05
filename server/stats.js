@@ -26,7 +26,8 @@ export function bump(userId, key, n = 1) {
 /** Award XP (guests earn nothing). Returns the new total plus any newly unlocked achievements
  *  — the caller compares the total against `amount` to detect a rank-up. */
 export function bumpXp(userId, amount) {
-  if (!userId || !amount) return { value: getStats(userId).xp || 0, fresh: [] };
+  if (!userId) return { value: 0, fresh: [] };
+  if (!amount) return { value: getStats(userId).xp || 0, fresh: [] };
   const { value } = bumpStmt.get(userId, 'xp', amount);
   return { value, fresh: check(userId, 'xp', value) };
 }

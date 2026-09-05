@@ -1,0 +1,167 @@
+// Analytics beacons (POST /api/telemetry), client error reporting (POST /api/client-errors,
+// server/log.js), and the health endpoint. Boots the real server against a fresh temp DB, same
+// pattern as test/server-static.test.js.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { startServer } from './helpers/server.mjs';
+
+async function withServer(fn) {
+  const server = await startServer();
+  try {
+    await fn(server.baseUrl);
+  } finally {
+    await server.stop();
+  }
+}
+
+function authed(token) { return { Authorization: `Bearer ${token}` }; }
+
+test('GET /api/health has the documented shape and needs no auth', async () => {
+  await withServer(async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/health`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(typeof body.uptime, 'number');
+    assert.equal(typeof body.rooms, 'number');
+    assert.equal(typeof body.players, 'number');
+    assert.equal(typeof body.version, 'string');
+  });
+});
+
+test('telemetry beacons are stored and reflected in admin analytics', async () => {
+  await withServer(async (baseUrl) => {
+    const admin = await fetch(`${baseUrl}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'telemetry_admin', password: 'hunter22' }) }).then((r) => r.json());
+
+    const beacon = await fetch(`${baseUrl}/api/telemetry`, {
+      method: 'POST', headers: { ...authed(admin.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'pageview', data: { path: '/' } }),
+    });
+    assert.equal(beacon.status, 200);
+
+    // A guest beacon (no auth header) with a guestId should count toward guest DAU separately.
+    const guestBeacon = await fetch(`${baseUrl}/api/telemetry`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'session_start', guestId: 'guest-abc-123' }),
+    });
+    assert.equal(guestBeacon.status, 200);
+
+    const badKind = await fetch(`${baseUrl}/api/telemetry`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'not_a_real_kind' }),
+    });
+    assert.equal(badKind.status, 400, 'an unrecognized telemetry kind should be rejected');
+
+    const analytics = await fetch(`${baseUrl}/api/admin/analytics`, { headers: authed(admin.token) }).then((r) => r.json());
+    const totalDau = analytics.dau.reduce((s, r) => s + r.n, 0);
+    const totalGuestDau = analytics.guestDau.reduce((s, r) => s + r.n, 0);
+    assert.ok(totalDau >= 1, 'the logged-in pageview beacon should count toward DAU');
+    assert.ok(totalGuestDau >= 1, 'the guest session_start beacon should count toward guest DAU');
+    assert.ok(Array.isArray(analytics.heroPickRates));
+    assert.ok(Array.isArray(analytics.depthHist));
+    assert.ok(Array.isArray(analytics.topLevels));
+    assert.equal(typeof analytics.avgRunLength, 'number');
+  });
+});
+
+test('an authenticated beacon ignores a client-supplied guestId: guest_id is stored NULL, user_id is set', async () => {
+  // Needs its own dataDir (rather than withServer(), which hides it) so this test can open the
+  // same sqlite file directly afterward and inspect the raw `events` row server/index.js wrote —
+  // same pattern as the WS join telemetry test below.
+  const server = await startServer();
+  const { baseUrl, dataDir } = server;
+  try {
+    const admin = await fetch(`${baseUrl}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'telem_authed_gid', password: 'hunter22' }) }).then((r) => r.json());
+    assert.ok(admin.user, `registration should have succeeded: ${JSON.stringify(admin)}`);
+
+    const beacon = await fetch(`${baseUrl}/api/telemetry`, {
+      method: 'POST', headers: { ...authed(admin.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'pageview', guestId: 'guest-should-be-ignored', data: { path: '/authed-with-guestid' } }),
+    });
+    assert.equal(beacon.status, 200);
+
+    // Give the write a beat to land on disk (WAL commit), then inspect the sqlite file with a
+    // fresh, independent connection -- NOT via `import('../server/db.js')`, whose module (and the
+    // single DB connection it opens at import time) is cached per-process: a second dynamic
+    // import from another test in this file would silently reuse the first test's connection
+    // (and thus its dataDir) instead of opening this one.
+    await new Promise((r) => setTimeout(r, 300));
+    const probe = new DatabaseSync(path.join(dataDir, 'gauntlet.sqlite'), { readOnly: true });
+    const row = probe.prepare("SELECT user_id, guest_id FROM events WHERE kind = 'pageview' ORDER BY id DESC LIMIT 1").get();
+    probe.close();
+    assert.ok(row, 'expected the pageview event to be recorded');
+    assert.equal(row.user_id, admin.user.id, 'the event should be attributed to the authenticated user');
+    assert.equal(row.guest_id, null, 'a client-supplied guestId must be ignored once the request is authenticated');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('telemetry beacons are rate limited per IP', async () => {
+  await withServer(async (baseUrl) => {
+    let sawTooManyRequests = false;
+    for (let i = 0; i < 70; i++) {
+      const res = await fetch(`${baseUrl}/api/telemetry`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind: 'pageview' }),
+      });
+      if (res.status === 429) { sawTooManyRequests = true; break; }
+    }
+    assert.ok(sawTooManyRequests, 'hammering /api/telemetry from one IP should eventually 429');
+  });
+});
+
+test('client errors are stored with a truncated stack and surfaced to admins', async () => {
+  await withServer(async (baseUrl) => {
+    const admin = await fetch(`${baseUrl}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'errors_admin', password: 'hunter22' }) }).then((r) => r.json());
+
+    const hugeStack = 'x'.repeat(10_000);
+    const res = await fetch(`${baseUrl}/api/client-errors`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Boom, something broke', stack: hugeStack, url: '/play' }),
+    });
+    assert.equal(res.status, 200);
+
+    const list = await fetch(`${baseUrl}/api/admin/errors`, { headers: authed(admin.token) }).then((r) => r.json());
+    const row = list.errors.find((e) => e.message === 'Boom, something broke');
+    assert.ok(row, 'client error should be stored and visible to admins');
+    assert.equal(row.source, 'client');
+    assert.ok(row.stack.length <= 4096, 'stack should be truncated to 4KB');
+  });
+});
+
+test('WS join telemetry records the final guestId Room#join assigns, not a mismatched requested one', async () => {
+  // Needs its own dataDir (rather than withServer(), which hides it) so this test can open the
+  // same sqlite file directly afterward and inspect the raw `events` row server/index.js wrote.
+  const server = await startServer();
+  const { baseUrl, port, dataDir } = server;
+  try {
+    const { default: WebSocket } = await import('ws');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const requestedGuestId = 'not-a-real-guest-id'; // fails Room#isValidGuestId's /^[0-9a-f]{32}$/ check
+    const welcome = await new Promise((resolve, reject) => {
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ t: 'join', create: true, name: 'Guest', cls: 'warrior', guestId: requestedGuestId }));
+      });
+      ws.once('message', (data) => resolve(JSON.parse(data.toString())));
+      ws.on('error', reject);
+    });
+    assert.equal(welcome.t, 'welcome');
+    assert.ok(welcome.guestId, 'server should mint a valid guestId when the requested one is malformed');
+    assert.notEqual(welcome.guestId, requestedGuestId, 'the malformed requested guestId should not be echoed back as final');
+    ws.close();
+
+    // Give the WS 'join' handler's telemetry.recordEvent() a beat to land on disk (WAL commit).
+    await new Promise((r) => setTimeout(r, 300));
+    process.env.DATA_DIR = dataDir;
+    const { db } = await import('../server/db.js');
+    const row = db.prepare("SELECT guest_id FROM events WHERE kind = 'join' ORDER BY id DESC LIMIT 1").get();
+    assert.ok(row, 'expected a join telemetry event to be recorded');
+    assert.equal(row.guest_id, welcome.guestId, "telemetry must record the room's final assigned guestId");
+    assert.notEqual(row.guest_id, requestedGuestId, 'telemetry must not record the mismatched requested guestId');
+  } finally {
+    await server.stop();
+  }
+});

@@ -1,14 +1,49 @@
-import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
+// The lobby/room screen and the in-game client: hero picking, room/ready UI, the WebSocket
+// protocol handshake, canvas rendering of the 20 Hz snapshot, HUD, chat, and the narrator/cutscene
+// trigger points (see client/audio.js, client/voice.js, client/cutscenes.js).
+import { api, me, token, toast, renderNav, esc, cssToken, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
-import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS } from '/shared/constants.js';
+import { spriteFromPixels } from './pixelsprite.js';
+import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER } from '/shared/constants.js';
 import { PALETTES, requirementText } from '/shared/unlocks.js';
 import { BOOST_ICONS } from '/shared/chests.js';
+import { STATS as HERO_STATS, PALETTE as HERO_PALETTE } from '/shared/hero-builder.js';
+import { initAudio, sfx, setMuted } from './audio.js';
+import { say as voiceSay } from './voice.js';
+import { playCutscene, hasSeen, markSeen, getScene } from './cutscenes.js';
 const RESUME_KEY = 'gc_resume';
+const GUEST_KEY = 'gc_guest_id';
+// Durable guest identity (#7): minted by the server on our first join and echoed back in every
+// `welcome`. We resend it on every later join so a host kick can block us across reconnects and
+// even after sessionStorage's resume token has expired — it carries no other trust.
+let guestId = null;
+try { guestId = localStorage.getItem(GUEST_KEY) || null; } catch {}
 
 const $ = (s) => document.querySelector(s);
 const SCALE = 2;                 // 8px art -> 16px tiles
 const ZOOM = 2;                  // 16px tiles -> 32px on the 640x480 canvas => 20x15 tiles visible
 const VIEW_W = 640, VIEW_H = 480;
+
+// ---------------- cutscenes (#23) ----------------
+// Client-side overlays only: they never touch the WebSocket protocol or block server-side
+// gameplay, are always skippable, and honor both the `cutscenes` preference (default on, see
+// client/common.js loadPrefs()) and prefers-reduced-motion (handled inside cutscenes.js itself).
+function cutscenesEnabled() {
+  try { return localStorage.getItem('gc_cutscenes') !== '0'; } catch { return true; }
+}
+const introCv = $('#intro-cutscene');   // lobby overlay: only the one-time 'intro'/'hero_*' scenes
+const sceneCv = $('#scene-cutscene');   // in-session overlay: death_mode/treasure_room/game_over/victory/milestones
+function playScene(sceneId, opts = {}) {
+  if (!cutscenesEnabled()) return;
+  const cv2 = G.inRoom ? sceneCv : introCv;
+  if (!cv2) return;
+  cv2.hidden = false;
+  playCutscene(cv2, sceneId, {
+    sfx, say: (text) => say('cutscene', text),
+    onDone: () => { cv2.hidden = true; opts.onDone?.(); },
+    onSkip: opts.onSkip,
+  });
+}
 
 // ---------------- lobby ----------------
 // `unlocked` starts out base-classes-only (a guest's baseline) and is replaced once /api/me
@@ -17,6 +52,10 @@ const VIEW_W = 640, VIEW_H = 480;
 let selectedClass = localStorage.getItem(CLASS_KEY) || 'warrior';
 let selectedPalette = localStorage.getItem(PALETTE_KEY) || '';
 let unlocked = { classes: new Set(CLASS_IDS.filter((id) => !CLASSES[id].locked)), palettes: new Set() };
+// Hero Builder custom heroes for the logged-in account (see /api/heroes/mine) — empty for guests.
+let myHeroes = [];
+function isCustomCls(cls) { return typeof cls === 'string' && cls.startsWith('custom:'); }
+function findCustomHero(cls) { return isCustomCls(cls) ? myHeroes.find((h) => `custom:${h.id}` === cls) : null; }
 
 /** The tint color to draw `clsId` with, honoring `selectedPalette` only when it's this class's
  *  own and actually unlocked. */
@@ -27,10 +66,12 @@ function colorFor(clsId, paletteId) {
   }
   return CLASSES[clsId].color;
 }
-/** The color to render a *room-mate's* hero with, from the {cls, palette} the server sent us
- *  (their palette was already unlock-checked server-side, so no local re-check needed here). */
+/** The color to render a *room-mate's* hero with, from the {cls, palette, custom} the server sent
+ *  us (their palette/custom hero was already resolved+unlock-checked server-side, so no local
+ *  re-check needed here — see server/game/room.js pickHero / sim.js playerInfo()). */
 function playerColor(info) {
   if (!info) return CLASSES.warrior.color;
+  if (info.custom) return info.custom.color;
   const cls = CLASSES[info.cls] ? info.cls : 'warrior';
   if (info.palette) {
     const p = PALETTES.find((pp) => pp.id === info.palette && pp.cls === cls);
@@ -38,8 +79,63 @@ function playerColor(info) {
   }
   return CLASSES[cls].color;
 }
+/** The display name for whichever hero `cls` names — a classic CLASSES entry, or a Hero Builder
+ *  custom hero (from myHeroes) for a `custom:<id>` token. */
+function heroDisplayName(cls) {
+  if (isCustomCls(cls)) { const h = findCustomHero(cls); return h ? (h.title || h.name) : 'Adventurer'; }
+  return CLASSES[cls]?.name || 'Adventurer';
+}
+/** The name/label to show for a room-mate (or self) from their `players`/roster info — a custom
+ *  hero's own painted name when present, else the classic class name. */
+function heroLabel(info) {
+  if (info?.custom) return info.custom.name;
+  return CLASSES[info?.cls]?.name || info?.cls || 'Hero';
+}
+
+// The first time a class is picked this session, play its intro cutscene (hero_<classId>). Custom
+// heroes all share one generic 'hero_custom' scene — see client/cutscenes.js — and are skipped
+// entirely (no toast, no error) if that scene doesn't exist, per the Hero Builder integration note.
+function maybeHeroCutscene(cls) {
+  const sceneId = isCustomCls(cls) ? 'hero_custom' : `hero_${cls}`;
+  if (hasSeen(sceneId)) return;
+  if (!getScene(sceneId)) return;
+  playScene(sceneId, { onDone: () => markSeen(sceneId) });
+}
 
 const heroes = $('#heroes');
+const heroesCustom = $('#heroes-custom');
+const STAT_ABBR = { speed: 'SPD', shot: 'DMG', fireRate: 'RATE', armor: 'ARM', magic: 'MAG', health: 'HP' };
+function renderCustomHeroPicker() {
+  if (!heroesCustom) return;
+  if (!myHeroes.length) {
+    heroesCustom.innerHTML = '<div class="muted" style="grid-column:1/-1;padding:8px">No custom heroes yet. <a href="/heroes.html">Build one</a> at rank 3+.</div>';
+    return;
+  }
+  heroesCustom.innerHTML = '';
+  for (const h of myHeroes) {
+    const cls = `custom:${h.id}`;
+    const el = document.createElement('div');
+    el.className = 'hero' + (cls === selectedClass ? ' sel' : '');
+    const notches = HERO_STATS.map((k) => `${STAT_ABBR[k]} ${'★'.repeat(h.stats?.[k] || 0)}`).join('<br>');
+    el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n">${esc(h.title || h.name)}</div><div class="s">${esc(h.name)}</div><div class="notches">${notches}</div>`;
+    const bmp = spriteFromPixels(h.pixels, HERO_PALETTE, 4);
+    if (bmp) el.querySelector('canvas').getContext('2d').drawImage(bmp, 0, 0, 16, 16);
+    el.onclick = () => {
+      selectedClass = cls; localStorage.setItem(CLASS_KEY, cls);
+      selectedPalette = ''; localStorage.removeItem(PALETTE_KEY);
+      renderHeroPicker(); renderCustomHeroPicker(); rebuildHeroSelect();
+      maybeHeroCutscene(cls);
+    };
+    heroesCustom.appendChild(el);
+  }
+}
+document.querySelectorAll('#hero-tabs [data-tab]').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('#hero-tabs [data-tab]').forEach((x) => x.classList.toggle('sel', x === b));
+    heroes.style.display = b.dataset.tab === 'classic' ? '' : 'none';
+    if (heroesCustom) heroesCustom.style.display = b.dataset.tab === 'custom' ? '' : 'none';
+  };
+});
 function paletteRow(id) {
   const opts = [{ id: '', name: 'Default', color: CLASSES[id].color, locked: false },
     ...PALETTES.filter((p) => p.cls === id).map((p) => ({ id: p.id, name: p.name, color: p.color, locked: !unlocked.palettes.has(p.id) }))];
@@ -53,7 +149,7 @@ function renderHeroPicker() {
     const el = document.createElement('div');
     el.className = 'hero' + (id === selectedClass ? ' sel' : '') + (isUnlocked ? '' : ' locked');
     const color = colorFor(id, id === selectedClass ? selectedPalette : '');
-    el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n cls-${id}">${c.name}</div><div class="s">${c.hero}</div>
+    el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n cls-${cssToken(id)}">${c.name}</div><div class="s">${c.hero}</div>
       <div class="s">Speed ${'★'.repeat(Math.max(0, Math.round((c.speed - 4) * 1.5)))}<br>Shot ${'★'.repeat(c.shotDamage)}<br>Armor ${'★'.repeat(Math.max(0, Math.round((1.1 - c.armor) * 10)))}<br>Magic ${'★'.repeat(Math.round(c.magic))}</div>
       ${isUnlocked ? paletteRow(id) : `<div class="lock">🔒 ${esc(requirementText({ requires: c.requires }))}</div>`}`;
     el.querySelector('canvas').getContext('2d').drawImage(sprite('hero', color), 0, 0);
@@ -63,6 +159,7 @@ function renderHeroPicker() {
         if (!PALETTES.some((p) => p.id === selectedPalette && p.cls === id)) { selectedPalette = ''; localStorage.removeItem(PALETTE_KEY); }
         renderHeroPicker();
         rebuildHeroSelect();
+        maybeHeroCutscene(id);
       };
       el.querySelectorAll('[data-palette]').forEach((sw) => sw.onclick = (ev) => {
         ev.stopPropagation();
@@ -72,6 +169,7 @@ function renderHeroPicker() {
         selectedPalette = pid; if (pid) localStorage.setItem(PALETTE_KEY, pid); else localStorage.removeItem(PALETTE_KEY);
         renderHeroPicker();
         rebuildHeroSelect();
+        maybeHeroCutscene(id);
       });
     }
     heroes.appendChild(el);
@@ -86,7 +184,7 @@ async function loadRooms() {
   const box = $('#rooms');
   if (!rooms.length) { box.innerHTML = '<span class="muted">No open dungeons. Start one!</span>'; return; }
   box.innerHTML = rooms.map((r) => `<div class="r"><div><b>${esc(r.name)}</b> <span class="tag">${r.mode === 'death' ? `Death mode · cap ${r.deathCap != null ? r.deathCap : '∞'}` : r.source === 'custom' ? 'custom: ' + esc(r.customName || '') : 'campaign'}</span> <span class="tag">${r.state === 'lobby' ? 'In lobby' : 'Level ' + r.level}</span><br>
-    <span class="muted" style="font-size:12px">${esc(r.levelName)} · ${r.roster.map((p) => `<span class="cls-${p.cls}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
+    <span class="muted" style="font-size:12px">${esc(r.levelName)} · ${r.roster.map((p) => `<span style="color:${playerColor(p)}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
     <button data-join="${r.id}" ${r.players >= r.max ? 'disabled' : ''}>${r.players}/${r.max} Join</button></div>`).join('');
   box.querySelectorAll('[data-join]').forEach((b) => b.onclick = () => joinGame({ roomId: b.dataset.join }));
 }
@@ -103,10 +201,17 @@ renderNav('play').then(async () => {
     classes: new Set(m.unlocks?.classes || CLASS_IDS.filter((id) => !CLASSES[id].locked)),
     palettes: new Set(m.unlocks?.palettes || []),
   };
-  if (!unlocked.classes.has(selectedClass)) { selectedClass = 'warrior'; localStorage.setItem(CLASS_KEY, selectedClass); }
+  if (m.user) { try { ({ heroes: myHeroes } = await api('/api/heroes/mine')); } catch { myHeroes = []; } }
+  else myHeroes = [];
+  if (isCustomCls(selectedClass)) {
+    if (!findCustomHero(selectedClass)) { selectedClass = 'warrior'; localStorage.setItem(CLASS_KEY, selectedClass); }
+  } else if (!unlocked.classes.has(selectedClass)) { selectedClass = 'warrior'; localStorage.setItem(CLASS_KEY, selectedClass); }
   if (selectedPalette && !unlocked.palettes.has(selectedPalette)) { selectedPalette = ''; localStorage.removeItem(PALETTE_KEY); }
   renderHeroPicker();
+  renderCustomHeroPicker();
   rebuildHeroSelect();
+  if (isCustomCls(selectedClass)) document.querySelector('#hero-tabs [data-tab="custom"]')?.click();
+  if (!hasSeen('intro')) playScene('intro', { onDone: () => markSeen('intro') });
 });
 loadRooms();
 setInterval(() => { if (!G.ws) loadRooms(); }, 5000);
@@ -120,6 +225,9 @@ const G = {
   inRoom: false, reconnecting: false, reconnectAttempts: 0, reconnectTimer: null,
   intermission: null, // { seconds, startedAt, totalMs, chests, picks:Map<pid,chest>, myPick, rects[] }
   sealed: false, // Death mode: exit tile is impassable-for-completion until all of a level's waves clear
+  bonus: null, // { total, startedAt } — treasure-room countdown (see 'bonus' message)
+  keyCount: 0, foodShotCount: 0, // per-level narrator counters
+  lastMagicNag: 0, lastDying: 0, // narrator rate-limit timestamps
 };
 // exposed for manual/E2E debugging only — not used by the game itself
 window.__gc = {
@@ -140,7 +248,7 @@ function joinGame(opts) {
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
   ws.onopen = () => {
-    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, ...opts }));
+    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, guestId, ...opts }));
   };
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
@@ -163,7 +271,7 @@ function attemptReconnect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null, guestId }));
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
   ws.onerror = () => {};
@@ -187,6 +295,7 @@ function onMessage(m) {
   switch (m.t) {
     case 'welcome':
       G.pid = m.pid; G.room = m.room; G.inRoom = true; G.reconnecting = false; G.reconnectAttempts = 0;
+      if (m.guestId && m.guestId !== guestId) { guestId = m.guestId; try { localStorage.setItem(GUEST_KEY, guestId); } catch {} }
       saveResume(m.room, m.pid, m.resume);
       $('#lobby').style.display = 'none'; $('#session').classList.add('on');
       if (m.room.state === 'lobby') {
@@ -198,7 +307,7 @@ function onMessage(m) {
       log(`<span class="n">Welcome to ${esc(m.room.name)}. ${m.room.source === 'custom' ? 'Custom dungeon: ' + esc(m.room.customName || '') : ''}</span>`);
       history.replaceState(null, '', `/?room=${m.room.id}`);
       renderRoomScreen(m.room);
-      say('Welcome, ' + CLASSES[selectedClass].name);
+      say('welcome', 'Welcome, ' + heroDisplayName(selectedClass));
       break;
     case 'room':
       G.room = m.room;
@@ -208,20 +317,30 @@ function onMessage(m) {
     case 'start':
       $('#roomscreen').classList.remove('on'); $('#game').classList.add('on'); $('#touch').classList.add('on');
       renderCountdown(null);
+      if (G.room?.mode === 'death' && !hasSeen('death_mode')) playScene('death_mode', { onDone: () => markSeen('death_mode') });
       break;
     case 'level':
       G.level = m; G.grid = m.rows.map((r) => r.split(''));
-      G.prev = G.cur = null; G.fx = []; G.sealed = !!m.sealed;
+      G.prev = G.cur = null; G.fx = []; G.sealed = !!m.sealed; G.bonus = null;
+      G.keyCount = 0; G.foodShotCount = 0;
       G.overlay = { kind: 'level', title: `LEVEL ${m.index}`, sub: m.name, until: performance.now() + 2500 };
       log(`<span class="n">Level ${m.index}: ${esc(m.name)}</span> <span class="muted">${esc(m.description || '')}</span>`);
-      if (m.index > 1) say(`Let's see how you do in level ${m.index}`);
+      if (m.index > 1) say('level_n', `Let's see how you do in level ${m.index}`);
       sfx('level');
+      if ([10, 25, 50].includes(m.index)) playScene(`level_milestone_${m.index}`);
+      break;
+    case 'bonus':
+      G.bonus = { total: m.seconds, startedAt: performance.now() };
+      G.overlay = { kind: 'bonus', title: 'BONUS ROUND!', sub: 'Grab treasure — any exit will do', until: performance.now() + 2500 };
+      log('<span class="n">Bonus treasure room! Grab everything before time runs out.</span>');
+      sfx('level');
+      playScene('treasure_room');
       break;
     case 'wave':
       G.overlay = { kind: 'wave', title: `WAVE ${m.n} / ${m.total}`, sub: 'Survive!', until: performance.now() + m.seconds * 1000 };
       log(`<span class="n">Wave ${m.n} of ${m.total} incoming…</span>`);
-      say(`Wave ${m.n}`);
-      sfx('level');
+      say('wave_n', `Wave ${m.n}`);
+      sfx('wave');
       break;
     case 'exitopen':
       G.sealed = false;
@@ -235,7 +354,8 @@ function onMessage(m) {
       const title = m.reason === 'cap' ? 'LEVEL CAP REACHED!' : 'PARTY WIPED';
       G.overlay = { kind: 'gameover', title, sub: `Level ${m.level} / cap ${capTxt}`, until: performance.now() + 6000 };
       log(`<span class="n">${title} — reached level ${m.level}. ${lines}</span>`);
-      sfx(m.reason === 'cap' ? 'clear' : 'death');
+      sfx(m.reason === 'cap' ? 'victory' : 'gameover');
+      playScene(m.reason === 'cap' ? 'victory' : 'game_over');
       setTimeout(() => {
         $('#game').classList.remove('on'); $('#roomscreen').classList.add('on'); $('#touch').classList.remove('on');
         if (G.room) renderRoomScreen(G.room);
@@ -260,6 +380,7 @@ function onMessage(m) {
       break;
     case 'levelclear':
       G.overlay = { kind: 'clear', title: 'LEVEL CLEARED', sub: `${m.by} found the exit in ${m.time}s`, until: performance.now() + 2500 };
+      if (!m.deaths && m.kills >= 30) say('bravery', "I've not seen such bravery");
       sfx('clear'); break;
     case 'chests':
       G.intermission = {
@@ -271,7 +392,7 @@ function onMessage(m) {
     case 'chestpick': {
       if (!G.intermission) break;
       G.intermission.picks.set(m.pid, m.chest);
-      if (m.pid === G.pid) { G.intermission.myPick = m.chest; sfx(m.chest.cursed ? 'bad' : 'coin'); }
+      if (m.pid === G.pid) { G.intermission.myPick = m.chest; sfx(m.chest.cursed ? 'bad' : 'chest'); }
       const nm = G.players.get(m.pid)?.name || 'Someone';
       log(`<span class="n">${esc(nm)} opened ${esc(m.chest.icon)} ${esc(m.chest.label)}</span>`);
       break;
@@ -288,24 +409,44 @@ function onMessage(m) {
 
 function onEvent(e) {
   const mine = e.pid === G.pid;
-  const name = G.players.get(e.pid)?.name || '';
-  const cls = G.players.get(e.pid)?.cls;
+  const info = G.players.get(e.pid);
+  const name = info?.name || '';
+  const hLabel = heroLabel(info);
   switch (e.type) {
     case 'tile': if (G.grid) G.grid[e.y][e.x] = e.c; if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); break;
-    case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx('kill'); break;
+    case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
     case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
-    case 'pickup': if (mine) { sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : e.item === 'F' ? 'eat' : 'pick'); } break;
-    case 'food': if (mine && e.lowHealth) say(`${CLASSES[cls]?.name} was about to die… saved by food`); break;
-    case 'food_shot': log(`<span class="n">${esc(name)} shot the food!</span>`); if (mine) { say("Don't shoot the food!"); sfx('bad'); } break;
+    case 'pickup':
+      if (mine) {
+        sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : (e.item === 'F' || e.item === 'C') ? 'eat' : 'pick');
+        if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('save_keys', 'Save keys for later levels'); }
+      }
+      break;
+    case 'food': if (mine && e.lowHealth) say('saved_by_food', `${hLabel} was about to die… saved by food`); break;
+    case 'poison': log(`<span class="n">${esc(name)} ate poisoned food!</span>`); if (mine) { sfx('poison'); say('poisoned', 'That was poisoned!'); } break;
+    case 'steal': log(`<span class="n">A thief stole ${e.item === 'potion' ? 'a potion' : 'a key'} from ${esc(name)}!</span>`); if (mine) sfx('bad'); break;
+    case 'teleport': if (mine) sfx('teleport'); break;
+    case 'lob_land': G.fx.push({ kind: 'boom', x: e.x, y: e.y, t: 0 }); if (Math.random() < 0.7) sfx('boom'); break;
+    case 'food_shot':
+      log(`<span class="n">${esc(name)} shot the food!</span>`);
+      if (mine) {
+        G.foodShotCount++; sfx('bad');
+        say(G.foodShotCount === 2 ? 'dont_shoot_food_again' : 'dont_shoot_food', G.foodShotCount === 2 ? "Remember, don't shoot food" : "Don't shoot the food!");
+      }
+      break;
     case 'door': sfx('door'); break;
     case 'secret': log(`<span class="n">${esc(name)} found a secret wall</span>`); sfx('door'); break;
-    case 'potion': G.fx.push({ kind: 'magic', x: e.x, y: e.y, r: e.radius, t: 0 }); sfx('magic'); G.shake = 0.4; break;
-    case 'death': log(`<span class="n">${esc(name)} the ${cls} has died</span>`); if (mine) { sfx('death'); say(`${CLASSES[cls]?.name} has died. Insert coin to continue.`); } break;
+    case 'potion': G.fx.push({ kind: 'magic', x: e.x, y: e.y, r: e.radius, t: 0 }); sfx('potion'); G.shake = 0.4; break;
+    case 'death': log(`<span class="n">${esc(name)} the ${esc(hLabel)} has died</span>`); if (mine) { sfx('death'); say('died', `${hLabel} has died. Insert coin to continue.`); } break;
     case 'coin': if (mine) sfx('coin'); break;
     case 'exit': break;
     case 'sound':
       if (!mine && Math.random() < 0.7) break;
-      if (e.name.startsWith('shoot_')) sfx('shoot'); else if (e.name === 'hit') sfx('hit'); else if (e.name === 'fireball') sfx('fireball'); else if (e.name === 'spawn') sfx('spawn'); else if (e.name === 'ghost_hit') sfx('hit');
+      if (e.name.startsWith('shoot_')) sfx(e.name);
+      else if (e.name === 'hit') sfx(e.mtype ? 'hit_' + e.mtype : 'hit');
+      else if (e.name === 'fireball') sfx('fireball');
+      else if (e.name === 'spawn') sfx('spawn');
+      else if (e.name === 'ghost_hit') sfx('hit_ghost');
       break;
   }
 }
@@ -320,14 +461,21 @@ function log(html) {
 const heroSelect = $('#rs-hero');
 const paletteSelect = $('#rs-palette');
 function rebuildHeroSelect() {
-  heroSelect.innerHTML = CLASS_IDS.map((id) => {
+  const classicOpts = CLASS_IDS.map((id) => {
     const locked = !unlocked.classes.has(id);
     return `<option value="${id}" ${locked ? 'disabled' : ''}>${esc(CLASSES[id].name)}${locked ? ' (locked)' : ''}</option>`;
   }).join('');
-  heroSelect.value = unlocked.classes.has(selectedClass) ? selectedClass : 'warrior';
+  const customOpts = myHeroes.length
+    ? `<optgroup label="Custom">${myHeroes.map((h) => `<option value="custom:${h.id}">${esc(h.title || h.name)}</option>`).join('')}</optgroup>`
+    : '';
+  heroSelect.innerHTML = classicOpts + customOpts;
+  heroSelect.value = findCustomHero(selectedClass) ? selectedClass : unlocked.classes.has(selectedClass) ? selectedClass : 'warrior';
   rebuildPaletteSelect();
 }
 function rebuildPaletteSelect() {
+  // Custom heroes carry their own fixed color (from their pixel art) — no palette to pick.
+  paletteSelect.disabled = isCustomCls(selectedClass);
+  if (isCustomCls(selectedClass)) { paletteSelect.innerHTML = '<option value="">—</option>'; return; }
   const opts = [{ id: '', name: 'Default' }, ...PALETTES.filter((p) => p.cls === selectedClass)];
   paletteSelect.innerHTML = opts.map((o) => {
     const locked = o.id && !unlocked.palettes.has(o.id);
@@ -401,7 +549,7 @@ function renderRoomScreen(room) {
   $('#rs-cap').textContent = room.mode === 'death' ? `· cap ${room.deathCap != null ? room.deathCap : '∞'}` : '';
   $('#rs-roster').innerHTML = room.roster.map((p) => `
     <div class="row2 ${p.away ? 'away' : ''}">
-      <div class="who"><span class="nm cls-${p.cls}">${esc(p.name)}${p.pid === G.pid ? ' (you)' : ''}</span> ${p.title ? `<span class="muted" style="font-size:11px">${esc(p.title)}</span>` : ''}</div>
+      <div class="who"><span class="nm" style="color:${playerColor(p)}">${esc(p.name)}${p.pid === G.pid ? ' (you)' : ''}</span> ${p.title ? `<span class="muted" style="font-size:11px">${esc(p.title)}</span>` : ''}</div>
       ${p.host ? '<span class="badge host">HOST</span>' : ''}
       ${p.away ? '<span class="badge away">AWAY</span>' : `<span class="badge ${p.ready ? 'ready' : ''}">${p.ready ? 'READY' : 'not ready'}</span>`}
       ${isHost && p.pid !== G.pid ? `<button data-kick="${p.pid}" style="font-size:11px;padding:2px 6px">Kick</button>` : ''}
@@ -430,7 +578,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key === 't' || e.key === 'T') { e.preventDefault(); chat.focus(); return; }
-  if (e.key === 'm' || e.key === 'M') { G.muted = !G.muted; localStorage.setItem('gc_mute', G.muted ? '1' : '0'); toast(G.muted ? 'Sound off' : 'Sound on'); return; }
+  if (e.key === 'm' || e.key === 'M') { G.muted = !G.muted; setMuted(G.muted); toast(G.muted ? 'Sound off' : 'Sound on'); return; }
   if (e.key === 'n' || e.key === 'N') { G.narrate = !G.narrate; localStorage.setItem('gc_narrate', G.narrate ? '1' : '0'); toast(G.narrate ? 'Narrator on' : 'Narrator off'); return; }
   if (e.key === 'q' || e.key === 'Q' || e.key === 'Shift') { sendInput({ potion: true }); e.preventDefault(); return; }
   if (e.key === 'Enter') { sendInput({ respawn: true }); return; }
@@ -533,10 +681,17 @@ function frame(now) {
     let name = TILE_SPRITE[c];
     if (!name) name = 'floor';
     if (name !== 'wall' && name !== 'floor' && name !== 'trap') ctx.drawImage(sprite('floor'), x * TS, y * TS, TS, TS);
-    if (c === 'g' || c === 'h' || c === 'm') {
+    if (c === 'g' || c === 'h' || c === 'm' || c === 'l' || c === 's') {
       const g = snap.g.find((gg) => gg[0] === x && gg[1] === y);
       const hp = g ? g[2] : 3;
       ctx.drawImage(sprite('gen' + Math.max(1, Math.min(3, hp)), GEN_TINT[c]), x * TS, y * TS, TS, TS);
+      continue;
+    }
+    if (c === 'X') {
+      // transporter: pulse in size to draw the eye
+      const pulse = 0.82 + 0.18 * Math.sin(now / 220 + x * 3 + y);
+      const cx = x * TS + TS / 2, cy = y * TS + TS / 2;
+      ctx.drawImage(sprite(name), cx - (TS * pulse) / 2, cy - (TS * pulse) / 2, TS * pulse, TS * pulse);
       continue;
     }
     ctx.drawImage(sprite(name), x * TS, y * TS, TS, TS);
@@ -550,26 +705,39 @@ function frame(now) {
   }
   // shots
   for (const b of snap.b) {
-    const name = SHOT_SPRITE[b[4]] || 'fireball';
+    let name = SHOT_SPRITE[b[4]] || 'fireball';
+    // A custom hero's shots all share shotKey 'c' — the owner's own weapon (== its sprite id, see
+    // shared/hero-builder.js WEAPONS) says which sprite to actually draw (see snapshot()'s owner id).
+    if (b[4] === 'c' && b[6] != null) { const owner = G.players.get(b[6]); if (owner?.weapon) name = owner.weapon; }
     const px = b[1] * TS, py = b[2] * TS;
     ctx.save(); ctx.translate(px, py);
-    if (name === 'axe') ctx.rotate(now / 60); else ctx.rotate((b[3] - 2) * Math.PI / 4);
-    ctx.drawImage(sprite(name), -TS / 2, -TS / 2, TS, TS);
+    if (b[4] === 'a' && b[5] != null) {
+      // lobber's arcing shot: grows then shrinks across its flight to suggest height
+      const prog = b[5]; const scale = 1 + Math.sin(prog * Math.PI) * 0.9;
+      ctx.drawImage(sprite(name), (-TS * scale) / 2, (-TS * scale) / 2, TS * scale, TS * scale);
+    } else {
+      if (name === 'axe') ctx.rotate(now / 60); else ctx.rotate((b[3] - 2) * Math.PI / 4);
+      ctx.drawImage(sprite(name), -TS / 2, -TS / 2, TS, TS);
+    }
     ctx.restore();
   }
   // monsters
-  const MNAME = { g: 'ghost', r: 'grunt', d: 'demon', e: 'death' };
   for (const m of snap.m) {
-    const name = MNAME[m[1]] || 'ghost';
+    const name = SNAP_KEY_TO_MONSTER[m[1]] || 'ghost';
     const bob = name === 'ghost' ? Math.sin(now / 150 + m[0]) * 2 : (Math.floor(now / 200 + m[0]) % 2) * 1;
+    const invisible = m[5] === 1;
+    if (invisible) ctx.globalAlpha = 0.2;
     drawEntity(sprite(name), m[2], m[3], m[4], bob);
+    if (invisible) ctx.globalAlpha = 1;
   }
   // players
   for (const p of snap.p) {
     const info = G.players.get(p[0]); const color = playerColor(info);
     if (p[8]) { ctx.globalAlpha = 0.35; }
     const bob = (Math.floor(now / 120) % 2) * 1;
-    drawEntity(sprite('hero', color), p[1], p[2], p[3], p[8] ? 0 : bob, true);
+    // A custom hero renders its own painted pixel art instead of the tinted stock hero sprite.
+    const heroImg = (info?.custom && spriteFromPixels(info.custom.pixels, HERO_PALETTE, 4)) || sprite('hero', color);
+    drawEntity(heroImg, p[1], p[2], p[3], p[8] ? 0 : bob, true);
     ctx.globalAlpha = 1;
     // name tag
     ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = color;
@@ -605,8 +773,16 @@ function frame(now) {
     ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, VIEW_H - 90, VIEW_W, 90);
     ctx.fillStyle = '#e03c31'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center'; ctx.fillText('YOU HAVE DIED', VIEW_W / 2, VIEW_H - 52);
     if (Math.floor(now / 500) % 2) { ctx.fillStyle = '#f2c400'; ctx.font = '14px monospace'; ctx.fillText('INSERT COIN — press ENTER to continue', VIEW_W / 2, VIEW_H - 24); }
-  } else if (mine && mine[4] < LOW_HEALTH && now - G.lastFood > 12000) {
-    G.lastFood = now; say(`${CLASSES[G.players.get(G.pid)?.cls]?.name || 'Hero'} needs food badly`);
+  } else if (mine && !mine[8]) {
+    const heroName = heroLabel(G.players.get(G.pid));
+    if (mine[4] < 100 && now - G.lastDying > 8000) { G.lastDying = now; say('about_to_die', `${heroName} is about to die`); }
+    else if (mine[4] < LOW_HEALTH && now - G.lastFood > 12000) { G.lastFood = now; say('needs_food', `${heroName} needs food badly`); }
+    else if (mine[4] < 300 && mine[6] > 0 && now - G.lastMagicNag > 15000) { G.lastMagicNag = now; say('use_magic', `${heroName}, use magic!`); }
+  }
+  if (G.bonus) {
+    const remain = Math.max(0, G.bonus.total * 1000 - (now - G.bonus.startedAt));
+    ctx.fillStyle = '#f2c400'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(`BONUS: ${Math.ceil(remain / 1000)}s`, VIEW_W / 2, 20);
   }
   if (G.intermission) drawIntermission(now);
   updateHudValues(G.cur);
@@ -708,7 +884,7 @@ function renderHud() {
   hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => `
     <div class="pp ${p.away ? 'away' : ''}" data-pid="${p.id}" style="border-color:${playerColor(p)}">
       <div class="nm" style="color:${playerColor(p)}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}${p.away ? ' <span class="muted">(away)</span>' : ''}</div>
-      <div class="muted" style="font-size:11px">${CLASSES[p.cls]?.name || p.cls}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
+      <div class="muted" style="font-size:11px">${esc(heroLabel(p))}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
       <div>HEALTH <span class="hp">0</span></div>
       <div>SCORE <span class="sc">0</span></div>
       <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>
@@ -731,52 +907,14 @@ function updateHudValues(s) {
 }
 
 // ---------------- audio ----------------
-let AC = null;
-function ac() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } } if (AC.state === 'suspended') AC.resume(); return AC; }
-window.addEventListener('pointerdown', () => ac(), { once: true }); window.addEventListener('keydown', () => ac(), { once: true });
-function tone(freq, dur, type = 'square', vol = 0.08, slide = 0) {
-  const a = ac(); if (!a || G.muted) return;
-  const o = a.createOscillator(); const g = a.createGain();
-  o.type = type; o.frequency.setValueAtTime(freq, a.currentTime);
-  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), a.currentTime + dur);
-  g.gain.setValueAtTime(vol, a.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
-  o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime + dur);
-}
-function noise(dur, vol = 0.08) {
-  const a = ac(); if (!a || G.muted) return;
-  const buf = a.createBuffer(1, a.sampleRate * dur, a.sampleRate); const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
-  const s = a.createBufferSource(); s.buffer = buf; const g = a.createGain(); g.gain.value = vol; s.connect(g).connect(a.destination); s.start();
-}
-const sfxLast = {};
-function sfx(name) {
-  const now = performance.now(); if (sfxLast[name] && now - sfxLast[name] < 40) return; sfxLast[name] = now;
-  switch (name) {
-    case 'shoot': tone(880, 0.06, 'square', 0.04, -400); break;
-    case 'hit': noise(0.05, 0.05); break;
-    case 'kill': tone(220, 0.12, 'sawtooth', 0.06, -150); noise(0.08, 0.04); break;
-    case 'boom': noise(0.35, 0.12); tone(80, 0.3, 'sawtooth', 0.1, -60); break;
-    case 'coin': tone(988, 0.08, 'square', 0.06); setTimeout(() => tone(1319, 0.15, 'square', 0.06), 80); break;
-    case 'key': tone(1319, 0.06, 'square', 0.05); setTimeout(() => tone(1760, 0.1, 'square', 0.05), 60); break;
-    case 'eat': tone(330, 0.08, 'triangle', 0.08); setTimeout(() => tone(440, 0.1, 'triangle', 0.08), 80); break;
-    case 'pick': tone(660, 0.1, 'triangle', 0.06); break;
-    case 'door': tone(160, 0.25, 'sawtooth', 0.06, 60); break;
-    case 'magic': tone(200, 0.6, 'sine', 0.1, 1400); noise(0.3, 0.05); break;
-    case 'death': tone(440, 0.8, 'sawtooth', 0.1, -400); break;
-    case 'bad': tone(200, 0.3, 'square', 0.06, -100); break;
-    case 'fireball': tone(300, 0.15, 'sawtooth', 0.04, -200); break;
-    case 'spawn': tone(120, 0.1, 'square', 0.03, 80); break;
-    case 'level': [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.18, 'square', 0.06), i * 110)); break;
-    case 'clear': [784, 659, 784, 1047, 1319].forEach((f, i) => setTimeout(() => tone(f, 0.2, 'square', 0.07), i * 120)); break;
-    case 'ach': [1047, 1319, 1568].forEach((f, i) => setTimeout(() => tone(f, 0.25, 'triangle', 0.08), i * 90)); break;
-  }
-}
-let lastSay = 0;
-function say(text) {
-  if (!G.narrate || !('speechSynthesis' in window)) return;
-  const now = performance.now(); if (now - lastSay < 2500) return; lastSay = now;
-  const u = new SpeechSynthesisUtterance(text); u.rate = 0.9; u.pitch = 0.6; u.volume = 0.9;
-  speechSynthesis.speak(u);
+// SFX synthesis lives in client/audio.js (#20); the narrator voice pipeline (pre-rendered clip
+// or speechSynthesis fallback) lives in client/voice.js (#19). This wrapper just gates on the
+// narrator on/off preference, same as the old inline say() used to.
+initAudio();
+setMuted(G.muted);
+function say(id, text) {
+  if (!G.narrate) return;
+  voiceSay(id, text);
 }
 
 // deep link: /?room=ID — but if this tab already holds a resume token for a room (e.g. the page
