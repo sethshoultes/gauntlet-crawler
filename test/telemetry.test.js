@@ -54,7 +54,7 @@ async function withServer(fn) {
     await fn(baseUrl);
   } finally {
     if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await once(server, 'exit').catch(() => {});
+    await exit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
     await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 }
@@ -151,7 +151,7 @@ test('an authenticated beacon ignores a client-supplied guestId: guest_id is sto
     assert.equal(row.guest_id, null, 'a client-supplied guestId must be ignored once the request is authenticated');
   } finally {
     if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await once(server, 'exit').catch(() => {});
+    await exit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
     await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 });
@@ -232,7 +232,7 @@ test('WS join telemetry records the final guestId Room#join assigns, not a misma
     assert.notEqual(row.guest_id, requestedGuestId, 'telemetry must not record the mismatched requested guestId');
   } finally {
     if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await once(server, 'exit').catch(() => {});
+    await exit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
     await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 });

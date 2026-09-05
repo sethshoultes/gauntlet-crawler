@@ -89,7 +89,7 @@ test('static file traversal is blocked; legitimate /shared and /client files sti
     assert.equal(index.status, 200, 'GET / should still serve index.html');
   } finally {
     if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await once(server, 'exit').catch(() => {});
+    await serverExit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
     await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 });

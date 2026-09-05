@@ -60,7 +60,7 @@ async function withServer(fn) {
     await fn(baseUrl, dataDir);
   } finally {
     if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await once(server, 'exit').catch(() => {});
+    await exit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
     await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 }
