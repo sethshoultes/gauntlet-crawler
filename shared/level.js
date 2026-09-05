@@ -1,7 +1,7 @@
 // Level format: parse/validate/auto-repair an ASCII level (array of equal-length strings) and the
 // tile legend used by the editor and README. Used by both the server (level.js validation before
 // save/publish) and the client (editor.js preview).
-import { T, ALL_TILES, EXIT_TILES } from './constants.js';
+import { T, ALL_TILES, EXIT_TILES, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS } from './constants.js';
 
 export const MIN_SIZE = 12;
 export const MAX_SIZE = 64;
@@ -51,10 +51,19 @@ export function validateLevel(raw) {
   return problems;
 }
 
-/** BFS from the first start to any exit; doors are passable only if the level has at least one key. */
+/** BFS from the first start to any exit; doors are passable only if the level has at least one key.
+ *  A group wall (see GROUP_WALLS/TRAP_PLATES) is passable only if the level actually contains the
+ *  plate that dissolves it — with no plate placed it can never open, so it stays solid for
+ *  reachability purposes. A timed wall (TIMED_WALLS) is always treated as eventually passable: its
+ *  timer fires unconditionally, converting it to floor or an exit (see server/game/sim.js
+ *  stepTimedWalls). */
 export function exitReachable(lvl) {
   const { w, h, rows, starts } = lvl;
   const hasKey = rows.some((r) => r.includes(T.KEY));
+  const openableGroups = new Set();
+  for (const [plateGlyph, wallGlyph] of Object.entries(TRAP_PLATES)) {
+    if (rows.some((r) => r.includes(plateGlyph))) openableGroups.add(wallGlyph);
+  }
   const seen = new Uint8Array(w * h);
   const q = [starts[0]];
   seen[starts[0][1] * w + starts[0][0]] = 1;
@@ -67,6 +76,7 @@ export function exitReachable(lvl) {
       const c = rows[ny][nx];
       if (c === T.WALL) continue;
       if (c === T.DOOR && !hasKey) continue;
+      if (GROUP_WALLS.has(c) && !openableGroups.has(c)) continue;
       const i = ny * w + nx;
       if (seen[i]) continue;
       seen[i] = 1;
@@ -78,7 +88,7 @@ export function exitReachable(lvl) {
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */
 export function repairLevel(raw) {
-  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN]/g, '.'));
+  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN%&*=+~^:]/g, '.'));
   rows = rows.filter((r) => r.length > 0);
   let w = Math.max(...rows.map((r) => r.length), MIN_SIZE);
   w = Math.min(w, MAX_SIZE);
@@ -108,7 +118,10 @@ export function repairLevel(raw) {
     // Carve an L-shaped corridor from start to the first exit.
     const [sx, sy] = parsed.starts[0];
     const [ex, ey] = parsed.exits[0];
-    const carve = (x, y) => { if (grid[y][x] === T.WALL || grid[y][x] === T.TRAP || grid[y][x] === T.DOOR) grid[y][x] = T.FLOOR; };
+    const carve = (x, y) => {
+      const c = grid[y][x];
+      if (c === T.WALL || c === T.TRAP || c === T.DOOR || GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) grid[y][x] = T.FLOOR;
+    };
     for (let x = Math.min(sx, ex); x <= Math.max(sx, ex); x++) carve(x, sy);
     for (let y = Math.min(sy, ey); y <= Math.max(sy, ey); y++) carve(ex, y);
     lvl = { ...lvl, rows: grid.map((r) => r.join('')) };
@@ -135,4 +148,12 @@ export const LEGEND = [
   [T.BOOST_SHOT, 'Shot power boost (permanent, rare)'],
   [T.BOOST_FIRE_RATE, 'Shot speed boost (permanent, rare)'],
   [T.BOOST_MAGIC, 'Magic power boost (permanent, rare)'],
+  [T.TRAP_PLATE_A, 'Pressure plate A (dissolves all "=" wall-group A tiles when stepped on)'],
+  [T.TRAP_PLATE_B, 'Pressure plate B (dissolves all "+" wall-group B tiles when stepped on)'],
+  [T.TRAP_PLATE_C, 'Pressure plate C (dissolves all "~" wall-group C tiles when stepped on)'],
+  [T.TRAP_WALL_A, 'Wall group A (solid until plate A is triggered)'],
+  [T.TRAP_WALL_B, 'Wall group B (solid until plate B is triggered)'],
+  [T.TRAP_WALL_C, 'Wall group C (solid until plate C is triggered)'],
+  [T.TIMED_WALL, 'Timed wall (becomes floor after the level timer)'],
+  [T.TIMED_WALL_EXIT, 'Timed exit wall (becomes an exit after the level timer)'],
 ];

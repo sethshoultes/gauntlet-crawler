@@ -37,6 +37,13 @@ Tile legend (use ONLY these characters):
   O repulsiveness amulet (20s, pushes monsters away)   U super-shots amulet (20s, shots pierce monsters)
   V permanent speed boost   A permanent armor boost   B permanent shot-power boost   Q permanent shot-speed boost   N permanent magic-power boost
   (amulets/boosts are optional flavor: use at most 0-2 amulets and at most 1 boost tile, only on deeper/harder levels)
+  % & * pressure plates, matched with = + ~ wall groups one-for-one (% opens =, & opens +, * opens ~): stepping
+  on a plate dissolves every tile of its matching wall-group glyph anywhere on the map. Optional, rare, deeper
+  levels only — use at most one pair, and only if you place at least one tile of the plate AND at least one
+  tile of its matching wall glyph (an unmatched wall group can never open).
+  ^ timed wall (turns to floor on its own after a countdown)   : timed wall that turns into an exit after a countdown
+  (timed walls are optional, rare, deeper levels only — use at most 1-2, and never as the only route to the exit
+  since their countdown takes time to fire)
 Rules: outer border is all #. There must be a walkable path from S to E (or 8) (doors are fine if there is a key before them).
 Every door must have at least one key reachable before it. Put 2-6 food, 3-10 treasure, 1-2 potions, 2-8 generators depending on the requested difficulty.
 Make rooms and corridors that are fun to fight in: choke points, side rooms with loot, generators guarding treasure.

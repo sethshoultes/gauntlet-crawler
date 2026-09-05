@@ -2,7 +2,7 @@
 // protocol handshake, canvas rendering of the 20 Hz snapshot, HUD, chat, and the narrator/cutscene
 // trigger points (see client/audio.js, client/voice.js, client/cutscenes.js).
 import { api, me, token, toast, renderNav, esc, cssToken, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
-import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
+import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT, PLATE_TINT } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
 import {
   CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER,
@@ -230,6 +230,7 @@ setInterval(() => { if (!G.ws) loadRooms(); }, 5000);
 const G = {
   ws: null, pid: null, room: null, level: null, grid: null, players: new Map(), // id -> {name, cls}
   prev: null, cur: null, prevAt: 0, curAt: 0, tiles: {}, fx: [], notices: [],
+  tileChangedAt: new Map(), // "x,y" -> performance.now() of its last 'tile' event, for the brief dissolve flash (#11)
   input: { dx: 0, dy: 0, fire: false }, lastSent: '', camX: 0, camY: 0, overlay: null, muted: localStorage.getItem('gc_mute') === '1', narrate: localStorage.getItem('gc_narrate') !== '0',
   aiNarrator: localStorage.getItem('gc_ai_narrator') === '1', // opt-in AI narrator commentary (#18); off unless explicitly turned on
   followId: null, lastFood: 0, shake: 0,
@@ -334,6 +335,7 @@ function onMessage(m) {
     case 'level':
       G.level = m; G.grid = m.rows.map((r) => r.split(''));
       G.prev = G.cur = null; G.fx = []; G.sealed = !!m.sealed; G.bonus = null;
+      G.tileChangedAt.clear();
       G.keyCount = 0; G.foodShotCount = 0;
       G.overlay = { kind: 'level', title: `LEVEL ${m.index}`, sub: m.name, until: performance.now() + 2500 };
       log(`<span class="n">Level ${m.index}: ${esc(m.name)}</span> <span class="muted">${esc(m.description || '')}</span>`);
@@ -434,7 +436,19 @@ function onEvent(e) {
   const name = info?.name || '';
   const hLabel = heroLabel(info);
   switch (e.type) {
-    case 'tile': if (G.grid) G.grid[e.y][e.x] = e.c; if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); break;
+    case 'tile':
+      if (G.grid) G.grid[e.y][e.x] = e.c;
+      if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 });
+      G.tileChangedAt.set(e.x + ',' + e.y, performance.now()); // brief dissolve/appear flash, see render()
+      break;
+    case 'plate':
+      sfx('door');
+      log(name ? `<span class="n">${esc(name)} triggered a pressure plate — walls crumble!</span>` : '<span class="n">A pressure plate triggers — walls crumble!</span>');
+      break;
+    case 'timedWall':
+      G.fx.push({ kind: e.becomes === 'E' ? 'magic' : 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0, r: 1.4 });
+      sfx(e.becomes === 'E' ? 'level' : 'door');
+      break;
     case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
     case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
     case 'pickup': {
@@ -722,7 +736,24 @@ function frame(now) {
       ctx.drawImage(sprite(name), cx - (TS * pulse) / 2, cy - (TS * pulse) / 2, TS * pulse, TS * pulse);
       continue;
     }
-    ctx.drawImage(sprite(name), x * TS, y * TS, TS, TS);
+    if (PLATE_TINT[c]) { ctx.drawImage(sprite(name, PLATE_TINT[c]), x * TS, y * TS, TS, TS); }
+    else ctx.drawImage(sprite(name), x * TS, y * TS, TS, TS);
+    if (name === 'timedwall') {
+      // pulse faster the less time is left (#11) — falls back to a slow default pulse if the
+      // snapshot hasn't reported this tile's remaining seconds yet (e.g. mid-transition).
+      const tw = snap.tw && snap.tw.find((t) => t[0] === x && t[1] === y);
+      const left = tw ? tw[2] : 30;
+      const speed = 260 - Math.min(220, (30 - Math.min(30, left)) * 7);
+      ctx.fillStyle = `rgba(255,220,120,${0.18 + 0.18 * Math.sin(now / speed)})`;
+      ctx.fillRect(x * TS, y * TS, TS, TS);
+    }
+    // brief dissolve/appear flash (#11): a fading white highlight right after a tile changes.
+    const changedAt = G.tileChangedAt.get(x + ',' + y);
+    if (changedAt != null) {
+      const age = now - changedAt;
+      if (age < 260) { ctx.globalAlpha = Math.max(0, 1 - age / 260) * 0.55; ctx.fillStyle = '#fff'; ctx.fillRect(x * TS, y * TS, TS, TS); ctx.globalAlpha = 1; }
+      else G.tileChangedAt.delete(x + ',' + y);
+    }
   }
   // Death mode: pulse the exit red while it's sealed behind uncleared waves
   if (G.sealed) {

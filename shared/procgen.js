@@ -138,7 +138,9 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   const thiefChance = (bias.thief ? 0.35 : 0) + (diff >= 4 ? 0.1 + diff * 0.005 : 0);
   if (rng.chance(clamp(thiefChance, 0, 0.6))) place(T.THIEF, 1);
 
-  // 7. Secret walls: turn a few dead-end wall tiles next to floors into W
+  // 7. Secret walls: turn a few dead-end wall tiles next to floors into W — or, occasionally on
+  // deeper levels, a timed wall/timed-exit-wall shortcut (#11) that opens on its own after a
+  // countdown instead of needing a touch.
   if (diff >= 2) {
     const candidates = [];
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
@@ -147,7 +149,31 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
       if (n === 2 && ((g[y - 1][x] === T.FLOOR && g[y + 1][x] === T.FLOOR) || (g[y][x - 1] === T.FLOOR && g[y][x + 1] === T.FLOOR))) candidates.push([x, y]);
     }
     rng.shuffle(candidates);
-    for (let i = 0; i < Math.min(candidates.length, rng.int(1, 3)); i++) { const [x, y] = candidates[i]; g[y][x] = T.TRAP; }
+    for (let i = 0; i < Math.min(candidates.length, rng.int(1, 3)); i++) {
+      const [x, y] = candidates[i];
+      let glyph = T.TRAP;
+      if (diff >= 3 && rng.chance(0.2)) glyph = rng.chance(0.7) ? T.TIMED_WALL : T.TIMED_WALL_EXIT;
+      g[y][x] = glyph;
+    }
+  }
+
+  // 8. Pressure-plate wall group puzzle (#11): occasionally (levels 3+) seal a small treasure
+  // vault behind a wall group carved into the solid rock just outside a non-start/exit room, with
+  // the matching plate placed elsewhere in the level as an environmental puzzle. shared/level.js's
+  // exitReachable() only ever treats a group wall as passable when its plate is present, which is
+  // guaranteed here since both are always placed together.
+  if (diff >= 3 && rng.chance(0.35)) {
+    const groups = [[T.TRAP_PLATE_A, T.TRAP_WALL_A], [T.TRAP_PLATE_B, T.TRAP_WALL_B], [T.TRAP_PLATE_C, T.TRAP_WALL_C]];
+    const [plateGlyph, wallGlyph] = rng.pick(groups);
+    const others = rooms.filter((r) => r !== startRoom && r !== exitRoom);
+    for (const room of rng.shuffle((others.length ? others : rooms).slice())) {
+      const vault = carveAlcove(g, w, h, room, rng);
+      if (!vault.length) continue;
+      for (const [gx, gy, px, py] of vault) { g[gy][gx] = wallGlyph; g[py][px] = T.TREASURE; }
+      const plateSpot = (cells.length ? cells : freeCells()).pop();
+      if (plateSpot) g[plateSpot[1]][plateSpot[0]] = plateGlyph;
+      break;
+    }
   }
 
   let lvl = {
@@ -220,3 +246,34 @@ export function generateTreasureRoom({ seed, level = 1 } = {}) {
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+/** Find up to 3 single-tile vault pockets carved into the untouched solid rock just outside
+ *  `room`'s border ring (see generateLevel's pressure-plate puzzle step, #11): a wall tile
+ *  adjacent to the room (the "gate", which the caller turns into a wall-group glyph) with solid
+ *  rock directly beyond it (the "pocket", which becomes a sealed treasure tile). The pocket's own
+ *  perpendicular neighbours must not already be floor, so this never punches into another room or
+ *  corridor that happens to run close by. Returns [[gateX, gateY, pocketX, pocketY], ...]. */
+function carveAlcove(g, w, h, room, rng) {
+  const solidRock = (x, y) => x > 0 && y > 0 && x < w - 1 && y < h - 1 && g[y][x] === T.WALL;
+  const isFloor = (x, y) => x >= 0 && y >= 0 && x < w && y < h && g[y][x] === T.FLOOR;
+  const sides = rng.shuffle([
+    { cells: Array.from({ length: room.w }, (_, i) => [room.x + i, room.y - 1]), dir: [0, -1] },
+    { cells: Array.from({ length: room.w }, (_, i) => [room.x + i, room.y + room.h]), dir: [0, 1] },
+    { cells: Array.from({ length: room.h }, (_, i) => [room.x - 1, room.y + i]), dir: [-1, 0] },
+    { cells: Array.from({ length: room.h }, (_, i) => [room.x + room.w, room.y + i]), dir: [1, 0] },
+  ]);
+  for (const side of sides) {
+    const found = [];
+    for (const [gx, gy] of side.cells) {
+      if (!solidRock(gx, gy)) continue;
+      const [dx, dy] = side.dir;
+      const px = gx + dx, py = gy + dy;
+      if (!solidRock(px, py)) continue;
+      if (isFloor(px + dy, py + dx) || isFloor(px - dy, py - dx)) continue; // too close to another room/corridor
+      found.push([gx, gy, px, py]);
+      if (found.length >= 3) break;
+    }
+    if (found.length) return found;
+  }
+  return [];
+}

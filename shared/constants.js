@@ -53,9 +53,26 @@ export const T = {
   BOOST_SHOT: 'B',      // shot power (damage)
   BOOST_FIRE_RATE: 'Q', // shot speed (reload rate)
   BOOST_MAGIC: 'N',     // magic power
+  // ---- pressure-plate wall groups (#11): stepping on a plate (by a hero OR a monster) dissolves
+  // every wall tile sharing its group glyph across the whole level, not just a connected cluster —
+  // see TRAP_PLATES below and server/game/sim.js's triggerPlate(). Three independent pairs so a
+  // level can nest more than one puzzle at once. Solid like a wall until dissolved. ----
+  TRAP_PLATE_A: '%', TRAP_PLATE_B: '&', TRAP_PLATE_C: '*',
+  TRAP_WALL_A: '=', TRAP_WALL_B: '+', TRAP_WALL_C: '~',
+  // ---- timed walls (#11): solid like a wall until TIMER_DEFAULT_SEC (or a level's `timers`
+  // override) seconds after the level loads, then convert in place — see sim.js stepTimedWalls(). ----
+  TIMED_WALL: '^',      // -> floor
+  TIMED_WALL_EXIT: ':', // -> exit (E)
 };
 
-export const SOLID_TILES = new Set([T.WALL, T.DOOR, T.TRAP]);
+export const SOLID_TILES = new Set([
+  T.WALL, T.DOOR, T.TRAP, T.TRAP_WALL_A, T.TRAP_WALL_B, T.TRAP_WALL_C, T.TIMED_WALL, T.TIMED_WALL_EXIT,
+]);
+// plate glyph -> the wall group glyph it dissolves (see server/game/sim.js triggerPlate()).
+export const TRAP_PLATES = { [T.TRAP_PLATE_A]: T.TRAP_WALL_A, [T.TRAP_PLATE_B]: T.TRAP_WALL_B, [T.TRAP_PLATE_C]: T.TRAP_WALL_C };
+export const GROUP_WALLS = new Set(Object.values(TRAP_PLATES));
+export const TIMED_WALLS = new Set([T.TIMED_WALL, T.TIMED_WALL_EXIT]);
+export const TIMER_DEFAULT_SEC = 30; // seconds from level start before a timed wall converts, absent a level.timers override
 export const PICKUP_TILES = new Set([
   T.KEY, T.FOOD, T.POTION, T.TREASURE, T.POISON_FOOD, T.CIDER,
   T.AMULET_INVIS, T.AMULET_REFLECT, T.AMULET_REPULSE, T.AMULET_SUPER,

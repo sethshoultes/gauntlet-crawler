@@ -175,6 +175,20 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   identically for Hero Builder custom heroes, since they live on the shared player object rather than any
   class-specific field. Collecting all four amulet kinds in a single run earns the *Amulet Collector*
   achievement.
+- **Pressure-plate wall groups and timed walls** (`shared/constants.js` `TRAP_PLATES`/`GROUP_WALLS`/`TIMED_WALLS`,
+  `server/game/sim.js` `triggerPlate`/`stepTimedWalls`): environmental puzzles distinct from the classic
+  `W` secret wall (which crumbles on touch/collision). Three independent plate/wall-group pairs — plate
+  `%` opens every `=` tile, `&` opens every `+` tile, `*` opens every `~` tile — solid like a wall until a
+  hero **or a monster** steps onto the matching plate, which then dissolves *every* tile of that group glyph
+  across the whole level (not just a connected cluster), once per plate. `shared/procgen.js` occasionally
+  (levels 3+) seals a small treasure vault behind a wall group carved into the rock just outside a room, with
+  the matching plate placed elsewhere as a fetch-the-key-first puzzle; `shared/level.js`'s `exitReachable`
+  only ever treats a group wall as passable when its own plate is actually present in the level. Separately,
+  timed walls are solid until a countdown (30s from level start by default, `TIMER_DEFAULT_SEC`, overridable
+  per-level via an optional `{timers: {wall, exit, default}}` on the level object) elapses, then convert in
+  place: `^` becomes floor, `:` becomes a real exit tile. `exitReachable` always treats a timed wall as
+  eventually passable, since its timer fires unconditionally. The client fades in newly-opened tiles over a
+  few frames and pulses a timed wall's tint faster as its countdown runs down.
 - **Players block each other**: bumping into a teammate cancels that axis of movement (soft collision within
   0.7 tiles) so the party can't stack on top of one another — player shots still pass straight through
   teammates, only movement is blocked.
@@ -604,6 +618,8 @@ g grunt generator   h ghost generator   m demon generator   l lobber generator  
 1 ghost   2 grunt   3 demon   4 lobber   5 sorcerer   6 thief (no generator)   Z Death   W secret wall
 I invisibility amulet (20s)   R reflective-shots amulet (20s)   O repulsiveness amulet (20s)   U super-shots amulet (20s)
 V speed boost (permanent)   A armor boost (permanent)   B shot-power boost (permanent)   Q shot-speed boost (permanent)   N magic-power boost (permanent)
+% plate A (opens =)   & plate B (opens +)   * plate C (opens ~)   = / + / ~ wall groups (solid until their plate is triggered)
+^ timed wall (-> floor after its countdown)   : timed wall (-> exit after its countdown)
 ```
 
 The same legend is exported as `LEGEND` from `shared/level.js` for the editor's tile palette and
@@ -614,7 +630,8 @@ its "Level format" help panel, so this table and the actual game logic can't dri
 ```
 server/            Node HTTP + WebSocket server
   index.js         static files, REST API (/api/*), WebSocket protocol (/ws), rate limits, maxPayload
-  game/sim.js      authoritative simulation: movement, combat, generators, pickups, doors, potions, exits
+  game/sim.js      authoritative simulation: movement, combat, generators, pickups, doors, potions, exits,
+                   pressure-plate wall groups, timed walls
   game/room.js     a running dungeon: tick loop, level progression, stats and achievement hooks
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback

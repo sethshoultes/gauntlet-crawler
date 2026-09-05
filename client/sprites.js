@@ -320,6 +320,36 @@ const SPR = {
     '.t....t.',
     '..tttt..',
   ],
+  plate: [ // pressure plate: a raised square set into the floor, tinted per group (PLATE_TINT below)
+    '........',
+    '.dddddd.',
+    '.dwwwwd.',
+    '.dw..wd.',
+    '.dw..wd.',
+    '.dwwwwd.',
+    '.dddddd.',
+    '........',
+  ],
+  wallgroup: [ // group wall: like a wall, with a small marker tinted to match its plate (PLATE_TINT)
+    'BBBBBBBB',
+    'Bbb..bbB',
+    'BBB..BBB',
+    'bbbwwbbb',
+    'bbbwwbbb',
+    'BBB..BBB',
+    'Bbb..bbB',
+    'BBBBBBBB',
+  ],
+  timedwall: [ // timed wall: like a wall, with a pale hourglass — client/game.js pulses its tint as the timer runs down
+    'BBBBBBBB',
+    'BbwwwwbB',
+    'BBw..wBB',
+    'bb.ww.bb',
+    'bb.ww.bb',
+    'BBw..wBB',
+    'BbwwwwbB',
+    'BBBBBBBB',
+  ],
   exit2: [ // skip-exit variant: jumps the party ahead 4 levels
     'yyyyyyyy',
     'ydddddyy',
@@ -458,7 +488,17 @@ export const TILE_SPRITE = {
   'E': 'exit', 'S': 'floor', 'W': 'trap', 'X': 'transporter', '!': 'poisonfood', 'C': 'cider', '8': 'exit2',
   'I': 'amulet_invis', 'R': 'amulet_reflect', 'O': 'amulet_repulse', 'U': 'amulet_super',
   'V': 'boost_speed', 'A': 'boost_armor', 'B': 'boost_shot', 'Q': 'boost_firerate', 'N': 'boost_magic',
+  // Pressure-plate wall groups (#11): a plate and its matching group wall always share a tint (see
+  // PLATE_TINT) so a player can visually pair them up even without stepping on the plate first.
+  '%': 'plate', '&': 'plate', '*': 'plate',
+  '=': 'wallgroup', '+': 'wallgroup', '~': 'wallgroup',
+  // Timed walls (#11): drawn like a wall with a pale hourglass; client/game.js pulses their tint
+  // faster as the level-provided remaining-seconds count (snapshot's `tw`) runs down.
+  '^': 'timedwall', ':': 'timedwall',
 };
+// Tint shared by a plate glyph and its matching wall-group glyph (see TRAP_PLATES in
+// shared/constants.js) — kept here rather than derived so the client never needs that mapping.
+export const PLATE_TINT = { '%': '#3b7dff', '=': '#3b7dff', '&': '#2ecc40', '+': '#2ecc40', '*': '#e8a33d', '~': '#e8a33d' };
 // 'c' = a Hero Builder custom hero's shot (see shared/hero-builder.js toClassDef's shotKey) — every
 // custom hero shares this one letter regardless of weapon, so client/game.js overrides this default
 // per-shot using the owner's own `weapon` id (which doubles as its sprite name — see WEAPONS below).

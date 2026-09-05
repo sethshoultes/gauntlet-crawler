@@ -2,7 +2,7 @@
 // test-play, save/publish, and the AI-generator prompt UI (falls back to the procedural generator
 // without an Anthropic key).
 import { api, me, renderNav, authModal, toast, esc } from './common.js';
-import { sprite, TILE_SPRITE, GEN_TINT } from './sprites.js';
+import { sprite, TILE_SPRITE, GEN_TINT, PLATE_TINT } from './sprites.js';
 import { T } from '/shared/constants.js';
 import { validateLevel, LEGEND } from '/shared/level.js';
 
@@ -45,6 +45,7 @@ function draw() {
     if (GEN_TILES.has(c)) ctx.drawImage(sprite('gen3', GEN_TINT[c]), x * CELL, y * CELL, CELL, CELL);
     else if (MON_SPRITE[c]) ctx.drawImage(sprite(MON_SPRITE[c]), x * CELL, y * CELL, CELL, CELL);
     else if (c === T.START) { ctx.drawImage(sprite('hero', '#e03c31'), x * CELL, y * CELL, CELL, CELL); }
+    else if (PLATE_TINT[c]) ctx.drawImage(sprite(TILE_SPRITE[c], PLATE_TINT[c]), x * CELL, y * CELL, CELL, CELL);
     else if (c !== T.FLOOR) ctx.drawImage(sprite(TILE_SPRITE[c] || 'floor'), x * CELL, y * CELL, CELL, CELL);
   }
   ctx.strokeStyle = 'rgba(255,255,255,0.05)';
@@ -75,6 +76,7 @@ for (const [c, label] of LEGEND) {
   if (GEN_TILES.has(c)) g.drawImage(sprite('gen3', GEN_TINT[c]), 0, 0);
   else if (MON_SPRITE[c]) g.drawImage(sprite(MON_SPRITE[c]), 0, 0);
   else if (c === T.START) g.drawImage(sprite('hero', '#e03c31'), 0, 0);
+  else if (PLATE_TINT[c]) g.drawImage(sprite(TILE_SPRITE[c], PLATE_TINT[c]), 0, 0);
   else g.drawImage(sprite(TILE_SPRITE[c] || 'floor'), 0, 0);
   b.appendChild(cc); b.appendChild(document.createTextNode(label.split(' (')[0]));
   b.onclick = () => { ED.brush = c; pal.querySelectorAll('button').forEach((x) => x.classList.remove('on')); b.classList.add('on'); };

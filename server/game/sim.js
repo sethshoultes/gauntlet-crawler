@@ -5,7 +5,7 @@ import {
   SHOT_SPEED, MONSTER_SHOT_SPEED, LEVEL_BONUS, DIRS, dirIndex, GENERATOR_TILES, PICKUP_TILES, MONSTER_TILES,
   generatorTier, GENERATOR_TIER_HP, GENERATOR_TIER_HP_BONUS, GENERATOR_TIER_SCORE_MUL,
   AMULET_TILES, BOOST_TILES, AMULET_DURATION, AMULET_SCORE, BOOST_SCORE, BOOST_STACK_CAP, BOOST_EFFECT,
-  REPULSE_RANGE, AMULET_LETTER, BOOST_LETTER,
+  REPULSE_RANGE, AMULET_LETTER, BOOST_LETTER, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS, TIMER_DEFAULT_SEC,
 } from '../../shared/constants.js';
 import { parseLevel } from '../../shared/level.js';
 
@@ -57,6 +57,19 @@ export class Sim {
     this.treasureRoom = !!opts.treasureRoom; // see shared/procgen.js generateTreasureRoom + server/game/room.js
     // Death mode: every level starts with the exit sealed until Room clears all its waves.
     this.exitSealed = this.mode === 'death';
+    // Pressure-plate wall groups (#11): each plate glyph fires at most once per level (see
+    // triggerPlate()) even though the plate tile itself stays in the grid afterward.
+    this.platesTriggered = new Set();
+    // Timed walls (#11): `levelDef.timers` (the raw, unparsed level object — parseLevel() strips
+    // anything it doesn't know) optionally overrides the default per-kind, or via `.default` for
+    // both kinds at once; entries are seconds from this level's start until conversion.
+    const timersCfg = (levelDef && typeof levelDef.timers === 'object' && levelDef.timers) || {};
+    const timerSecFor = (kind) => {
+      if (typeof timersCfg[kind] === 'number' && timersCfg[kind] > 0) return timersCfg[kind];
+      if (typeof timersCfg.default === 'number' && timersCfg.default > 0) return timersCfg.default;
+      return TIMER_DEFAULT_SEC;
+    };
+    this.timedWalls = []; // [{x,y,glyph,remaining}] — ticked down in stepTimedWalls()
     const tier = generatorTier(levelIndex);
     for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
       const c = this.grid[y][x];
@@ -67,6 +80,10 @@ export class Sim {
         this.generators.set(`${x},${y}`, { x, y, type: GENERATOR_SPAWNS[c], tile: c, hp: GENERATOR_TIER_HP[tier], tier, timer: 1 + Math.random() * 2 });
       } else if (c === T.TRANSPORTER) {
         this.transporters.push([x + 0.5, y + 0.5]);
+      } else if (c === T.TIMED_WALL) {
+        this.timedWalls.push({ x, y, glyph: c, remaining: timerSecFor('wall') });
+      } else if (c === T.TIMED_WALL_EXIT) {
+        this.timedWalls.push({ x, y, glyph: c, remaining: timerSecFor('exit') });
       }
     }
     this.startCursor = 0;
@@ -144,6 +161,7 @@ export class Sim {
   setTile(x, y, c) { this.grid[y][x] = c; this.onEvent({ type: 'tile', x, y, c }); }
   isSolidFor(c, who) {
     if (c === T.WALL || c === T.DOOR || c === T.TRAP) return true;
+    if (GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) return true;
     if (GENERATOR_TILES.has(c)) return true;
     return false;
   }
@@ -230,6 +248,37 @@ export class Sim {
     }
     return n;
   }
+  /** Pressure plate (#11, see TRAP_PLATES): the first hero or monster to stand on a plate dissolves
+   *  every wall tile sharing its group glyph across the whole level — not just a connected cluster,
+   *  unlike dissolveGroup() above — so a level can scatter one group's walls in several places and
+   *  a single plate opens them all at once. Fires at most once per plate glyph per level; a second
+   *  plate of a different glyph only ever affects its own group (see TRAP_PLATES's 1:1 mapping). */
+  triggerPlate(glyph) {
+    if (this.platesTriggered.has(glyph)) return;
+    this.platesTriggered.add(glyph);
+    const wallGlyph = TRAP_PLATES[glyph];
+    if (!wallGlyph) return;
+    let n = 0;
+    for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
+      if (this.grid[y][x] === wallGlyph) { this.setTile(x, y, T.FLOOR); n++; }
+    }
+    if (n) this.onEvent({ type: 'plate', glyph, wallGlyph, count: n });
+  }
+  /** Timed walls (#11, see TIMED_WALLS): tick every pending timed wall down by dt and convert any
+   *  that reach zero in place — T.TIMED_WALL becomes floor, T.TIMED_WALL_EXIT becomes a real exit
+   *  tile (picked up automatically by the EXIT_TILES check in stepPlayers/exitReachable). */
+  stepTimedWalls(dt) {
+    if (!this.timedWalls.length) return;
+    const fired = [];
+    for (const tw of this.timedWalls) { tw.remaining -= dt; if (tw.remaining <= 0) fired.push(tw); }
+    if (!fired.length) return;
+    this.timedWalls = this.timedWalls.filter((tw) => tw.remaining > 0);
+    for (const tw of fired) {
+      const becomes = tw.glyph === T.TIMED_WALL_EXIT ? T.EXIT : T.FLOOR;
+      this.setTile(tw.x, tw.y, becomes);
+      this.onEvent({ type: 'timedWall', x: tw.x, y: tw.y, becomes });
+    }
+  }
   hurtPlayer(p, amount, source) {
     if (p.dead) return;
     const c = classOf(p);
@@ -295,6 +344,7 @@ export class Sim {
     this.time += dt; this.levelTime += dt;
     if (this.completed) return;
     this.stepAmulets(dt);
+    this.stepTimedWalls(dt);
     this.stepPlayers(dt);
     this.stepMonsters(dt);
     this.stepRepulsion(dt);
@@ -431,6 +481,8 @@ export class Sim {
         this.onEvent({ type: 'pickup', pid: p.id, item: here, x: tx, y: ty });
       } else if (here === T.TRANSPORTER) {
         this.tryTeleport(p);
+      } else if (TRAP_PLATES[here] != null) {
+        this.triggerPlate(here);
       } else if ((here === T.EXIT || here === T.EXIT_SKIP) && !this.exitSealed) {
         p.score += LEVEL_BONUS;
         const skip = here === T.EXIT_SKIP ? 4 : 1;
@@ -548,6 +600,9 @@ export class Sim {
     for (const m of list) {
       const def = MONSTERS[m.type];
       m.cd = Math.max(0, m.cd - dt); m.shotCd = Math.max(0, m.shotCd - dt);
+      // Pressure plates trigger for monsters too, not just heroes (#11's acceptance criteria).
+      const underMonster = this.tile(Math.floor(m.x), Math.floor(m.y));
+      if (TRAP_PLATES[underMonster] != null) this.triggerPlate(underMonster);
       if (m.type === 'sorcerer') this.stepSorcererBlink(m, def, dt);
       if (m.type === 'lobber') { this.stepLobber(m, def, dt); continue; }
       if (m.type === 'thief') { this.stepThief(m, def, dt); continue; }
@@ -674,7 +729,7 @@ export class Sim {
         const tx = Math.floor(s.x), ty = Math.floor(s.y);
         const c = this.tile(tx, ty);
         if (s.hostile) {
-          if (c === T.WALL || c === T.DOOR || c === T.TRAP || GENERATOR_TILES.has(c)) { done = true; break; }
+          if (this.isSolidFor(c, 'shot')) { done = true; break; }
           for (const p of this.players.values()) {
             if (p.dead) continue;
             if (Math.abs(p.x - s.x) < HALF + 0.15 && Math.abs(p.y - s.y) < HALF + 0.15) { this.hurtPlayer(p, s.dmg, 'fireball'); done = true; break; }
@@ -683,7 +738,7 @@ export class Sim {
         }
         const owner = this.players.get(s.owner);
         if (GENERATOR_TILES.has(c)) { const g = this.generators.get(`${tx},${ty}`); if (g) this.damageGenerator(g, s.dmg, owner); done = true; break; }
-        if (c === T.WALL || c === T.DOOR || c === T.TRAP) {
+        if (c === T.WALL || c === T.DOOR || c === T.TRAP || GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) {
           // Reflective shots amulet: bounce off a wall once (mirror the axis that was actually
           // blocked, so a shot hitting a wall square-on bounces straight back, and one clipping a
           // corner bounces diagonally) instead of dying here.
@@ -785,6 +840,9 @@ export class Sim {
         const type = s.hostile ? (s.arc ? 'a' : 'd') : (s.shotKey || CLASSES[s.cls]?.shotKey || s.cls[0]);
         return [s.id, r2(s.x), r2(s.y), s.dir, type, s.arc ? r2(Math.min(1, s.elapsed / s.flight)) : undefined, s.hostile ? undefined : s.owner];
       }),
+      // Timed walls (#11): [x, y, wholeSecondsLeft] — cheap (a level has at most a handful) and
+      // lets the client pulse them more urgently as their timer runs down.
+      tw: this.timedWalls.map((t) => [t.x, t.y, Math.max(0, Math.ceil(t.remaining))]),
     };
   }
   playerInfo() {

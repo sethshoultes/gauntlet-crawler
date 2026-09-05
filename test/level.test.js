@@ -73,6 +73,26 @@ test('the amulet and boost glyphs are accepted tiles', () => {
   assert.deepEqual(validateLevel({ rows }), []);
 });
 
+test('the pressure-plate/wall-group and timed-wall glyphs (#11) are accepted tiles', () => {
+  const rows = LEVEL1.rows.slice();
+  rows[1] = rows[1].slice(0, 20) + '%' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + '&' + rows[2].slice(21);
+  rows[4] = rows[4].slice(0, 20) + '*' + rows[4].slice(21);
+  rows[6] = rows[6].slice(0, 20) + '=' + rows[6].slice(21);
+  rows[8] = rows[8].slice(0, 20) + '+' + rows[8].slice(21);
+  rows[10] = rows[10].slice(0, 20) + '~' + rows[10].slice(21);
+  rows[12] = rows[12].slice(0, 20) + '^' + rows[12].slice(21);
+  rows[14] = rows[14].slice(0, 20) + ':' + rows[14].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+});
+
+test('repairLevel sanitizes the pressure-plate/wall-group/timed-wall glyphs through unchanged (not scrubbed to floor)', () => {
+  const broken = { name: 'x', rows: ['..........', '..####....', '..#%=+~^:#', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
+  const fixed = repairLevel(broken);
+  const joined = fixed.rows.join('');
+  for (const glyph of ['%', '=', '+', '~', '^', ':']) assert.ok(joined.includes(glyph), `${glyph} survived repairLevel's sanitiser`);
+});
+
 test('repairLevel fixes borders, missing start/exit and connectivity', () => {
   const broken = { name: 'x', rows: ['..........', '..####....', '..#..#....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
   const fixed = repairLevel(broken);
