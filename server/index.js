@@ -60,6 +60,11 @@ function rateLimit(key, max, windowMs) {
   if (recent.length >= max) { buckets.set(key, recent); return false; }
   recent.push(t); buckets.set(key, recent); return true;
 }
+// Room-creation rate limiting key, shared by the REST endpoints (POST /api/rooms, POST
+// /api/levels/:id/play) and the WS 'join'-with-create protocol message below, so a logged-in
+// user can't dodge their per-account limit by switching transports -- and so the WS path doesn't
+// let every account behind one NAT/proxy share a single IP-keyed bucket while REST keys by user.
+function roomCreateKey(user, ip) { return 'createroom:' + (user ? 'u' + user.id : ip); }
 // `buckets` otherwise keeps one Map entry forever per distinct user/IP that ever hit a
 // rate-limited endpoint, even long after their recent-request window has emptied out. Sweep
 // stale entries periodically so a long-running server doesn't accumulate them without bound.
@@ -241,10 +246,11 @@ async function api(req, res, url) {
     if (m === 'POST' && seg[3] === 'play') {
       if (!level.published && level.owner_id !== user?.id) return json(res, 403, { error: 'This level is private' });
       const ip = req.socket.remoteAddress || 'x';
-      // Shared 'createroom:' bucket with the WS `join`/`create:true` path below and the plain
-      // POST /api/rooms just under this block, so all three ways to mint a new room (which each
-      // persist a live sim + timers in memory until it empties out) count against one limit.
-      if (!rateLimit('createroom:' + (user ? 'u' + user.id : ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
+      // Shared 'createroom:' bucket (roomCreateKey(), defined above) with the WS `join`/
+      // `create:true` path below and the plain POST /api/rooms just under this block, so all
+      // three ways to mint a new room (which each persist a live sim + timers in memory until it
+      // empties out) count against one limit.
+      if (!rateLimit(roomCreateKey(user, ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
       const b = await readBody(req);
       const room = lobby.create({ name: b.name || level.name, source: { type: 'custom', levelId: level.id, level: { name: level.name, description: level.description, rows: level.rows } }, isPublic: b.public !== false });
       return json(res, 200, { room: room.info() });
@@ -252,7 +258,7 @@ async function api(req, res, url) {
   }
   if (m === 'POST' && url.pathname === '/api/rooms') {
     const ip = req.socket.remoteAddress || 'x';
-    if (!rateLimit('createroom:' + (user ? 'u' + user.id : ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
+    if (!rateLimit(roomCreateKey(user, ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
     const b = await readBody(req);
     let source = { type: 'campaign' };
     if (b.level) {
@@ -320,12 +326,15 @@ wss.on('connection', (ws, req) => {
             // Room creation persists a live sim + timers in memory until the room empties out — cap
             // how fast one connection can mint new rooms so a hostile client can't grow the process's
             // memory/timer footprint without bound.
-            if (!rateLimit('createroom:' + ip, 10, 60_000)) throw new Error('Slow down: too many rooms created');
+            if (!rateLimit(roomCreateKey(user, ip), 10, 60_000)) throw new Error('Slow down: too many rooms created');
             target = lobby.create({ name: msg.roomName, isPublic: msg.public !== false });
           } else if (!target) target = lobby.quick();
-          target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null });
+          // join() may reject the requested guestId (already kicked, malformed, etc.) and mint a
+          // fresh one instead -- record the final id it actually assigned (null for logged-in
+          // users), not the one the client asked for, so telemetry stays attributable.
+          const joined = target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null });
           room = target;
-          telemetry.recordEvent({ kind: 'join', userId: user?.id || null, guestId: msg.guestId || null, ip, data: { roomId: target.id } });
+          telemetry.recordEvent({ kind: 'join', userId: user?.id || null, guestId: joined?.guestId || null, ip, data: { roomId: target.id } });
           // Analytics boundary: wrap this room's broadcast (once) purely to observe a 'gameover'
           // message going out, without server/game/room.js ever knowing telemetry exists.
           if (!target._telemetryHooked) {

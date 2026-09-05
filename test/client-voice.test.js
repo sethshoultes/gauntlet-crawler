@@ -22,9 +22,21 @@ globalThis.window = globalThis;
 let clock = 100_000;
 globalThis.performance = { now: () => (clock += 10_000) };
 
-// Manifest always empty -> playClip() always resolves false -> say() always falls through to
-// the speechSynthesis path, which is what these tests want to observe.
-globalThis.fetch = () => Promise.resolve({ ok: true, json: async () => ({}) });
+// The very first call to say()/playClip() triggers voice.js's memoized manifest fetch; every
+// later call reuses that same (by-then-resolved) promise. So to test the "mute toggled while the
+// manifest fetch is still in flight" race, the manifest fetch must be held open under our control
+// for the *first* test only — later tests get the normal immediate-empty-manifest behaviour once
+// we release it.
+let manifestResolve = null;
+let manifestReleased = false;
+globalThis.fetch = () => {
+  if (manifestReleased) return Promise.resolve({ ok: true, json: async () => ({}) });
+  return new Promise((resolve) => { manifestResolve = resolve; });
+};
+function releaseManifest(json = {}) {
+  manifestReleased = true;
+  if (manifestResolve) { manifestResolve({ ok: true, json: async () => json }); manifestResolve = null; }
+}
 
 let spokenCount = 0;
 let lastUtterance = null;
@@ -35,11 +47,26 @@ globalThis.speechSynthesis = {
   speak: (u) => { spokenCount++; lastUtterance = u; },
   cancel: () => { cancelCount++; },
 };
+// playClip() wraps `new Audio(...)` in try/catch; leaving Audio undefined is fine for every test
+// here since none of these manifests ever contain a matching id, so playClip() always falls
+// through to "no clip available" before it would touch Audio.
 
 const audio = await import('../client/audio.js');
 const voice = await import('../client/voice.js');
 
 function resetCounters() { spokenCount = 0; lastUtterance = null; cancelCount = 0; }
+
+test('a mute toggled while the manifest fetch is in flight wins the race (no speechSynthesis fallback)', async () => {
+  resetCounters();
+  audio.setMuted(false);
+  voice.say('race_line', 'Should never be spoken');
+  // The manifest fetch above is still pending (we haven't released it). Mute now, exactly like a
+  // user hitting mute mid-flight, then let the fetch resolve.
+  audio.setMuted(true);
+  releaseManifest({}); // empty manifest -> would normally fall back to speechSynthesis.speak()
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(spokenCount, 0, 'speechSynthesis.speak must not fire once mute won the race');
+});
 
 test('say() is a no-op (no speechSynthesis call) while muted', async () => {
   resetCounters();

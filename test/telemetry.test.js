@@ -140,3 +140,51 @@ test('client errors are stored with a truncated stack and surfaced to admins', a
     assert.ok(row.stack.length <= 4096, 'stack should be truncated to 4KB');
   });
 });
+
+test('WS join telemetry records the final guestId Room#join assigns, not a mismatched requested one', async () => {
+  // Needs its own dataDir (rather than withServer(), which hides it) so this test can open the
+  // same sqlite file directly afterward and inspect the raw `events` row server/index.js wrote.
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-telemetry-guestid-test-'));
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  server.stdout.on('data', (d) => { out += d.toString(); });
+  server.stderr.on('data', (d) => { out += d.toString(); });
+  const exit = once(server, 'exit');
+  try {
+    await Promise.race([waitForServer(baseUrl), exit.then(([c]) => { throw new Error(`server exited early (${c}):\n${out}`); })]);
+
+    const { default: WebSocket } = await import('ws');
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    const requestedGuestId = 'not-a-real-guest-id'; // fails Room#isValidGuestId's /^[0-9a-f]{32}$/ check
+    const welcome = await new Promise((resolve, reject) => {
+      ws.on('open', () => {
+        ws.send(JSON.stringify({ t: 'join', create: true, name: 'Guest', cls: 'warrior', guestId: requestedGuestId }));
+      });
+      ws.once('message', (data) => resolve(JSON.parse(data.toString())));
+      ws.on('error', reject);
+    });
+    assert.equal(welcome.t, 'welcome');
+    assert.ok(welcome.guestId, 'server should mint a valid guestId when the requested one is malformed');
+    assert.notEqual(welcome.guestId, requestedGuestId, 'the malformed requested guestId should not be echoed back as final');
+    ws.close();
+
+    // Give the WS 'join' handler's telemetry.recordEvent() a beat to land on disk (WAL commit).
+    await new Promise((r) => setTimeout(r, 300));
+    process.env.DATA_DIR = dataDir;
+    const { db } = await import('../server/db.js');
+    const row = db.prepare("SELECT guest_id FROM events WHERE kind = 'join' ORDER BY id DESC LIMIT 1").get();
+    assert.ok(row, 'expected a join telemetry event to be recorded');
+    assert.equal(row.guest_id, welcome.guestId, "telemetry must record the room's final assigned guestId");
+    assert.notEqual(row.guest_id, requestedGuestId, 'telemetry must not record the mismatched requested guestId');
+  } finally {
+    if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
+    await once(server, 'exit').catch(() => {});
+    await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+  }
+});

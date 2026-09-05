@@ -94,8 +94,13 @@ async function main() {
     if (!password) { setMsg('Enter your password to confirm.', 'err'); return; }
     if (!confirm('Delete your account permanently? This cannot be undone.')) return;
     try {
-      await api('/api/me', { method: 'DELETE', body: { password } });
+      // Fire the beacon *before* the delete call: the server revokes every session (including
+      // this one) as part of deleting the account, so a track() sent afterward would carry an
+      // Authorization header for an already-revoked token — the server can't attribute the event
+      // to the user (session lookup fails) and, since a token is present, it also skips the guest
+      // id fallback, so the event would land completely unattributed.
       track('run_end', { reason: 'account_deleted' });
+      await api('/api/me', { method: 'DELETE', body: { password } });
       setToken(null);
       setMsg('Account deleted. Goodbye, adventurer.', 'ok');
       setTimeout(() => { location.href = '/'; }, 1200);

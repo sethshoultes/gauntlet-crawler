@@ -36,6 +36,10 @@ function loadManifest() {
 let currentAudio = null;
 function playClip(id) {
   return loadManifest().then((manifest) => {
+    // The manifest fetch is async; mute may have been toggled on while it was in flight. Bail
+    // out of starting playback rather than winning a race against the mute the user just asked
+    // for (stopSpeaking() above can't cancel an Audio element that hasn't started playing yet).
+    if (isMuted()) return false;
     if (!manifest || !manifest[id]) return false;
     return new Promise((resolve) => {
       try {
@@ -58,6 +62,12 @@ function speak(text) {
 }
 
 let lastSay = 0;
+// Bumped on every say() call and every mute-on toggle; a playClip() continuation only speaks if
+// it's still the most recent call *and* mute hasn't won the race while the manifest fetch was
+// in flight (see onMuteChange() above, which also bumps this to invalidate any pending say()).
+let sayGeneration = 0;
+onMuteChange((muted) => { if (muted) sayGeneration++; });
+
 /** Speak narrator line `lineId` (falling back to speechSynthesis of `text` if no clip exists).
  *  Rate-limited across all lines, same as the game's previous inline say(). Callers are expected
  *  to gate this on their own narrator-enabled preference (see client/game.js's G.narrate). */
@@ -66,7 +76,13 @@ export function say(lineId, text) {
   const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   if (now - lastSay < MIN_GAP_MS) return;
   lastSay = now;
-  playClip(lineId).then((played) => { if (!played) speak(text ?? lineId); });
+  const generation = ++sayGeneration;
+  playClip(lineId).then((played) => {
+    // Mute may have been toggled on (or another say() started) while the manifest/clip fetch was
+    // in flight -- re-check before actually speaking so a mute toggled mid-flight always wins.
+    if (generation !== sayGeneration || isMuted()) return;
+    if (!played) speak(text ?? lineId);
+  });
 }
 
 export function stopSpeaking() {
