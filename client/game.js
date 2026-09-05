@@ -21,6 +21,8 @@ import { initAudio, sfx, setMuted } from './audio.js';
 import { say as voiceSay } from './voice.js';
 import { playCutscene, hasSeen, markSeen, getScene } from './cutscenes.js';
 import * as Input from './input.js'; // touch d-pad, auto-fire and gamepad/local-multiplayer input (#15)
+import { showInitialsModal } from './highscore.js';
+import { startIdleAttract } from './attract-idle.js';
 const RESUME_KEY = 'gc_resume';
 const GUEST_KEY = 'gc_guest_id';
 // Durable guest identity (#7): minted by the server on our first join and echoed back in every
@@ -370,6 +372,10 @@ function onMessage(m) {
       log(`<span class="n">${title} — reached level ${m.level}. ${lines}</span>`);
       sfx(m.reason === 'cap' ? 'victory' : 'gameover');
       playScene(m.reason === 'cap' ? 'victory' : 'game_over');
+      // Arcade high scores (#14): the server tells us via the matching scores[] entry whether our
+      // own run just cracked the all-time top 10 (server/game/room.js endRun()).
+      const mine = m.scores.find((s) => s.pid === G.pid);
+      if (mine?.hs && mine.runId != null) showInitialsModal({ runId: mine.runId, score: mine.score });
       setTimeout(() => {
         $('#game').classList.remove('on'); $('#roomscreen').classList.add('on'); $('#touch').classList.remove('on');
         if (G.room) renderRoomScreen(G.room);
@@ -1002,3 +1008,6 @@ if (savedResume && (!params.get('room') || params.get('room') === savedResume.ro
 } else if (params.get('room')) {
   joinGame({ roomId: params.get('room') });
 }
+
+// Lobby idle -> attract mode (#14): only while nobody's joined a room yet.
+startIdleAttract(() => !G.inRoom);

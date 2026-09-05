@@ -12,6 +12,7 @@ import { makeRng } from '../../shared/rng.js';
 import { rollChests, applyChest } from '../../shared/chests.js';
 import { isClassUnlocked, isPaletteUnlocked, unlockedFor, requirementText, PALETTE_BY_ID } from '../../shared/unlocks.js';
 import * as stats from '../stats.js';
+import * as highscores from '../highscores.js';
 import { db } from '../db.js';
 import { resolveCustomHero } from '../heroes.js';
 import { aiAvailable as aiNarratorAvailable, lineFor as narratorLineFor } from '../ai/narrator.js';
@@ -904,9 +905,21 @@ export class Room {
     const scores = [...this.sim.players.values()].map((p) => ({ pid: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills }));
     for (const c of this.clients.values()) {
       const p = this.sim.players.get(c.pid);
-      if (!p || !c.user) continue;
-      stats.recordRun(c.user.id, { cls: c.cls, score: p.score, level: this.levelIndex, kills: p.kills, seconds: Math.round((Date.now() - c.joinedAt) / 1000), mode: 'death' });
-      this.unlock(c, stats.raise(c.user.id, 'best_score', p.score));
+      if (!p) continue;
+      if (c.user) {
+        stats.recordRun(c.user.id, { cls: c.cls, score: p.score, level: this.levelIndex, kills: p.kills, seconds: Math.round((Date.now() - c.joinedAt) / 1000), mode: 'death' });
+        this.unlock(c, stats.raise(c.user.id, 'best_score', p.score));
+      }
+      // Arcade all-time high scores (#14): this is the one place a run actually "ends" while its
+      // clients are still connected (campaign is endless — see README), so it's the only spot that
+      // both records the score (guest or logged-in, unlike stats.recordRun above) and can tell the
+      // client whether to show the three-initial entry modal.
+      const hs = highscores.recordHighScore({
+        userId: c.user?.id ?? null, guestId: c.user ? null : (c.guestId || null), username: c.user?.username ?? null,
+        cls: c.cls, score: p.score, level: this.levelIndex, mode: 'death',
+      });
+      const entry = scores.find((s) => s.pid === c.pid);
+      if (entry) { entry.runId = hs.id; entry.hs = hs.qualifies; }
     }
     this.broadcast({ t: 'gameover', reason, level: this.levelIndex, cap: Number.isFinite(cap) ? cap : null, scores });
     for (const pid of [...this.sim.players.keys()]) this.sim.removePlayer(pid);

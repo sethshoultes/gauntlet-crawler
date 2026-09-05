@@ -24,6 +24,7 @@ import * as log from './log.js';
 import { enabled as sentryEnabled } from './sentry.js';
 import { heartbeat } from './ws-heartbeat.js';
 import * as heroes from './heroes.js';
+import * as highscores from './highscores.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
@@ -177,6 +178,24 @@ async function api(req, res, url) {
   if (m === 'GET' && url.pathname === '/api/leaderboard') return json(res, 200, stats.leaderboard(20));
   if (m === 'GET' && url.pathname === '/api/rooms') return json(res, 200, { rooms: lobby.list() });
   if (m === 'GET' && url.pathname === '/api/ai/status') return json(res, 200, { available: aiAvailable(), narrator: aiNarratorAvailable() });
+
+  // ----- arcade high scores (#14) -----
+  if (m === 'GET' && url.pathname === '/api/highscores') return json(res, 200, { scores: highscores.topHighScores(10) });
+  if (m === 'POST' && seg[0] === 'api' && seg[1] === 'runs' && seg[2] && seg[3] === 'initials' && seg.length === 4) {
+    const b = await readBody(req);
+    return json(res, 200, highscores.setInitials(seg[2], b.initials));
+  }
+  // Test-only: lets test/highscores.test.js seed board rows (and control `endedAt`, to exercise
+  // the 5-minute claim window) without simulating a whole Death mode run through the WebSocket
+  // protocol. Gated exactly like the other two debug hooks documented in README.md.
+  if (m === 'POST' && url.pathname === '/api/debug/highscore' && process.env.GAUNTLET_DEBUG === '1') {
+    const b = await readBody(req);
+    return json(res, 200, highscores.recordHighScore({
+      userId: b.userId ?? null, guestId: b.guestId ?? null, username: b.username ?? null,
+      cls: b.cls || 'warrior', score: Number(b.score) || 0, level: Number(b.level) || 1,
+      mode: b.mode || 'campaign', endedAt: b.endedAt != null ? Number(b.endedAt) : undefined,
+    }));
+  }
 
   // ----- levels -----
   if (m === 'GET' && url.pathname === '/api/levels') {

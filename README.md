@@ -353,12 +353,16 @@ no external images, no web fonts. Everything renders straight into a `<canvas>` 
   `death_mode`, `treasure_room`, `game_over`, `victory`, and `level_milestone_10` /
   `_25` / `_50`.
 - `client/attract.html` (served at `/attract.html`, linked from the nav as **Arcade**) +
-  `client/attract.js` — a full-screen arcade attract mode: a pulsing title card ("PRESS ANY KEY"),
-  the `intro` cutscene, a hero roster with live stats, and a top-10 high-score table pulled from
-  `GET /api/leaderboard`, looping forever. Any key, click or tap jumps to `/`. Append `?demo=1` to
-  also cycle in a hidden "live dungeon preview" phase that fetches a fresh level from
-  `POST /api/levels/procgen` and animates ghosts/grunts/a demon wandering it — pure client-side,
-  no server-side monster simulation.
+  `client/attract.js` — a full-screen arcade attract mode, looping forever: a pulsing title card
+  ("PRESS ANY KEY"), the `intro` cutscene, a one-hero-at-a-time **portrait carousel** (each classic
+  archetype drawn large via `sprite('hero', ...)` with its name and stats in the bitmap font, a
+  short fanfare SFX cue — `client/audio.js`'s `sfx('ach')`, muted the same way every other SFX
+  respects the mute setting — each time it advances to the next hero), a **scripted demo**
+  (a hero built entirely client-side with `generateLevel` from `shared/procgen.js` — no server
+  round-trip — hunts a few wandering grunts/ghosts/a demon around a small level, "killing" and
+  respawning them; pure client-side, no server-side monster simulation), and the same all-time
+  top-10 **high scores** board the lobby renders (`GET /api/highscores`, see [High
+  scores](#high-scores-14) below). Any key, click or tap jumps to `/`.
 - `client/cutscenes-demo.html` (served at `/cutscenes-demo.html`) — a dev page listing every
   registered scene in a dropdown with Play/Skip/loop controls, for reviewing new scenes quickly.
 - An AI-generated dungeon backdrop (`client/media/title-backdrop.webp`, animated as
@@ -435,6 +439,46 @@ scene's captions are sorted and in-bounds.
 **Everything is skippable.** Every cutscene call defaults to `allowSkip: true`; the attract mode
 treats *any* input as "go play the game" rather than gating on a specific key. Nothing here ever
 blocks a player who just wants to get into the dungeon.
+
+**Lobby idle → attract mode** (`client/attract-idle.js`): after 30 seconds with no keyboard,
+pointer, touch or wheel activity on the lobby/hero-pick screen (`client/index.html`) while no room
+has been joined, the tab is sent to `/attract.html` — the same as clicking the **Arcade** nav link.
+The check is vetoed live (via a small callback game.js passes in) the instant a room is joined, so
+a player mid-setup on a slow connection never gets yanked away just because the timer already
+started; attract mode's own any-key/click/tap handler brings you straight back to `/`.
+
+### High scores (#14)
+
+A classic three-initial arcade score table, layered on top of (but not replacing) the per-account
+career leaderboard on `/dashboard.html` — see `server/highscores.js` and `client/highscore.js`.
+
+- **What counts as a "run"**: campaign is endless by design (see [How to play](#how-to-play) —
+  "it never ends"), so the only place a run actually *ends* while its clients are still connected
+  is **Death mode**'s cap/wipe finish (`server/game/room.js` `endRun()`). That's the one spot that
+  records a score here — for every connected player, guest or logged-in, unlike the per-account
+  `runs` table (`server/stats.js`) which skips guests entirely — and tells the client whether its
+  own score just cracked the all-time top 10.
+- **Storage**: a dedicated `highscores` sqlite table (`server/db.js`) — `user_id`/`guest_id` are
+  both nullable and `username`/`class` are snapshotted at insert time, so a later username change
+  or account deletion never rewrites the board. `initials` starts `NULL`.
+- **Qualifying**: `qualifiesForHighScore(score, topScores, limit)` in `server/highscores.js` is a
+  small pure function (unit-tested on its own in `test/highscores.test.js`) — true if the board
+  holds fewer than `limit` entries, or the score beats the current lowest of the top `limit`. Ties
+  don't bump an existing entry.
+- **Entry modal**: when the local player's own score qualifies, `client/game.js`'s `gameover`
+  handler shows `client/highscore.js`'s `showInitialsModal()` — three A-Z slots, Up/Down cycles the
+  active slot's letter, Left/Right moves between slots, Enter (or a click, or a gamepad's face
+  button — a small poll-based reader in the modal itself, not the general input system) confirms.
+  Confirming calls `POST /api/runs/:id/initials`.
+- **Claiming initials**: `POST /api/runs/:id/initials` (body `{initials}`), open to guests (no
+  login required — the run id is the token), validated against `/^[A-Z]{3}$/` (400 otherwise), and
+  one-shot per run within 5 minutes of the run ending (409 past either limit).
+- **Reading the board**: `GET /api/highscores` returns the top 10 all-time, `{ initials, username,
+  score, class, level_reached, ended_at }[]`, `username` `null` for a guest run and `initials`
+  `null` until claimed. Rendered as an arcade table both in the lobby (`#lobby-highscores` in
+  `client/index.html`, auto-wired by `client/highscore.js` on load, refreshed every 30s) and drawn
+  with the bitmap font in the attract loop (same data source, see [Cutscenes and attract
+  mode](#cutscenes-and-attract-mode) above).
 
 ### Sound
 
@@ -645,6 +689,7 @@ server/            Node HTTP + WebSocket server
   telemetry.js     first-party analytics: events table, IP hashing, aggregations, 90-day retention
   log.js           structured JSON logger + persisted `errors` table
   ws-heartbeat.js  WebSocket liveness sweep (ping/pong, dead-client cleanup)
+  highscores.js    arcade all-time high scores: record/qualify/claim-initials (#14)
 shared/            code used by both server and browser
   constants.js     tiles, classes, monsters, tuning
   level.js         parse / validate / repair, tile legend
@@ -663,7 +708,9 @@ client/            static browser app (no build step)
   heroes.html/js           Hero Builder UI
   settings.html/js         account settings
   admin.html/js            admin dashboard UI
-  attract.html/js          attract-mode title screen
+  attract.html/js          attract-mode title screen (hero carousel + scripted demo + high scores)
+  attract-idle.js          lobby-idle -> attract mode redirect (#14)
+  highscore.js             arcade high-score table + three-initial entry modal (#14)
   cutscenes-demo.html      dev page for reviewing cutscenes
   common.js, sprites.js, font.js, pixelsprite.js, audio.js, voice.js, cutscenes.js   shared client modules
   input.js                touch d-pad/auto-fire + Gamepad API + local co-op input (#15)
@@ -708,6 +755,10 @@ the *only* debug surfaces in the app):
 - `POST /api/heroes/debug/xp` (body `{amount}`), handled in `server/heroes.js`: grants XP to the
   caller so `test/heroes-api.test.js` and `test/e2e.mjs` can reach the Hero Builder's rank-3 unlock
   without a long grind.
+- `POST /api/debug/highscore` (body `{score, cls, level, mode, userId, guestId, username,
+  endedAt}`), handled inline in `server/index.js`: seeds one row directly on the [arcade high-score
+  board](#high-scores-14) so `test/highscores.test.js` can test `GET /api/highscores` and `POST
+  /api/runs/:id/initials` without driving a whole Death-mode run to completion.
 
 `test/e2e.mjs` starts its server with `GAUNTLET_DEBUG=1`; `npm start`/`npm run dev` don't set it,
 so these hooks are unreachable in a normal or deployed instance.
@@ -827,17 +878,17 @@ integration (#24), an AI-generated launch trailer and title backdrop (#21), and 
 for existing levels plus AI-written names for procedural levels (#17).
 
 Sound synthesis (#20), pre-rendered narrator voice lines (#19), optional opt-in AI narrator
-commentary (#18), and the mobile touch layout/gamepad support (#15) are also implemented (see
-[Sound](#sound), [Narrator voice](#narrator-voice), [AI Narrator](#ai-narrator-18), and
-"Mobile and gamepad" above) even though all four issues are still open on the tracker pending
-someone closing them out.
+commentary (#18), the mobile touch layout/gamepad support (#15), and the original-style attract
+mode / three-initial high-score entry (#14) are also implemented (see [Sound](#sound), [Narrator
+voice](#narrator-voice), [AI Narrator](#ai-narrator-18), "Mobile and gamepad", and [Cutscenes and
+attract mode](#cutscenes-and-attract-mode) / [High scores](#high-scores-14) above) even though all
+five issues are still open on the tracker pending someone closing them out.
 
 Open, not yet implemented:
 
 - **Arcade parity** with the original cabinets: amulets and power-ups (#10), trap tiles that
   dissolve walls and timed walls (#11), acid puddles/stun tiles/force fields from Gauntlet II
   (#12), an "It" tag mode and mystery treasure rooms from Gauntlet II (#13).
-- **Presentation**: an original-style attract mode and high-score name entry (#14).
 - **AI assist**: describe a hero and get a build/sprite suggestion (#16).
 - **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
 

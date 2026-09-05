@@ -135,4 +135,28 @@ CREATE TABLE IF NOT EXISTS narrator_lines (
 );
 `);
 
+// Arcade all-time high scores (#14, server/highscores.js): a separate table from `runs` above —
+// `runs` is per-account history (guests are never recorded there, see server/stats.js recordRun),
+// while this one is the classic-cabinet "everybody's best runs" board, so user_id/guest_id are
+// both nullable and `username`/`class` are snapshotted at insert time (a later username change or
+// account deletion shouldn't rewrite history on the score table). `initials` starts NULL and is
+// filled in once by POST /api/runs/:id/initials within a short window of the run ending — see
+// server/highscores.js for the exact rule.
+db.exec(`
+CREATE TABLE IF NOT EXISTS highscores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  guest_id TEXT,
+  username TEXT,
+  class TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  level_reached INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'campaign',
+  ended_at INTEGER NOT NULL,
+  initials TEXT,
+  initials_set_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS highscores_score ON highscores(score DESC);
+`);
+
 export const now = () => Math.floor(Date.now() / 1000);

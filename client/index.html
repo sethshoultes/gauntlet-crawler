@@ -133,6 +133,10 @@
         <p class="help" style="margin-top:12px">Want a hand-made or AI-generated dungeon? Browse <a href="/editor.html#browse">community levels</a> or build your own in the <a href="/editor.html">Level Builder</a>.</p>
       </div>
     </div>
+    <div class="panel" style="margin-top:18px">
+      <h2>High Scores</h2>
+      <div id="lobby-highscores"><span class="muted">Loading…</span></div>
+    </div>
   </section>
 
   <section id="session">
@@ -195,6 +199,7 @@
 <!-- Touch d-pad, fire, auto-fire toggle and potion button (#15) are built entirely by client/input.js. -->
 <div class="touch" id="touch"></div>
 <footer>Gauntlet Crawler &mdash; a love letter to 1985. Not affiliated with Atari.</footer>
+<script type="module" src="/highscore.js"></script>
 <script type="module" src="/game.js"></script>
 </body>
 </html>

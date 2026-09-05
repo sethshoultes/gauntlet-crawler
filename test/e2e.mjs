@@ -550,6 +550,24 @@ async function main() {
       await ctxC.close().catch(() => {});
     });
 
+    // ---------------- 11. Lobby high-score table (#14) ----------------
+    await scenario('11. Lobby renders the arcade high-score table (GET /api/highscores)', async () => {
+      // No Death mode run has reached endRun() in this whole suite (scenario 5 only advances a
+      // wave), so the board is still empty here — a deterministic, low-risk check that the panel
+      // itself fetches and renders without error, rather than trying to drive a full run to
+      // completion (and the initials-entry modal) through two browser contexts.
+      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.waitForSelector('#lobby-highscores', { timeout: 10_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').trim().length > 0, { timeout: 10_000 });
+      const text = await pageA.textContent('#lobby-highscores');
+      if (!/no high scores yet/i.test(text)) throw new Error(`expected the empty-board message, got: ${text}`);
+
+      const res = await fetch(`${baseUrl}/api/highscores`);
+      if (!res.ok) throw new Error(`GET /api/highscores -> HTTP ${res.status}`);
+      const body = await res.json();
+      if (!Array.isArray(body.scores)) throw new Error(`expected { scores: [] }, got ${JSON.stringify(body)}`);
+    });
+
     await ctxA.close().catch(() => {});
     await ctxB.close().catch(() => {});
   } catch (err) {
