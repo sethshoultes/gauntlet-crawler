@@ -142,7 +142,9 @@ CREATE TABLE IF NOT EXISTS narrator_lines (
 // account deletion shouldn't rewrite history on the score table). `initials` starts NULL and is
 // filled in once by POST /api/runs/:id/initials within a short window of the run ending, and only
 // when the request carries the matching `claim_token` (a random value minted at insert time and
-// handed to the client solely via the 'gameover' broadcast) — see server/highscores.js.
+// handed only to the owning client through a private 'hstoken' WS message, never in the
+// room-wide 'gameover' broadcast, so roommates cannot claim each other's scores) — see
+// server/highscores.js and Room#endRun in server/game/room.js.
 db.exec(`
 CREATE TABLE IF NOT EXISTS highscores (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

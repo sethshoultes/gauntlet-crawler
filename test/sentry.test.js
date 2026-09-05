@@ -80,6 +80,17 @@ test('scrub() strips keys matching token/authorization/cookie/password/ip, at an
   assert.equal(input.token, 'secret-token-value');
 });
 
+test('scrub() tolerates a self-referential array without recursing forever', () => {
+  const arr = [1, { token: 'secret', ok: true }];
+  arr.push(arr);
+  let out;
+  assert.doesNotThrow(() => { out = sentry.scrub({ list: arr }); });
+  assert.equal(out.list[0], 1);
+  assert.equal(out.list[1].token, undefined);
+  assert.equal(out.list[1].ok, true);
+  assert.equal(out.list[2], '[Circular]');
+});
+
 test('scrub() tolerates circular references without throwing', () => {
   const obj = { name: 'x', authorization: 'nope' };
   obj.self = obj;

@@ -46,10 +46,11 @@ const SENSITIVE_KEY = /token|authorization|cookie|password|ip/i;
 /** Deep-copy `value`, dropping every object key whose name matches SENSITIVE_KEY. Never mutates
  *  the input. Exported so it can be unit-tested directly, independent of Sentry being installed. */
 export function scrub(value, seen = new WeakSet()) {
-  if (Array.isArray(value)) return value.map((v) => scrub(v, seen));
   if (value && typeof value === 'object') {
+    // Cycle check comes first so a self-referential array is caught too, not just a plain object.
     if (seen.has(value)) return '[Circular]';
     seen.add(value);
+    if (Array.isArray(value)) return value.map((v) => scrub(v, seen));
     const out = {};
     for (const [k, v] of Object.entries(value)) {
       if (SENSITIVE_KEY.test(k)) continue;
