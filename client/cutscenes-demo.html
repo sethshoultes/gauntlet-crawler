@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cutscenes Demo</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  main { max-width: 760px; }
+  #cv { background: #000; width: 100%; max-width: 640px; height: auto; aspect-ratio: 4/3; image-rendering: pixelated; image-rendering: crisp-edges; display: block; margin: 0 auto; border: 2px solid var(--line); }
+  #controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+  #controls select { min-width: 220px; }
+  #status { font-size: 12px; color: var(--muted); min-height: 18px; }
+  #barwrap { height: 6px; background: #000; border: 1px solid var(--line); margin-top: 6px; }
+  #bar { height: 100%; width: 0%; background: var(--yellow); }
+  ul.scenelist { font-size: 12px; color: var(--muted); columns: 2; margin: 10px 0 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<nav class="top"><a class="brand" href="/">Gauntlet Crawler</a><span class="spacer"></span><a class="nl" href="/">Back to game</a></nav>
+<main>
+  <div class="panel">
+    <h2>Cutscene review</h2>
+    <p class="help">Dev page for reviewing every in-engine cutscene against the real font and sprite renderer. Every scene is skippable — press any key, click the canvas, or hit Skip.</p>
+    <canvas id="cv" width="640" height="480"></canvas>
+    <div id="barwrap"><div id="bar"></div></div>
+    <div id="controls">
+      <label class="muted" for="scene" style="font-size:12px">Scene</label>
+      <select id="scene"></select>
+      <button class="primary" id="play">Play</button>
+      <button id="skip">Skip</button>
+      <label class="muted" style="font-size:12px"><input type="checkbox" id="loop" /> loop</label>
+      <label class="muted" style="font-size:12px"><input type="checkbox" id="reduced" /> reduced motion</label>
+    </div>
+    <div id="status">Pick a scene and press Play.</div>
+    <p class="help" style="margin-top:16px">All registered scene ids:</p>
+    <ul class="scenelist" id="scenelist"></ul>
+  </div>
+</main>
+<script type="module">
+import { SCENE_IDS, getScene, playCutscene, clearSeen } from './cutscenes.js';
+
+const sel = document.getElementById('scene');
+const cv = document.getElementById('cv');
+const status = document.getElementById('status');
+const bar = document.getElementById('bar');
+const loopBox = document.getElementById('loop');
+const reducedBox = document.getElementById('reduced');
+const listEl = document.getElementById('scenelist');
+
+for (const id of SCENE_IDS) {
+  const s = getScene(id);
+  const opt = document.createElement('option');
+  opt.value = id;
+  opt.textContent = `${id}  (${s.duration}s, ${s.captions.length} caption${s.captions.length === 1 ? '' : 's'})`;
+  sel.appendChild(opt);
+  const li = document.createElement('li');
+  li.textContent = `${id} — ${s.duration}s`;
+  listEl.appendChild(li);
+}
+
+let handle = null;
+let barRaf = null;
+
+function stopBar() {
+  if (barRaf) cancelAnimationFrame(barRaf);
+  barRaf = null;
+}
+
+function play(id) {
+  if (handle) handle.stop();
+  stopBar();
+  const scene = getScene(id);
+  clearSeen(id); // always let the dev page replay, ignoring "seen once per session"
+  status.textContent = `Playing "${id}" — ${scene.duration}s, ${scene.captions.length} caption(s).`;
+  bar.style.width = '0%';
+  const start = performance.now();
+  function tickBar(now) {
+    const pct = Math.min(100, ((now - start) / 1000 / scene.duration) * 100);
+    bar.style.width = pct + '%';
+    if (pct < 100) barRaf = requestAnimationFrame(tickBar);
+  }
+  barRaf = requestAnimationFrame(tickBar);
+  handle = playCutscene(cv, id, {
+    reducedMotion: reducedBox.checked,
+    sfx: (name) => console.log('[sfx]', name),
+    say: (text) => console.log('[say]', text),
+    onSkip: () => { status.textContent = `Skipped "${id}".`; stopBar(); bar.style.width = '100%'; maybeLoop(id); },
+    onDone: ({ id: doneId, skipped }) => {
+      if (!skipped) { status.textContent = `Finished "${id}".`; bar.style.width = '100%'; maybeLoop(doneId); }
+    },
+  });
+}
+
+function maybeLoop(id) {
+  if (loopBox.checked) setTimeout(() => play(id), 250);
+}
+
+document.getElementById('play').addEventListener('click', () => play(sel.value));
+document.getElementById('skip').addEventListener('click', () => handle && handle.skip());
+sel.value = 'intro';
+</script>
+</body>
+</html>

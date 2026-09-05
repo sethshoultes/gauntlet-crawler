@@ -274,3 +274,84 @@ docker compose logs -f app         # tail server logs
 docker compose ps                  # container status
 docker compose down                # stop everything (volumes persist)
 ```
+
+## Cutscenes and attract mode
+
+A small in-engine cutscene system draws pixel-art story beats using only the game's existing
+8x8 sprites (`client/sprites.js`) and a hand-drawn 5x7 bitmap font (`client/font.js`) — no video,
+no external images, no web fonts. Everything renders straight into a `<canvas>` at runtime.
+
+**What exists**
+
+- `client/font.js` — a chunky 5x7 bitmap font (A-Z, 0-9, basic punctuation) with `drawText(ctx,
+  text, x, y, {scale, color, align, shadow})`, `measureText(text, scale)` and `wrapText(text,
+  maxWidth, scale)`. Every glyph is drawn with `ctx.fillRect`, so it looks identical everywhere.
+- `client/cutscenes.js` — the scene engine. Scenes are plain data: keyframed sprite "actors",
+  a tiled dungeon background, title/caption text, screen fades, camera shake and a confetti
+  particle layer. Fifteen scenes ship out of the box: `intro`, one `hero_<class>` scene per
+  playable archetype (warrior, valkyrie, wizard, elf, paladin, ranger, necromancer),
+  `death_mode`, `treasure_room`, `game_over`, `victory`, and `level_milestone_10` /
+  `_25` / `_50`.
+- `client/attract.html` (served at `/attract.html`) + `client/attract.js` — a full-screen arcade
+  attract mode: a pulsing title card ("PRESS ANY KEY"), the `intro` cutscene, a hero roster with
+  live stats, and a top-10 high-score table pulled from `GET /api/leaderboard`, looping forever.
+  Any key, click or tap jumps to `/`. Append `?demo=1` to also cycle in a hidden "live dungeon
+  preview" phase that fetches a fresh level from `POST /api/levels/procgen` and animates
+  ghosts/grunts/a demon wandering it — pure client-side, no server-side monster simulation.
+- `client/cutscenes-demo.html` (served at `/cutscenes-demo.html`) — a dev page listing every
+  registered scene in a dropdown with Play/Skip/loop controls, for reviewing new scenes quickly.
+
+**How to trigger a scene from game code**
+
+```js
+import { playCutscene, hasSeen, markSeen } from './cutscenes.js';
+
+const handle = playCutscene(canvasEl, 'death_mode', {
+  sfx,                 // reuse the game's own sfx(name) — optional, defaults to a no-op
+  say,                 // reuse the game's own say(text) TTS narrator — optional
+  allowSkip: true,      // any keydown/click/pointerdown on the canvas skips to the end
+  onSkip:  () => {},    // called if the player skipped
+  onDone:  ({ id, skipped }) => {},  // called exactly once, skipped or not
+});
+// handle.skip() / handle.stop() end it early from your own UI.
+
+if (!hasSeen('intro')) {
+  playCutscene(cv, 'intro', { onDone: () => markSeen('intro') });
+}
+```
+
+`hasSeen(id)` / `markSeen(id)` use `sessionStorage`, so a "show once" trigger (e.g. `intro` on
+first load, or `hero_<class>` the first time a player picks that archetype this session) won't
+replay on the next room without a full browser restart. `playCutscene` lazily imports
+`sprites.js` the first time it's called, so importing `cutscenes.js` never touches the DOM.
+
+**How to author a new scene**
+
+Add an entry to the `SCENES` registry in `client/cutscenes.js`:
+
+```js
+{
+  id: 'my_scene',            // must be unique
+  duration: 5,                // seconds; keep it short (4-9s) and skippable
+  background: { type: 'hall' },              // or { type: 'void', color }
+  shake: { start: 3, end: 5, magnitude: 3 }, // optional camera shake window
+  layers: [
+    { type: 'text', text: 'MY SCENE', x: 320, y: 40, scale: 4, color: '#f2c400', align: 'center' },
+    { type: 'actor', sprite: 'hero', tint: '#e03c31', scale: 4,
+      from: { x: -60, y: 260 }, to: { x: 300, y: 260 }, start: 0.2, end: 2, bob: 2 },
+    { type: 'particles', kind: 'confetti', start: 0, count: 30 },
+  ],
+  captions: [{ at: 1.5, text: 'One line of dialogue.' }],
+}
+```
+
+Layer `type`s available: `actor` (a keyframed sprite, `from`/`to`/`start`/`end`/`flip`/`bob`),
+`sprite-static`, `text`, `rect`, `particles` (`kind: 'confetti'`), `torch` and `pulse` (a
+pulsing full-screen tint, used by `death_mode`'s red vignette). `renderFrame(ctx, scene, t,
+opts)` is a pure function — no timers, no DOM — so `test/cutscenes.test.js` renders every scene
+at its start/middle/end frame against a stub 2D context to make sure nothing throws and every
+scene's captions are sorted and in-bounds.
+
+**Everything is skippable.** Every cutscene call defaults to `allowSkip: true`; the attract mode
+treats *any* input as "go play the game" rather than gating on a specific key. Nothing here ever
+blocks a player who just wants to get into the dungeon.
