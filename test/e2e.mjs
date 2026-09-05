@@ -733,6 +733,62 @@ async function main() {
       await ctxP.close().catch(() => {});
     });
 
+    // ---------------- 15. Mobile viewport (#31) ----------------
+    await scenario('15. Mobile viewport: canvas fits the screen, no horizontal scroll, d-pad clear of the canvas/HUD', async () => {
+      const ctxD = await browser.newContext({ viewport: { width: 375, height: 667 }, hasTouch: true });
+      const pageD = await ctxD.newPage(); attach(pageD, 'D');
+
+      await pageD.goto(`${baseUrl}/?touch=1&nosw=1`, { waitUntil: 'load' });
+      await pageD.waitForSelector('#heroes .hero', { timeout: 10_000 });
+      await pageD.click('#heroes .hero:nth-child(1)'); // Warrior
+      await pageD.fill('#gname', 'MobileTester');
+      await pageD.click('#create');
+      await pageD.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+      await pageD.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 }); // solo host, no ready-up needed
+      await pageD.click('#rs-start');
+      await pageD.waitForSelector('#game.on', { timeout: 15_000 });
+      await pageD.waitForSelector('#touch.touch-force', { timeout: 5_000 });
+      // Let client/game.js's layoutGame() run at least one resize/HUD pass (it also fires from the
+      // 'players' packet renderHud() handles) before reading boxes back.
+      await pageD.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, { timeout: 10_000 });
+      await pageD.waitForTimeout(200);
+
+      // Scoped to the game view (#session) + the touch band, not document.documentElement.scrollWidth
+      // as a whole: this task owns client/game.js/input.js and the in-game part of index.html only —
+      // the lobby/nav bar are a different, concurrently-in-progress responsiveness pass (see
+      // AGENT_RULES.md), so a still-unresponsive nav shouldn't fail a test of the game screen.
+      const gameViewOverflow = await pageD.evaluate(() => {
+        let maxRight = 0;
+        const consider = (el) => { if (!el) return; const r = el.getBoundingClientRect(); if (r.right > maxRight) maxRight = r.right; };
+        const session = document.querySelector('#session');
+        consider(session);
+        session?.querySelectorAll('*').forEach(consider);
+        consider(document.querySelector('#touch'));
+        return { maxRight, innerWidth: window.innerWidth };
+      });
+      if (gameViewOverflow.maxRight > gameViewOverflow.innerWidth + 1) {
+        throw new Error(`game view scrolls horizontally on a 375px-wide viewport: ${JSON.stringify(gameViewOverflow)}`);
+      }
+
+      const cvBox = await pageD.locator('#cv').boundingBox();
+      if (!cvBox) throw new Error('#cv has no bounding box (not visible)');
+      const viewport = pageD.viewportSize();
+      if (cvBox.x < -0.5 || cvBox.y < -0.5 || cvBox.x + cvBox.width > viewport.width + 0.5 || cvBox.y + cvBox.height > viewport.height + 0.5) {
+        throw new Error(`#cv is not fully inside the viewport: box=${JSON.stringify(cvBox)} viewport=${JSON.stringify(viewport)}`);
+      }
+
+      const overlaps = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+      const touchBox = await pageD.locator('#touch').boundingBox();
+      if (!touchBox) throw new Error('#touch (the d-pad/fire band) has no bounding box (not visible)');
+      if (overlaps(touchBox, cvBox)) throw new Error(`touch controls overlap the canvas: touch=${JSON.stringify(touchBox)} canvas=${JSON.stringify(cvBox)}`);
+      const hudBox = await pageD.locator('#hud').boundingBox();
+      if (!hudBox) throw new Error('#hud has no bounding box (not visible)');
+      if (overlaps(touchBox, hudBox)) throw new Error(`touch controls overlap the HUD: touch=${JSON.stringify(touchBox)} hud=${JSON.stringify(hudBox)}`);
+
+      await pageD.click('#leave').catch(() => {});
+      await ctxD.close().catch(() => {});
+    });
+
     await ctxA.close().catch(() => {});
     await ctxB.close().catch(() => {});
   } catch (err) {

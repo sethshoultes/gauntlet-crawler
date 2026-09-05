@@ -111,3 +111,81 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
   table, th, td { font-size: 14px; } /* readable on a phone; base rule is 13px */
 }
 
+/* =========================================================================================
+   Game screen / mobile (#31 "Mobile: responsive game screen") — everything below is additive:
+   it only ever changes what happens once a media query below matches (a narrow and/or touch
+   viewport), never the plain desktop rules above. client/game.js's layoutGame() does the actual
+   canvas-fit math (client/layout.js) and only kicks in once the same "(max-width: 900px),
+   (pointer: coarse)" condition matches here, so the two stay in lock-step.
+   ========================================================================================= */
+
+/* Belt-and-suspenders overflow guard (always on, not just under a breakpoint): a fixed-width HUD
+   sidebar or an overlong stage must never be the thing that forces horizontal page scroll. */
+.stage, .cv-wrap, #hud { max-width: 100%; }
+
+@media (max-width: 900px), (pointer: coarse) {
+  /* #session fills the viewport height so `#game`/`.stage`'s own `flex: 1 1 auto` genuinely gets
+     "whatever is left after the nav bar, main's padding, and the chat log/bar/help row below the
+     stage" — letting flexbox account for all of that page chrome instead of client/game.js
+     re-deriving it. 100dvh (falls back to 100vh where unsupported) tracks a mobile browser's
+     collapsing address bar so the reserved space doesn't overshoot as it hides.
+     Both #game and #session use `align-items: center` (fit-content cross-sizing) rather than the
+     default `stretch`, so every flex link in this chain needs its own explicit `width: 100%` —
+     a percentage width one level up that's still shrink-to-fit resolves to `auto`, not 100%. */
+  #session.on { min-height: 100vh; min-height: 100dvh; box-sizing: border-box; touch-action: manipulation; }
+  #game.on { width: 100%; flex: 1 1 auto; min-height: 0; }
+  .stage { width: 100%; flex-direction: column-reverse; flex: 1 1 auto; min-height: 0; }
+  /* width/aspect-ratio need !important here: they're overriding client/index.html's unconditional
+     (non-media) .cv-wrap rule, which — despite equal selector specificity — wins ties against an
+     external stylesheet's rule by sheer document position (the inline <style> block sits after
+     this stylesheet's <link>, so it's later in the cascade regardless of which rule has a media
+     condition). Same story for #hud's width just below. */
+  .cv-wrap {
+    width: 100% !important; flex: 1 1 auto; min-height: 0; aspect-ratio: auto !important;
+    display: flex; justify-content: center; align-items: flex-start;
+  }
+  #cv { width: auto; height: auto; } /* client/game.js sets an explicit px size on the canvas itself */
+  /* flex-direction: row !important overrides index.html's unconditional #hud{flex-direction:column}
+     the same way width did just above — this is what turns the sidebar into a wrapping strip of
+     cards above the canvas instead of a much taller single column. */
+  #hud { width: 100% !important; max-width: 100%; flex: 0 0 auto; flex-direction: row !important; flex-wrap: wrap; gap: 6px; }
+  #hud .pp { flex: 1 1 150px; }
+}
+
+/* Compact HUD (<700px width): player cards drop the secondary hero/rank line and the key/potion
+   counts, keeping just the icon + health bar + HP/SCORE numbers — countdown/amulet/boost rows
+   (.lvl, #hud-time, .boosts, .runboosts, .amulets) are untouched, so those stay visible either way.
+   padding/font-size/height need !important for the same "unconditional inline rule wins ties"
+   reason as above (index.html sets #hud{padding:8px;font-size:13px} and #log{height:96px}). */
+@media (max-width: 700px) {
+  #hud { padding: 6px !important; font-size: 12px !important; }
+  #hud .pp { padding: 4px 6px; }
+  #hud .pp .sub, #hud .pp .kp { display: none; }
+  #hud .pp-nums { font-size: 11px; gap: 6px; }
+  #log { height: 34px !important; font-size: 11px; line-height: 1.3; }
+}
+
+/* Landscape phones (short viewport, e.g. a phone turned sideways): same compact HUD as above even
+   at a width the 700px rule alone wouldn't catch (a landscape phone is plenty *wide*, just short). */
+@media (orientation: landscape) and (max-height: 500px) {
+  #hud { padding: 4px 6px !important; font-size: 11px !important; }
+  #hud .pp { padding: 3px 5px; flex-basis: 110px; }
+  #hud .pp .sub, #hud .pp .kp { display: none; }
+  #hud .lvl { flex-basis: 100%; font-size: 11px; }
+}
+
+/* Touch/scroll hygiene while actually playing (#31): no pull-to-refresh/rubber-banding, no
+   double-tap zoom. Scoped to body.gc-playing (toggled by client/game.js alongside #game.on) rather
+   than globally, so the lobby/settings/editor pages keep normal scrolling. */
+body.gc-playing { overscroll-behavior: none; }
+
+/* High-score initials modal (client/highscore.js) — must stay usable with no page scroll down to a
+   360px-wide, short-landscape phone. */
+.hs-modal-bg { padding: 10px; }
+.hs-modal { max-height: calc(100vh - 20px); max-height: calc(100dvh - 20px); overflow-y: auto; }
+.hs-modal .hs-slots { gap: 6px; }
+.hs-modal .hs-slotcol { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+/* Touch-friendly up/down per letter slot (#31) — the slot itself only ever cycled *up* on tap
+   before this, with no way back down except wrapping all the way around; a keyboard/gamepad could
+   already go either direction (ArrowUp/ArrowDown), so this just gives touch the same pair. */
+.hs-modal .hs-updown { padding: 2px 0; width: 48px; font-size: 12px; line-height: 1; }

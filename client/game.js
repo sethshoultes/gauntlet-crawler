@@ -21,6 +21,7 @@ import { initAudio, sfx, setMuted } from './audio.js';
 import { say as voiceSay } from './voice.js';
 import { playCutscene, hasSeen, markSeen, getScene } from './cutscenes.js';
 import * as Input from './input.js'; // touch d-pad, auto-fire and gamepad/local-multiplayer input (#15)
+import { computeCanvasLayout } from './layout.js'; // canvas-fit math for the mobile game screen (#31)
 import { showInitialsModal } from './highscore.js';
 import { startIdleAttract } from './attract-idle.js';
 const RESUME_KEY = 'gc_resume';
@@ -301,6 +302,8 @@ function leaveGame(reason) {
   clearResume();
   $('#game').classList.remove('on'); $('#roomscreen').classList.remove('on'); $('#session').classList.remove('on');
   $('#lobby').style.display = ''; $('#touch').classList.remove('on');
+  document.body.classList.remove('gc-playing'); // touch/scroll hygiene (#31), see client/style.css
+  releaseWakeLock();
   if (reason) toast('Left the dungeon', reason);
   loadRooms();
   history.replaceState(null, '', '/');
@@ -319,9 +322,15 @@ function onMessage(m) {
       $('#lobby').style.display = 'none'; $('#session').classList.add('on');
       if (m.room.state === 'lobby') {
         $('#roomscreen').classList.add('on'); $('#game').classList.remove('on'); $('#touch').classList.remove('on');
+        document.body.classList.remove('gc-playing');
       } else {
+        // Resuming (reconnect, or a deep link into a room already in progress) drops straight into
+        // the game view, same as 'start' below — same mobile layout/wake-lock hooks apply (#31).
         $('#roomscreen').classList.remove('on'); $('#game').classList.add('on'); $('#touch').classList.add('on');
+        document.body.classList.add('gc-playing');
+        acquireWakeLock();
       }
+      layoutGame();
       $('#log').innerHTML = '';
       log(`<span class="n">Welcome to ${esc(m.room.name)}. ${m.room.source === 'custom' ? 'Custom dungeon: ' + esc(m.room.customName || '') : ''}</span>`);
       history.replaceState(null, '', `/?room=${m.room.id}`);
@@ -335,6 +344,9 @@ function onMessage(m) {
     case 'countdown': renderCountdown(m.seconds); break;
     case 'start':
       $('#roomscreen').classList.remove('on'); $('#game').classList.add('on'); $('#touch').classList.add('on');
+      document.body.classList.add('gc-playing'); // touch/scroll hygiene (#31)
+      layoutGame();
+      acquireWakeLock();
       renderCountdown(null);
       if (G.room?.mode === 'death' && !hasSeen('death_mode')) playScene('death_mode', { onDone: () => markSeen('death_mode') });
       break;
@@ -388,8 +400,10 @@ function onMessage(m) {
         G.hsTokens.delete(mine.runId);
         showInitialsModal({ runId: mine.runId, score: mine.score, token: hsToken });
       }
+      releaseWakeLock(); // run's over — release now rather than waiting out the 6s gameover overlay
       setTimeout(() => {
         $('#game').classList.remove('on'); $('#roomscreen').classList.add('on'); $('#touch').classList.remove('on');
+        document.body.classList.remove('gc-playing');
         if (G.room) renderRoomScreen(G.room);
       }, 6000);
       break;
@@ -707,14 +721,127 @@ const cv = $('#cv'); const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled 
 const TS = TILE * ZOOM; // 32 screen px per tile
 
 cv.addEventListener('click', (ev) => {
-  if (!G.intermission || G.intermission.pickSent) return;
-  const rect = cv.getBoundingClientRect();
-  const x = (ev.clientX - rect.left) * (VIEW_W / rect.width);
-  const y = (ev.clientY - rect.top) * (VIEW_H / rect.height);
-  for (const r of G.intermission.rects) {
-    if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { pickChest(r.id); break; }
+  if (G.intermission && !G.intermission.pickSent) {
+    const rect = cv.getBoundingClientRect();
+    const x = (ev.clientX - rect.left) * (VIEW_W / rect.width);
+    const y = (ev.clientY - rect.top) * (VIEW_H / rect.height);
+    for (const r of G.intermission.rects) {
+      if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) { pickChest(r.id); break; }
+    }
+    return;
   }
+  // Tap-to-continue (#31): the "INSERT COIN" death screen otherwise only listens for Enter, which
+  // a touch player has no way to press — a tap anywhere on the canvas does the same thing. Harmless
+  // for a mouse user too (there's nothing else to click on that screen).
+  const mine = G.cur?.p.find((p) => p[0] === G.pid);
+  if (mine && mine[8]) sendInput({ respawn: true });
 });
+
+// ---------------- mobile-responsive canvas fit, fullscreen, wake lock (#31) ----------------
+// Everything below is additive to the desktop rendering path above: on a wide, mouse-driven
+// viewport layoutGame() puts the canvas back to its native 640x480 backing store and lets the
+// existing CSS (.cv-wrap's aspect-ratio box) drive sizing exactly as before. Only once the
+// "(max-width: 900px), (pointer: coarse)" media query matches (phones/tablets, and desktop windows
+// narrow enough to be worth treating the same way) does it take over: `.stage`'s own measured box
+// already excludes the nav bar, main's padding and the chat log/bar/help row below it (CSS gives
+// `.stage` `flex: 1 1 auto` inside a viewport-height `#session`, see client/style.css's "game
+// screen / mobile" block), so the only two things this still has to measure itself are the HUD
+// strip's real rendered height and the touch-controls band's — the two inputs computeCanvasLayout()
+// actually needs (client/layout.js, unit-tested in test/layout.test.js).
+const stageEl = document.querySelector('.stage');
+const cvWrap = document.querySelector('.cv-wrap');
+const hudEl = $('#hud');
+const touchEl = $('#touch');
+const fsBtn = $('#fs-toggle');
+const rotateHint = $('#rotate-hint');
+let rotateHintDismissed = false;
+let touchActive = false; // cached shouldShowTouch() result, refreshed in layoutGame() (see below)
+
+function viewportSize() {
+  const vv = window.visualViewport;
+  return vv ? { w: Math.round(vv.width), h: Math.round(vv.height) } : { w: window.innerWidth, h: window.innerHeight };
+}
+
+function resetDesktopCanvas() {
+  cv.style.width = ''; cv.style.height = '';
+  if (cv.width !== VIEW_W || cv.height !== VIEW_H) { cv.width = VIEW_W; cv.height = VIEW_H; ctx.imageSmoothingEnabled = false; }
+  if (sceneCv && (sceneCv.width !== VIEW_W || sceneCv.height !== VIEW_H)) { sceneCv.width = VIEW_W; sceneCv.height = VIEW_H; }
+}
+
+function layoutGame() {
+  touchActive = Input.shouldShowTouch(location.search, matchMedia('(pointer: coarse)').matches);
+  if (!$('#game').classList.contains('on') || !stageEl || !cvWrap) return;
+  const mobile = matchMedia('(max-width: 900px), (pointer: coarse)').matches;
+  if (!mobile) { resetDesktopCanvas(); if (rotateHint) rotateHint.hidden = true; return; }
+
+  const { w: vw, h: vh } = viewportSize();
+  const portrait = vh >= vw;
+  const stageBox = stageEl.getBoundingClientRect();
+  const hudH = hudEl ? hudEl.getBoundingClientRect().height : 0;
+  const touchShown = !!touchEl && touchEl.classList.contains('on') && getComputedStyle(touchEl).display !== 'none';
+  // Portrait reserves a band below the canvas for the d-pad; landscape phones instead let it
+  // overlay the canvas edges (see the CSS "@media (orientation: landscape) and (max-height: 500px)"
+  // rule), so nothing needs to be subtracted from the fit there.
+  const controlsH = portrait && touchShown ? touchEl.getBoundingClientRect().height + 12 : 0;
+
+  const layout = computeCanvasLayout({
+    vw: stageBox.width, vh: stageBox.height, hudH, controlsH,
+    levelW: VIEW_W, levelH: VIEW_H, dpr: window.devicePixelRatio || 1,
+  });
+  cv.style.width = layout.width + 'px';
+  cv.style.height = layout.height + 'px';
+  if (cv.width !== layout.backingWidth || cv.height !== layout.backingHeight) {
+    cv.width = layout.backingWidth; cv.height = layout.backingHeight; ctx.imageSmoothingEnabled = false;
+  }
+  if (sceneCv && (sceneCv.width !== layout.backingWidth || sceneCv.height !== layout.backingHeight)) {
+    sceneCv.width = layout.backingWidth; sceneCv.height = layout.backingHeight;
+  }
+
+  if (rotateHint) {
+    const tooShort = vh < 360;
+    if (!tooShort) rotateHintDismissed = false;
+    rotateHint.hidden = !tooShort || rotateHintDismissed;
+  }
+}
+$('#rotate-hint-dismiss')?.addEventListener('click', () => { rotateHintDismissed = true; layoutGame(); });
+window.addEventListener('resize', layoutGame);
+window.addEventListener('orientationchange', () => setTimeout(layoutGame, 60));
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', layoutGame);
+  window.visualViewport.addEventListener('scroll', layoutGame);
+}
+
+// ---------------- fullscreen toggle (#31) ----------------
+// Feature-detected rather than assumed: iOS Safari has no Fullscreen API for arbitrary elements
+// (only <video>), so the button stays hidden there instead of doing nothing when tapped.
+if (fsBtn) {
+  const fsSupported = !!(cvWrap?.requestFullscreen && document.fullscreenEnabled);
+  fsBtn.hidden = !fsSupported;
+  if (fsSupported) {
+    fsBtn.onclick = () => {
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      else cvWrap.requestFullscreen?.().catch(() => {});
+    };
+    document.addEventListener('fullscreenchange', () => {
+      fsBtn.classList.toggle('on', !!document.fullscreenElement);
+      fsBtn.title = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+      layoutGame();
+    });
+  }
+}
+
+// ---------------- Screen Wake Lock (#31) ----------------
+// Best-effort: unsupported browsers, a backgrounded tab, or a user/OS policy denial all just throw
+// or resolve falsy here, and are silently ignored either way — the game works identically without it.
+let wakeLock = null;
+async function acquireWakeLock() {
+  try { wakeLock = (await navigator.wakeLock?.request?.('screen')) || null; } catch { wakeLock = null; }
+}
+function releaseWakeLock() { try { wakeLock?.release(); } catch {} wakeLock = null; }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && G.inRoom && $('#game').classList.contains('on')) acquireWakeLock();
+});
+layoutGame(); // sets the initial touchActive/rotate-hint state even before any room is joined
 
 function lerpSnap(now) {
   if (!G.cur) return null;
@@ -744,6 +871,11 @@ function frame(now) {
   requestAnimationFrame(frame);
   Input.poll(); // gamepad state, ~60 Hz (#15)
   const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
+  // Everything below draws in the fixed 640x480 logical coordinate space it always has; this one
+  // transform (#31) is what makes that correct again after layoutGame() resizes the canvas's real
+  // backing store (cv.width/height) to fit a phone's viewport at devicePixelRatio — a no-op
+  // identity transform on desktop, where the backing store still just is VIEW_W x VIEW_H.
+  ctx.setTransform(cv.width / VIEW_W, 0, 0, cv.height / VIEW_H, 0, 0);
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   if (!G.level || !G.grid) return;
   const snap = lerpSnap(now);
@@ -901,7 +1033,12 @@ function frame(now) {
   if (mine && mine[8]) {
     ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, VIEW_H - 90, VIEW_W, 90);
     ctx.fillStyle = '#e03c31'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center'; ctx.fillText('YOU HAVE DIED', VIEW_W / 2, VIEW_H - 52);
-    if (Math.floor(now / 500) % 2) { ctx.fillStyle = '#f2c400'; ctx.font = '14px monospace'; ctx.fillText('INSERT COIN — press ENTER to continue', VIEW_W / 2, VIEW_H - 24); }
+    if (Math.floor(now / 500) % 2) {
+      ctx.fillStyle = '#f2c400'; ctx.font = '14px monospace';
+      // Touch layout (#31): there's no Enter key to press, but the whole canvas is a tap target
+      // (see the click handler above), so say so instead of pointing at a key that doesn't exist.
+      ctx.fillText(touchActive ? 'INSERT COIN — tap to continue' : 'INSERT COIN — press ENTER to continue', VIEW_W / 2, VIEW_H - 24);
+    }
   } else if (mine && !mine[8]) {
     const heroName = heroLabel(G.players.get(G.pid));
     if (mine[4] < 100 && now - G.lastDying > 8000) { G.lastDying = now; say('about_to_die', `${heroName} is about to die`); }
@@ -1035,17 +1172,32 @@ function drawEntity(img, x, y, dir, bob = 0, isHero = false) {
 // ---------------- HUD ----------------
 function renderHud() {
   const hud = $('#hud');
-  hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => `
-    <div class="pp ${p.away ? 'away' : ''}" data-pid="${p.id}" style="border-color:${playerColor(p)}">
-      <div class="nm" style="color:${playerColor(p)}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}${p.away ? ' <span class="muted">(away)</span>' : ''}</div>
-      <div class="muted" style="font-size:11px">${esc(heroLabel(p))}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
-      <div>HEALTH <span class="hp">0</span></div>
-      <div>SCORE <span class="sc">0</span></div>
-      <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>
+  hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => {
+    const color = playerColor(p);
+    // Compact HUD (#31, <700px width or a short landscape phone): the icon badge + health bar
+    // stand in for the full name/HEALTH/SCORE block that the wide layout shows instead — see
+    // client/style.css's "game screen / mobile" block for which parts CSS hides at that breakpoint.
+    const initial = (heroLabel(p) || p.name || '?').trim().charAt(0).toUpperCase() || '?';
+    return `
+    <div class="pp ${p.away ? 'away' : ''}" data-pid="${p.id}" style="border-color:${color}">
+      <div class="pp-head">
+        <span class="ic" style="background:${color}">${esc(initial)}</span>
+        <div class="pp-names">
+          <div class="nm" style="color:${color}">${esc(p.name)}${p.id === G.pid ? ' (you)' : ''}${p.away ? ' <span class="muted">(away)</span>' : ''}</div>
+          <div class="muted sub" style="font-size:11px">${esc(heroLabel(p))}${p.title ? ` &middot; <span class="rk">Rank ${p.rank} ${esc(p.title)}</span>` : ''}</div>
+        </div>
+      </div>
+      <div class="pp-vitals">
+        <div class="hpbar"><i></i></div>
+        <div class="pp-nums"><span>HP <b class="hp">0</b></span><span>SC <b class="sc">0</b></span></div>
+      </div>
+      <div class="muted kp" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>
       ${p.boosts?.length ? `<div class="boosts" title="Active chest boosts this level">${p.boosts.map((b) => BOOST_ICONS[b] || '✨').join(' ')}</div>` : ''}
       <div class="runboosts" title="Permanent run boosts"></div>
       <div class="amulets" title="Active amulets"></div>
-    </div>`).join('') + `<div class="muted" style="font-size:11px;text-align:center;margin-top:auto" id="hud-time"></div>`;
+    </div>`;
+  }).join('') + `<div class="muted" style="font-size:11px;text-align:center;margin-top:auto" id="hud-time"></div>`;
+  layoutGame(); // the HUD's own height feeds the canvas-fit math (#31) — re-measure after it changes
 }
 function updateHudValues(s) {
   if (!s) return;
@@ -1057,6 +1209,10 @@ function updateHudValues(s) {
   for (const p of s.p) {
     const el = document.querySelector(`.pp[data-pid="${p[0]}"]`); if (!el) continue;
     el.querySelector('.hp').textContent = p[4]; el.querySelector('.sc').textContent = p[7]; el.querySelector('.k').textContent = p[5]; el.querySelector('.po').textContent = p[6];
+    // Compact-HUD health bar (#31): START_HEALTH is 2000 (see test/e2e.mjs's reconnect scenario);
+    // boosts/armor can push a hero's effective max a bit past that, so this is an approximation,
+    // purely cosmetic — clamped so an over-full bar never renders past 100%.
+    const bar = el.querySelector('.hpbar i'); if (bar) bar.style.width = Math.max(0, Math.min(100, (p[4] / 2000) * 100)) + '%';
     el.classList.toggle('low', p[4] < LOW_HEALTH && !p[8]); el.classList.toggle('dead', !!p[8]);
     el.classList.toggle('it', s.it === p[0] && !p[8]); // It tag mode (#13)
     // Acid puddle (#12): tint the HUD card while standing on one — read straight off the tile grid

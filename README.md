@@ -528,6 +528,49 @@ career leaderboard on `/dashboard.html` — see `server/highscores.js` and `clie
   with the bitmap font in the attract loop (same data source, see [Cutscenes and attract
   mode](#cutscenes-and-attract-mode) above).
 
+### Mobile (#31)
+
+The in-game screen (`client/index.html`'s `#game` view, `client/game.js`, `client/input.js`) is
+responsive on phones and tablets, in both orientations — this is separate from the touch d-pad
+itself (see "Mobile and gamepad" above); this section covers the surrounding screen: canvas fit,
+HUD layout, safe areas, orientation, fullscreen and wake lock.
+
+- **Canvas fit**: `client/layout.js` exports a pure `computeCanvasLayout({vw, vh, hudH, controlsH,
+  levelW, levelH, dpr})` (unit-tested in `test/layout.test.js`) that fits the game's fixed 640x480
+  logical resolution into whatever's left of the viewport after the HUD strip and, in portrait, the
+  touch-controls band — an exact integer zoom (2x, 3x, ...) when the screen is roomy enough to fit
+  one without shrinking versus a plain fit, otherwise a fractional zoom; either way the canvas is
+  drawn with `image-rendering: pixelated`, so pixel art stays crisp rather than blurring at a soft
+  scale. `client/game.js`'s `layoutGame()` is the only caller: it re-measures on `resize`,
+  `orientationchange` and `visualViewport` changes (a mobile browser's collapsing address bar), sets
+  the canvas's CSS size and its `devicePixelRatio`-aware backing store (`canvas.width`/`height`), and
+  the render loop applies one `ctx.setTransform()` so all the existing 640x480-space drawing code is
+  unaffected. Below a `(max-width: 900px), (pointer: coarse)` breakpoint the HUD stacks above the
+  canvas (full width) instead of sitting beside it; above that breakpoint (desktop) the canvas keeps
+  its original fixed 640x480 backing store and CSS-driven sizing exactly as before.
+- **Compact HUD** (under 700px width, or a landscape phone under 500px tall): each player card
+  collapses to a small colored initial badge, a health bar and HP/SCORE, dropping the hero/rank line
+  and the key/potion counts — the level/timer readout and any active boost/amulet icons stay visible
+  either way. Portrait reserves a band below the canvas for the touch d-pad/fire buttons; a landscape
+  phone instead lets them overlay the canvas's edges (semi-transparent) since there's little spare
+  height to reserve there.
+- **Touch/viewport hygiene**: `viewport-fit=cover` in the viewport meta plus `env(safe-area-inset-*)`
+  on the touch band (clearing a notch/home-indicator/rounded corner); `touch-action: none` on the
+  canvas and every touch control; `overscroll-behavior: none` while a run is active (no
+  pull-to-refresh/rubber-banding); `user-select: none` on the touch controls.
+- **Short-viewport hint**: below 360px of viewport height, a dismissible "Rotate for a bigger view"
+  banner appears over the canvas.
+- **Fullscreen toggle**: a button in the canvas's corner (Fullscreen API on the canvas's wrapper) —
+  hidden entirely when unsupported (e.g. iOS Safari, which has no Fullscreen API for arbitrary
+  elements).
+- **Screen Wake Lock**: requested while a run is active, released on leaving the room or at game
+  over — best-effort, silently ignored wherever the API is missing or a lock is refused.
+- **Touch-operable overlays** at a 360px-wide viewport: the chest-picker, cutscene-skip and
+  death/"insert coin" screens are all drawn on the canvas itself and already scale with it (a tap
+  anywhere on the canvas also now confirms the death screen's "continue", not just `Enter`); the
+  high-score initials modal (`client/highscore.js`) gained a small up/down button pair per letter
+  slot alongside the existing tap-to-cycle-up/click-to-select and keyboard/gamepad controls.
+
 ### Sound
 
 Every sound effect is synthesized at runtime with the Web Audio API — no audio assets ship with
@@ -826,6 +869,7 @@ client/            static browser app (no build step)
   cutscenes-demo.html      dev page for reviewing cutscenes
   common.js, sprites.js, font.js, pixelsprite.js, audio.js, voice.js, cutscenes.js   shared client modules
   input.js                touch d-pad/auto-fire + Gamepad API + local co-op input (#15)
+  layout.js               pure canvas-fit math for the mobile game screen (#31)
 test/               node:test unit suites, plus smoke.mjs and e2e.mjs (Playwright)
 tools/              tools/generate-voice.mjs — narrator voice clip generation
 deploy/             Hetzner/Docker deployment scripts and Caddy config
@@ -994,11 +1038,12 @@ II's arcade parity: amulets and permanent boosts (#10), pressure-plate wall grou
 (#13).
 
 Sound synthesis (#20), pre-rendered narrator voice lines (#19), optional opt-in AI narrator
-commentary (#18), the mobile touch layout/gamepad support (#15), and the original-style attract
-mode / three-initial high-score entry (#14) are also implemented (see [Sound](#sound), [Narrator
-voice](#narrator-voice), [AI Narrator](#ai-narrator-18), "Mobile and gamepad", and [Cutscenes and
-attract mode](#cutscenes-and-attract-mode) / [High scores](#high-scores-14) above) even though all
-five issues are still open on the tracker pending someone closing them out.
+commentary (#18), the mobile touch layout/gamepad support (#15), the responsive game screen (#31),
+and the original-style attract mode / three-initial high-score entry (#14) are also implemented
+(see [Sound](#sound), [Narrator voice](#narrator-voice), [AI Narrator](#ai-narrator-18), "Mobile and
+gamepad", [Mobile](#mobile-31), and [Cutscenes and attract mode](#cutscenes-and-attract-mode) /
+[High scores](#high-scores-14) above) even though all six issues are still open on the tracker
+pending someone closing them out.
 
 The installable PWA shell — manifest, home-screen icons, offline app-shell caching (#33) — is also
 implemented; see [Install as an app](#install-as-an-app) above.
