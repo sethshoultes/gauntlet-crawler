@@ -78,8 +78,15 @@ export async function loadPrefs() {
   const prefs = await api('/api/me/prefs').then((r) => r.prefs).catch(() => null);
   if (!prefs || typeof prefs !== 'object') return prefs;
   try {
-    if ('soundVolume' in prefs) localStorage.setItem('gc_mute', Number(prefs.soundVolume) <= 0 ? '1' : '0');
+    const pct = (v) => Math.max(0, Math.min(100, Number(v) || 0));
+    if ('soundVolume' in prefs) {
+      localStorage.setItem('gc_mute', Number(prefs.soundVolume) <= 0 ? '1' : '0');
+      localStorage.setItem('gc_vol_master', String(pct(prefs.soundVolume)));
+    }
+    if ('sfxVolume' in prefs) localStorage.setItem('gc_vol_sfx', String(pct(prefs.sfxVolume)));
+    if ('voiceVolume' in prefs) localStorage.setItem('gc_vol_voice', String(pct(prefs.voiceVolume)));
     if ('narrator' in prefs) localStorage.setItem('gc_narrate', prefs.narrator === false ? '0' : '1');
+    if ('cutscenes' in prefs) localStorage.setItem('gc_cutscenes', prefs.cutscenes === false ? '0' : '1');
   } catch {}
   return prefs;
 }
@@ -106,6 +113,8 @@ export async function renderNav(active) {
     <a class="nl ${active === 'play' ? 'active' : ''}" href="/">Play</a>
     <a class="nl ${active === 'dashboard' ? 'active' : ''}" href="/dashboard.html">Dashboard</a>
     <a class="nl ${active === 'editor' ? 'active' : ''}" href="/editor.html">Level Builder</a>
+    <a class="nl ${active === 'attract' ? 'active' : ''}" href="/attract.html">Arcade</a>
+    ${m.user ? `<a class="nl ${active === 'heroes' ? 'active' : ''}" href="/heroes.html">Heroes</a>` : ''}
     ${m.user ? `<a class="nl ${active === 'settings' ? 'active' : ''}" href="/settings.html">Settings</a>` : ''}
     ${m.isAdmin ? `<a class="nl ${active === 'admin' ? 'active' : ''}" href="/admin.html">Admin</a>` : ''}
     <span class="spacer"></span>

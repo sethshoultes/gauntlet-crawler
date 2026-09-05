@@ -1,8 +1,11 @@
 import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
-import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS } from '/shared/constants.js';
+import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER } from '/shared/constants.js';
 import { PALETTES, requirementText } from '/shared/unlocks.js';
 import { BOOST_ICONS } from '/shared/chests.js';
+import { initAudio, sfx, setMuted } from './audio.js';
+import { say as voiceSay } from './voice.js';
+import { playCutscene, hasSeen, markSeen } from './cutscenes.js';
 const RESUME_KEY = 'gc_resume';
 const GUEST_KEY = 'gc_guest_id';
 // Durable guest identity (#7): minted by the server on our first join and echoed back in every
@@ -15,6 +18,27 @@ const $ = (s) => document.querySelector(s);
 const SCALE = 2;                 // 8px art -> 16px tiles
 const ZOOM = 2;                  // 16px tiles -> 32px on the 640x480 canvas => 20x15 tiles visible
 const VIEW_W = 640, VIEW_H = 480;
+
+// ---------------- cutscenes (#23) ----------------
+// Client-side overlays only: they never touch the WebSocket protocol or block server-side
+// gameplay, are always skippable, and honor both the `cutscenes` preference (default on, see
+// client/common.js loadPrefs()) and prefers-reduced-motion (handled inside cutscenes.js itself).
+function cutscenesEnabled() {
+  try { return localStorage.getItem('gc_cutscenes') !== '0'; } catch { return true; }
+}
+const introCv = $('#intro-cutscene');   // lobby overlay: only the one-time 'intro'/'hero_*' scenes
+const sceneCv = $('#scene-cutscene');   // in-session overlay: death_mode/treasure_room/game_over/victory/milestones
+function playScene(sceneId, opts = {}) {
+  if (!cutscenesEnabled()) return;
+  const cv2 = G.inRoom ? sceneCv : introCv;
+  if (!cv2) return;
+  cv2.hidden = false;
+  playCutscene(cv2, sceneId, {
+    sfx, say: (text) => say('cutscene', text),
+    onDone: () => { cv2.hidden = true; opts.onDone?.(); },
+    onSkip: opts.onSkip,
+  });
+}
 
 // ---------------- lobby ----------------
 // `unlocked` starts out base-classes-only (a guest's baseline) and is replaced once /api/me
@@ -45,6 +69,12 @@ function playerColor(info) {
   return CLASSES[cls].color;
 }
 
+// The first time a class is picked this session, play its intro cutscene (hero_<classId>).
+function maybeHeroCutscene(id) {
+  if (hasSeen(`hero_${id}`)) return;
+  playScene(`hero_${id}`, { onDone: () => markSeen(`hero_${id}`) });
+}
+
 const heroes = $('#heroes');
 function paletteRow(id) {
   const opts = [{ id: '', name: 'Default', color: CLASSES[id].color, locked: false },
@@ -69,6 +99,7 @@ function renderHeroPicker() {
         if (!PALETTES.some((p) => p.id === selectedPalette && p.cls === id)) { selectedPalette = ''; localStorage.removeItem(PALETTE_KEY); }
         renderHeroPicker();
         rebuildHeroSelect();
+        maybeHeroCutscene(id);
       };
       el.querySelectorAll('[data-palette]').forEach((sw) => sw.onclick = (ev) => {
         ev.stopPropagation();
@@ -78,6 +109,7 @@ function renderHeroPicker() {
         selectedPalette = pid; if (pid) localStorage.setItem(PALETTE_KEY, pid); else localStorage.removeItem(PALETTE_KEY);
         renderHeroPicker();
         rebuildHeroSelect();
+        maybeHeroCutscene(id);
       });
     }
     heroes.appendChild(el);
@@ -113,6 +145,7 @@ renderNav('play').then(async () => {
   if (selectedPalette && !unlocked.palettes.has(selectedPalette)) { selectedPalette = ''; localStorage.removeItem(PALETTE_KEY); }
   renderHeroPicker();
   rebuildHeroSelect();
+  if (!hasSeen('intro')) playScene('intro', { onDone: () => markSeen('intro') });
 });
 loadRooms();
 setInterval(() => { if (!G.ws) loadRooms(); }, 5000);
@@ -208,7 +241,7 @@ function onMessage(m) {
       log(`<span class="n">Welcome to ${esc(m.room.name)}. ${m.room.source === 'custom' ? 'Custom dungeon: ' + esc(m.room.customName || '') : ''}</span>`);
       history.replaceState(null, '', `/?room=${m.room.id}`);
       renderRoomScreen(m.room);
-      say('Welcome, ' + CLASSES[selectedClass].name);
+      say('welcome', 'Welcome, ' + CLASSES[selectedClass].name);
       break;
     case 'room':
       G.room = m.room;
@@ -218,6 +251,7 @@ function onMessage(m) {
     case 'start':
       $('#roomscreen').classList.remove('on'); $('#game').classList.add('on'); $('#touch').classList.add('on');
       renderCountdown(null);
+      if (G.room?.mode === 'death' && !hasSeen('death_mode')) playScene('death_mode', { onDone: () => markSeen('death_mode') });
       break;
     case 'level':
       G.level = m; G.grid = m.rows.map((r) => r.split(''));
@@ -225,20 +259,22 @@ function onMessage(m) {
       G.keyCount = 0; G.foodShotCount = 0;
       G.overlay = { kind: 'level', title: `LEVEL ${m.index}`, sub: m.name, until: performance.now() + 2500 };
       log(`<span class="n">Level ${m.index}: ${esc(m.name)}</span> <span class="muted">${esc(m.description || '')}</span>`);
-      if (m.index > 1) say(`Let's see how you do in level ${m.index}`);
+      if (m.index > 1) say('level_n', `Let's see how you do in level ${m.index}`);
       sfx('level');
+      if ([10, 25, 50].includes(m.index)) playScene(`level_milestone_${m.index}`);
       break;
     case 'bonus':
       G.bonus = { total: m.seconds, startedAt: performance.now() };
       G.overlay = { kind: 'bonus', title: 'BONUS ROUND!', sub: 'Grab treasure — any exit will do', until: performance.now() + 2500 };
       log('<span class="n">Bonus treasure room! Grab everything before time runs out.</span>');
       sfx('level');
+      playScene('treasure_room');
       break;
     case 'wave':
       G.overlay = { kind: 'wave', title: `WAVE ${m.n} / ${m.total}`, sub: 'Survive!', until: performance.now() + m.seconds * 1000 };
       log(`<span class="n">Wave ${m.n} of ${m.total} incoming…</span>`);
-      say(`Wave ${m.n}`);
-      sfx('level');
+      say('wave_n', `Wave ${m.n}`);
+      sfx('wave');
       break;
     case 'exitopen':
       G.sealed = false;
@@ -252,7 +288,8 @@ function onMessage(m) {
       const title = m.reason === 'cap' ? 'LEVEL CAP REACHED!' : 'PARTY WIPED';
       G.overlay = { kind: 'gameover', title, sub: `Level ${m.level} / cap ${capTxt}`, until: performance.now() + 6000 };
       log(`<span class="n">${title} — reached level ${m.level}. ${lines}</span>`);
-      sfx(m.reason === 'cap' ? 'clear' : 'death');
+      sfx(m.reason === 'cap' ? 'victory' : 'gameover');
+      playScene(m.reason === 'cap' ? 'victory' : 'game_over');
       setTimeout(() => {
         $('#game').classList.remove('on'); $('#roomscreen').classList.add('on'); $('#touch').classList.remove('on');
         if (G.room) renderRoomScreen(G.room);
@@ -277,7 +314,7 @@ function onMessage(m) {
       break;
     case 'levelclear':
       G.overlay = { kind: 'clear', title: 'LEVEL CLEARED', sub: `${m.by} found the exit in ${m.time}s`, until: performance.now() + 2500 };
-      if (!m.deaths && m.kills >= 30) say("I've not seen such bravery");
+      if (!m.deaths && m.kills >= 30) say('bravery', "I've not seen such bravery");
       sfx('clear'); break;
     case 'chests':
       G.intermission = {
@@ -289,7 +326,7 @@ function onMessage(m) {
     case 'chestpick': {
       if (!G.intermission) break;
       G.intermission.picks.set(m.pid, m.chest);
-      if (m.pid === G.pid) { G.intermission.myPick = m.chest; sfx(m.chest.cursed ? 'bad' : 'coin'); }
+      if (m.pid === G.pid) { G.intermission.myPick = m.chest; sfx(m.chest.cursed ? 'bad' : 'chest'); }
       const nm = G.players.get(m.pid)?.name || 'Someone';
       log(`<span class="n">${esc(nm)} opened ${esc(m.chest.icon)} ${esc(m.chest.label)}</span>`);
       break;
@@ -310,32 +347,39 @@ function onEvent(e) {
   const cls = G.players.get(e.pid)?.cls;
   switch (e.type) {
     case 'tile': if (G.grid) G.grid[e.y][e.x] = e.c; if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); break;
-    case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx('kill'); break;
+    case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
     case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
     case 'pickup':
       if (mine) {
         sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : (e.item === 'F' || e.item === 'C') ? 'eat' : 'pick');
-        if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('Save keys for later levels'); }
+        if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('save_keys', 'Save keys for later levels'); }
       }
       break;
-    case 'food': if (mine && e.lowHealth) say(`${CLASSES[cls]?.name} was about to die… saved by food`); break;
-    case 'poison': log(`<span class="n">${esc(name)} ate poisoned food!</span>`); if (mine) { sfx('bad'); say('That was poisoned!'); } break;
+    case 'food': if (mine && e.lowHealth) say('saved_by_food', `${CLASSES[cls]?.name} was about to die… saved by food`); break;
+    case 'poison': log(`<span class="n">${esc(name)} ate poisoned food!</span>`); if (mine) { sfx('poison'); say('poisoned', 'That was poisoned!'); } break;
     case 'steal': log(`<span class="n">A thief stole ${e.item === 'potion' ? 'a potion' : 'a key'} from ${esc(name)}!</span>`); if (mine) sfx('bad'); break;
-    case 'teleport': if (mine) sfx('magic'); break;
+    case 'teleport': if (mine) sfx('teleport'); break;
     case 'lob_land': G.fx.push({ kind: 'boom', x: e.x, y: e.y, t: 0 }); if (Math.random() < 0.7) sfx('boom'); break;
     case 'food_shot':
       log(`<span class="n">${esc(name)} shot the food!</span>`);
-      if (mine) { G.foodShotCount++; sfx('bad'); say(G.foodShotCount === 2 ? "Remember, don't shoot food" : "Don't shoot the food!"); }
+      if (mine) {
+        G.foodShotCount++; sfx('bad');
+        say(G.foodShotCount === 2 ? 'dont_shoot_food_again' : 'dont_shoot_food', G.foodShotCount === 2 ? "Remember, don't shoot food" : "Don't shoot the food!");
+      }
       break;
     case 'door': sfx('door'); break;
     case 'secret': log(`<span class="n">${esc(name)} found a secret wall</span>`); sfx('door'); break;
-    case 'potion': G.fx.push({ kind: 'magic', x: e.x, y: e.y, r: e.radius, t: 0 }); sfx('magic'); G.shake = 0.4; break;
-    case 'death': log(`<span class="n">${esc(name)} the ${cls} has died</span>`); if (mine) { sfx('death'); say(`${CLASSES[cls]?.name} has died. Insert coin to continue.`); } break;
+    case 'potion': G.fx.push({ kind: 'magic', x: e.x, y: e.y, r: e.radius, t: 0 }); sfx('potion'); G.shake = 0.4; break;
+    case 'death': log(`<span class="n">${esc(name)} the ${cls} has died</span>`); if (mine) { sfx('death'); say('died', `${CLASSES[cls]?.name} has died. Insert coin to continue.`); } break;
     case 'coin': if (mine) sfx('coin'); break;
     case 'exit': break;
     case 'sound':
       if (!mine && Math.random() < 0.7) break;
-      if (e.name.startsWith('shoot_')) sfx('shoot'); else if (e.name === 'hit') sfx('hit'); else if (e.name === 'fireball') sfx('fireball'); else if (e.name === 'spawn') sfx('spawn'); else if (e.name === 'ghost_hit') sfx('hit');
+      if (e.name.startsWith('shoot_')) sfx(e.name);
+      else if (e.name === 'hit') sfx(e.mtype ? 'hit_' + e.mtype : 'hit');
+      else if (e.name === 'fireball') sfx('fireball');
+      else if (e.name === 'spawn') sfx('spawn');
+      else if (e.name === 'ghost_hit') sfx('hit_ghost');
       break;
   }
 }
@@ -460,7 +504,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.key === 't' || e.key === 'T') { e.preventDefault(); chat.focus(); return; }
-  if (e.key === 'm' || e.key === 'M') { G.muted = !G.muted; localStorage.setItem('gc_mute', G.muted ? '1' : '0'); toast(G.muted ? 'Sound off' : 'Sound on'); return; }
+  if (e.key === 'm' || e.key === 'M') { G.muted = !G.muted; setMuted(G.muted); toast(G.muted ? 'Sound off' : 'Sound on'); return; }
   if (e.key === 'n' || e.key === 'N') { G.narrate = !G.narrate; localStorage.setItem('gc_narrate', G.narrate ? '1' : '0'); toast(G.narrate ? 'Narrator on' : 'Narrator off'); return; }
   if (e.key === 'q' || e.key === 'Q' || e.key === 'Shift') { sendInput({ potion: true }); e.preventDefault(); return; }
   if (e.key === 'Enter') { sendInput({ respawn: true }); return; }
@@ -601,9 +645,8 @@ function frame(now) {
     ctx.restore();
   }
   // monsters
-  const MNAME = { g: 'ghost', r: 'grunt', d: 'demon', e: 'death', l: 'lobber', s: 'sorcerer', t: 'thief' };
   for (const m of snap.m) {
-    const name = MNAME[m[1]] || 'ghost';
+    const name = SNAP_KEY_TO_MONSTER[m[1]] || 'ghost';
     const bob = name === 'ghost' ? Math.sin(now / 150 + m[0]) * 2 : (Math.floor(now / 200 + m[0]) % 2) * 1;
     const invisible = m[5] === 1;
     if (invisible) ctx.globalAlpha = 0.2;
@@ -653,9 +696,9 @@ function frame(now) {
     if (Math.floor(now / 500) % 2) { ctx.fillStyle = '#f2c400'; ctx.font = '14px monospace'; ctx.fillText('INSERT COIN — press ENTER to continue', VIEW_W / 2, VIEW_H - 24); }
   } else if (mine && !mine[8]) {
     const heroName = CLASSES[G.players.get(G.pid)?.cls]?.name || 'Hero';
-    if (mine[4] < 100 && now - G.lastDying > 8000) { G.lastDying = now; say(`${heroName} is about to die`); }
-    else if (mine[4] < LOW_HEALTH && now - G.lastFood > 12000) { G.lastFood = now; say(`${heroName} needs food badly`); }
-    else if (mine[4] < 300 && mine[6] > 0 && now - G.lastMagicNag > 15000) { G.lastMagicNag = now; say(`${heroName}, use magic!`); }
+    if (mine[4] < 100 && now - G.lastDying > 8000) { G.lastDying = now; say('about_to_die', `${heroName} is about to die`); }
+    else if (mine[4] < LOW_HEALTH && now - G.lastFood > 12000) { G.lastFood = now; say('needs_food', `${heroName} needs food badly`); }
+    else if (mine[4] < 300 && mine[6] > 0 && now - G.lastMagicNag > 15000) { G.lastMagicNag = now; say('use_magic', `${heroName}, use magic!`); }
   }
   if (G.bonus) {
     const remain = Math.max(0, G.bonus.total * 1000 - (now - G.bonus.startedAt));
@@ -785,52 +828,14 @@ function updateHudValues(s) {
 }
 
 // ---------------- audio ----------------
-let AC = null;
-function ac() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } } if (AC.state === 'suspended') AC.resume(); return AC; }
-window.addEventListener('pointerdown', () => ac(), { once: true }); window.addEventListener('keydown', () => ac(), { once: true });
-function tone(freq, dur, type = 'square', vol = 0.08, slide = 0) {
-  const a = ac(); if (!a || G.muted) return;
-  const o = a.createOscillator(); const g = a.createGain();
-  o.type = type; o.frequency.setValueAtTime(freq, a.currentTime);
-  if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), a.currentTime + dur);
-  g.gain.setValueAtTime(vol, a.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
-  o.connect(g).connect(a.destination); o.start(); o.stop(a.currentTime + dur);
-}
-function noise(dur, vol = 0.08) {
-  const a = ac(); if (!a || G.muted) return;
-  const buf = a.createBuffer(1, a.sampleRate * dur, a.sampleRate); const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
-  const s = a.createBufferSource(); s.buffer = buf; const g = a.createGain(); g.gain.value = vol; s.connect(g).connect(a.destination); s.start();
-}
-const sfxLast = {};
-function sfx(name) {
-  const now = performance.now(); if (sfxLast[name] && now - sfxLast[name] < 40) return; sfxLast[name] = now;
-  switch (name) {
-    case 'shoot': tone(880, 0.06, 'square', 0.04, -400); break;
-    case 'hit': noise(0.05, 0.05); break;
-    case 'kill': tone(220, 0.12, 'sawtooth', 0.06, -150); noise(0.08, 0.04); break;
-    case 'boom': noise(0.35, 0.12); tone(80, 0.3, 'sawtooth', 0.1, -60); break;
-    case 'coin': tone(988, 0.08, 'square', 0.06); setTimeout(() => tone(1319, 0.15, 'square', 0.06), 80); break;
-    case 'key': tone(1319, 0.06, 'square', 0.05); setTimeout(() => tone(1760, 0.1, 'square', 0.05), 60); break;
-    case 'eat': tone(330, 0.08, 'triangle', 0.08); setTimeout(() => tone(440, 0.1, 'triangle', 0.08), 80); break;
-    case 'pick': tone(660, 0.1, 'triangle', 0.06); break;
-    case 'door': tone(160, 0.25, 'sawtooth', 0.06, 60); break;
-    case 'magic': tone(200, 0.6, 'sine', 0.1, 1400); noise(0.3, 0.05); break;
-    case 'death': tone(440, 0.8, 'sawtooth', 0.1, -400); break;
-    case 'bad': tone(200, 0.3, 'square', 0.06, -100); break;
-    case 'fireball': tone(300, 0.15, 'sawtooth', 0.04, -200); break;
-    case 'spawn': tone(120, 0.1, 'square', 0.03, 80); break;
-    case 'level': [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => tone(f, 0.18, 'square', 0.06), i * 110)); break;
-    case 'clear': [784, 659, 784, 1047, 1319].forEach((f, i) => setTimeout(() => tone(f, 0.2, 'square', 0.07), i * 120)); break;
-    case 'ach': [1047, 1319, 1568].forEach((f, i) => setTimeout(() => tone(f, 0.25, 'triangle', 0.08), i * 90)); break;
-  }
-}
-let lastSay = 0;
-function say(text) {
-  if (!G.narrate || !('speechSynthesis' in window)) return;
-  const now = performance.now(); if (now - lastSay < 2500) return; lastSay = now;
-  const u = new SpeechSynthesisUtterance(text); u.rate = 0.9; u.pitch = 0.6; u.volume = 0.9;
-  speechSynthesis.speak(u);
+// SFX synthesis lives in client/audio.js (#20); the narrator voice pipeline (pre-rendered clip
+// or speechSynthesis fallback) lives in client/voice.js (#19). This wrapper just gates on the
+// narrator on/off preference, same as the old inline say() used to.
+initAudio();
+setMuted(G.muted);
+function say(id, text) {
+  if (!G.narrate) return;
+  voiceSay(id, text);
 }
 
 // deep link: /?room=ID — but if this tab already holds a resume token for a room (e.g. the page

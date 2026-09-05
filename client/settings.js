@@ -20,11 +20,16 @@ async function main() {
   $('#uname').textContent = m.user.username;
 
   const prefs = await api('/api/me/prefs').then((r) => r.prefs || {}).catch(() => ({}));
-  const volume = Number.isFinite(prefs.soundVolume) ? prefs.soundVolume : 100;
-  $('#p-volume').value = volume;
-  $('#p-volume-val').textContent = `${volume}%`;
-  $('#p-volume').oninput = () => { $('#p-volume-val').textContent = `${$('#p-volume').value}%`; };
+  const initRange = (id, valId, prefKey) => {
+    const v = Number.isFinite(prefs[prefKey]) ? prefs[prefKey] : 100;
+    $(id).value = v; $(valId).textContent = `${v}%`;
+    $(id).oninput = () => { $(valId).textContent = `${$(id).value}%`; };
+  };
+  initRange('#p-volume', '#p-volume-val', 'soundVolume');
+  initRange('#p-sfx-volume', '#p-sfx-volume-val', 'sfxVolume');
+  initRange('#p-voice-volume', '#p-voice-volume-val', 'voiceVolume');
   $('#p-narrator').checked = prefs.narrator !== false;
+  $('#p-cutscenes').checked = prefs.cutscenes !== false;
   $('#p-colorblind').checked = !!prefs.colorBlindPalette;
   $('#p-reduced-motion').checked = !!prefs.reducedMotion;
   const keys = { ...DEFAULT_KEYS, ...(prefs.keyBindings || {}) };
@@ -35,13 +40,26 @@ async function main() {
     for (const k of Object.keys(DEFAULT_KEYS)) keyBindings[k] = ($(`#k-${k}`).value || DEFAULT_KEYS[k]).trim().slice(0, 12) || DEFAULT_KEYS[k];
     const body = {
       soundVolume: Number($('#p-volume').value),
+      sfxVolume: Number($('#p-sfx-volume').value),
+      voiceVolume: Number($('#p-voice-volume').value),
       narrator: $('#p-narrator').checked,
+      cutscenes: $('#p-cutscenes').checked,
       colorBlindPalette: $('#p-colorblind').checked,
       reducedMotion: $('#p-reduced-motion').checked,
       keyBindings,
     };
     try {
       await api('/api/me/prefs', { method: 'PUT', body });
+      // Apply immediately in this tab, same keys client/audio.js, client/voice.js and
+      // client/game.js read directly — no reload needed to feel the change.
+      try {
+        localStorage.setItem('gc_mute', body.soundVolume <= 0 ? '1' : '0');
+        localStorage.setItem('gc_vol_master', String(body.soundVolume));
+        localStorage.setItem('gc_vol_sfx', String(body.sfxVolume));
+        localStorage.setItem('gc_vol_voice', String(body.voiceVolume));
+        localStorage.setItem('gc_narrate', body.narrator ? '1' : '0');
+        localStorage.setItem('gc_cutscenes', body.cutscenes ? '1' : '0');
+      } catch {}
       $('#prefs-msg').textContent = 'Saved.'; $('#prefs-msg').style.color = 'var(--green)';
       setTimeout(() => { $('#prefs-msg').textContent = ''; }, 3000);
     } catch (e) { $('#prefs-msg').textContent = e.message; $('#prefs-msg').style.color = 'var(--red)'; }

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Sim } from '../server/game/sim.js';
-import { CLASSES, START_HEALTH, DT } from '../shared/constants.js';
+import { CLASSES, MONSTERS, SNAP_KEY_TO_MONSTER, START_HEALTH, DT } from '../shared/constants.js';
 
 const ARENA = {
   name: 'arena',
@@ -312,4 +312,29 @@ test('snapshot is compact and level packet round-trips', () => {
   assert.equal(s.t, 's'); assert.equal(s.p.length, 1); assert.equal(s.p[0].length, 9);
   const lp = sim.levelPacket();
   assert.equal(lp.rows.length, 16); assert.equal(lp.rows[0].length, 16);
+});
+
+test('every monster type has a unique snapKey, and snapshot() maps each back to its real type', () => {
+  const types = Object.keys(MONSTERS);
+  const keys = types.map((t) => MONSTERS[t].snapKey);
+  for (const k of keys) assert.equal(typeof k, 'string');
+  for (const k of keys) assert.equal(k.length, 1, `snapKey "${k}" must be a single character`);
+  assert.equal(new Set(keys).size, keys.length, `snapKeys must be unique: ${keys.join(',')}`);
+  // ghost/grunt (both start with "g") and demon/death (both start with "d") are exactly the
+  // collision this test guards against — see shared/constants.js's MONSTERS comment.
+  assert.notEqual(MONSTERS.ghost.snapKey, MONSTERS.grunt.snapKey);
+  assert.notEqual(MONSTERS.demon.snapKey, MONSTERS.death.snapKey);
+
+  const sim = new Sim(ARENA);
+  let x = 2.5;
+  for (const type of types) { sim.spawnMonster(type, x, 2.5); x += 1; }
+  const snap = sim.snapshot();
+  assert.equal(snap.m.length, types.length);
+  for (const row of snap.m) {
+    const [, snapKey] = row;
+    const resolved = SNAP_KEY_TO_MONSTER[snapKey];
+    assert.ok(resolved, `snapKey "${snapKey}" should resolve back to a monster type`);
+    const m = sim.monsters.get(row[0]);
+    assert.equal(resolved, m.type, `snapshot key for a ${m.type} must map back to "${m.type}", got "${resolved}"`);
+  }
 });

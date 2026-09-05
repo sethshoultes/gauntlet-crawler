@@ -54,6 +54,11 @@ Optional environment variables:
 - Move with `WASD` or arrows. Hold `Space` to fire; while firing you stand still and the stick turns you, just like the arcade.
 - `Q` or `Shift` uses a magic potion (clears monsters around you; kills Death). `Enter` inserts a coin after you die.
 - `T` chats, `M` toggles sound, `N` toggles the narrator. Touch controls appear on phones.
+- A short pixel-art cutscene plays the first time you see the lobby, the first time you pick each
+  hero, and at a few other story beats (Death mode start, a treasure room, game over/victory,
+  depth milestones) — any key skips it, and it can be turned off entirely from Settings. The
+  **Arcade** nav link (`/attract.html`) loops an idle attract-mode title screen, hero roster and
+  high-score table when nobody's playing.
 - Your health drains one point per second. Eat food (+100). Shoot generators before they flood the room. Keys open doors
   (all connected door tiles open together). Secret walls crumble when touched. Step on the exit to move the whole party to the next level.
 - Level 1 is hand-built. Every level after that is procedurally generated from the room seed, getting bigger and nastier forever.
@@ -66,6 +71,11 @@ Optional environment variables:
 ## Features
 
 - **Authoritative server simulation** at 20 Hz over WebSockets; clients send input, receive compact snapshots and interpolate.
+  Each monster type carries its own single-character `snapKey` (`shared/constants.js`) so the wire format never collides
+  two types starting with the same letter (ghost/grunt both "g", demon/death both "d" — a bug that used to make grunts
+  draw as ghosts and Death draw as a demon); `SNAP_KEY_TO_MONSTER` maps it back to a real type on the client.
+- **Pixel-art cutscenes, a synthesized sound engine, and a narrator voice pipeline** — see the Cutscenes/Sound/Narrator
+  voice sections below — plus an **Arcade** attract-mode nav link and a synced sound/cutscenes mixer in Settings.
 - **Rooms** of up to four players, public room list, quick play, deep links (`/?room=ID`), in-game chat.
 - **Pre-game room screen**: ready-up, host-only start (gated on all-ready, or auto-start on a 5s countdown), host settings
   (campaign vs. a published custom level, private/public), hero switching before start, and host-only kick. A kick sticks
@@ -151,13 +161,16 @@ Optional environment variables:
 
 `/settings.html` (linked from the nav once you're logged in): change your password (rotates every
 other session's token so a stolen token elsewhere stops working, while keeping you signed in),
-adjust preferences — sound volume, narrator on/off, colour-blind palette, reduced motion, and key
-bindings — saved server-side to a `prefs` table and synced to any device you log into, download a
-JSON export of everything the server knows about your account, or permanently delete your account
-(password-confirmed; cascades to your sessions, stats, achievements, run history and levels,
-unpublishing anything you'd shared). Sound/narrator preferences are merged into the same
-`localStorage` keys the game already reads (`gc_mute`, `gc_narrate`) the moment you log in, so the
-game picks them up with no changes to `client/game.js`.
+adjust preferences — a **master/SFX/narrator-voice volume mixer**, narrator on/off, **cutscenes
+on/off**, colour-blind palette, reduced motion, and key bindings — saved server-side to a `prefs`
+table and synced to any device you log into, download a JSON export of everything the server
+knows about your account, or permanently delete your account (password-confirmed; cascades to
+your sessions, stats, achievements, run history and levels, unpublishing anything you'd shared).
+Every preference is merged into the same `localStorage` keys the game already reads directly
+(`gc_mute`, `gc_narrate`, `gc_cutscenes`, `gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`) the moment
+you log in or save, so `client/game.js`, `client/audio.js` and `client/voice.js` pick them up live
+with no page reload — and guests get the same mixer/cutscenes-toggle behavior from those same
+`localStorage` keys, just without server-side sync across devices.
 
 ## Admin dashboard
 
@@ -409,14 +422,28 @@ no external images, no web fonts. Everything renders straight into a `<canvas>` 
   playable archetype (warrior, valkyrie, wizard, elf, paladin, ranger, necromancer),
   `death_mode`, `treasure_room`, `game_over`, `victory`, and `level_milestone_10` /
   `_25` / `_50`.
-- `client/attract.html` (served at `/attract.html`) + `client/attract.js` — a full-screen arcade
-  attract mode: a pulsing title card ("PRESS ANY KEY"), the `intro` cutscene, a hero roster with
-  live stats, and a top-10 high-score table pulled from `GET /api/leaderboard`, looping forever.
-  Any key, click or tap jumps to `/`. Append `?demo=1` to also cycle in a hidden "live dungeon
-  preview" phase that fetches a fresh level from `POST /api/levels/procgen` and animates
-  ghosts/grunts/a demon wandering it — pure client-side, no server-side monster simulation.
+- `client/attract.html` (served at `/attract.html`, linked from the nav as **Arcade**) +
+  `client/attract.js` — a full-screen arcade attract mode: a pulsing title card ("PRESS ANY KEY"),
+  the `intro` cutscene, a hero roster with live stats, and a top-10 high-score table pulled from
+  `GET /api/leaderboard`, looping forever. Any key, click or tap jumps to `/`. Append `?demo=1` to
+  also cycle in a hidden "live dungeon preview" phase that fetches a fresh level from
+  `POST /api/levels/procgen` and animates ghosts/grunts/a demon wandering it — pure client-side,
+  no server-side monster simulation.
 - `client/cutscenes-demo.html` (served at `/cutscenes-demo.html`) — a dev page listing every
   registered scene in a dropdown with Play/Skip/loop controls, for reviewing new scenes quickly.
+
+**Where scenes actually fire in `client/game.js`** (issue #23): `intro` plays once per browser
+session over a small canvas at the top of the lobby (`#intro-cutscene` in `client/index.html`,
+hidden again once it finishes or is skipped); `hero_<classId>` plays the first time that session
+picks that hero in the picker; `death_mode` plays over the in-game canvas (`#scene-cutscene`,
+absolutely positioned on top of `#cv`) the moment a Death-mode room's `start` message arrives;
+`treasure_room` plays on the `bonus` message; `game_over` / `victory` play on `gameover` (reason
+`wipe` vs `cap`); and `level_milestone_10`/`_25`/`_50` fire as short stingers on the matching
+`level` packet index. Every trigger is gated on `hasSeen`/`markSeen` where it's meant to run once,
+and on a **Cutscenes** on/off toggle in Settings (`gc_cutscenes` in `localStorage`, default on —
+see the Settings section above); `playCutscene` itself always honors
+`prefers-reduced-motion` and is skippable on any key, click or tap, and never blocks or delays the
+server-authoritative game underneath it.
 
 **How to trigger a scene from game code**
 
@@ -424,8 +451,8 @@ no external images, no web fonts. Everything renders straight into a `<canvas>` 
 import { playCutscene, hasSeen, markSeen } from './cutscenes.js';
 
 const handle = playCutscene(canvasEl, 'death_mode', {
-  sfx,                 // reuse the game's own sfx(name) — optional, defaults to a no-op
-  say,                 // reuse the game's own say(text) TTS narrator — optional
+  sfx,                          // reuse the game's own sfx(name) from client/audio.js — optional
+  say: (text) => say('cutscene', text), // wrap the game's own say(id, text) narrator — optional
   allowSkip: true,      // any keydown/click/pointerdown on the canvas skips to the end
   onSkip:  () => {},    // called if the player skipped
   onDone:  ({ id, skipped }) => {},  // called exactly once, skipped or not
@@ -472,3 +499,64 @@ scene's captions are sorted and in-bounds.
 **Everything is skippable.** Every cutscene call defaults to `allowSkip: true`; the attract mode
 treats *any* input as "go play the game" rather than gating on a specific key. Nothing here ever
 blocks a player who just wants to get into the dungeon.
+
+## Sound (issue #20)
+
+Every sound effect is synthesized at runtime with the Web Audio API — no audio assets ship with
+the game. `client/audio.js` is the whole engine: `initAudio()` arms the context to resume on the
+first click/keypress (autoplay policy), `sfx(name)` plays one named effect, `setVolumes({master,
+sfx, voice})` updates the mixer live, and `setMuted(bool)` backs the `M` key. Square/triangle/noise
+oscillators feed a small **bit-crusher** (a quantizing `WaveShaperNode`, no `ScriptProcessor`/
+`AudioWorklet` needed) on the shared SFX bus for a grittier, lower-fidelity 1985-arcade character.
+
+The catalogue covers a shot per weapon (axe whirr, sword slash, fireball whoosh, arrow twang,
+hammer thud, dagger tick, skull wail), a hit/death pair per monster (ghost pop, grunt grunt, demon
+roar, death moan, lobber plop, sorcerer blink, thief snicker), and one-shot cues for generator
+crumble, doors, keys, food/cider, poison (a sour, wavering tone), potions, teleports, chest opens,
+the wave banner, level fanfare, victory/game-over stingers, rank-ups and achievements.
+
+The **master / SFX / narrator-voice** mixer lives in Settings (see above) and persists to
+`localStorage` (`gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`, `gc_mute`) so it works for guests
+too, mirrored to a logged-in account's saved `prefs` the same way sound/narrator preferences
+already were.
+
+## Narrator voice (issue #19)
+
+`client/voice.js` exports `say(lineId, text)`. It first tries a pre-rendered clip at
+`/audio/voice/<lineId>.ogg` — checking `client/audio/voice/manifest.json` for which ids actually
+have one — and falls back to `speechSynthesis` (the same low, slow, robotic settings the narrator
+always used) when there's no clip yet. `client/game.js` calls `say(id, text)` with a stable id for
+every narrator line (`welcome`, `needs_food`, `about_to_die`, `saved_by_food`, `poisoned`,
+`dont_shoot_food`, `dont_shoot_food_again`, `save_keys`, `use_magic`, `bravery`, `level_n`,
+`wave_n`, `died`, plus `cutscene` for cutscene captions) instead of hard-coding the line's text —
+`text` is still passed through as the speechSynthesis fallback and as the source for generating a
+clip, but a pre-rendered clip is looked up by id alone. Every line runs through the narrator-voice
+mixer volume from Settings.
+
+`client/voice-lines.json` is the source of truth mapping every id to its line's text, and
+`client/audio/voice/manifest.json` (ships empty) lists which ids currently have a rendered clip.
+`test/voice.test.js` greps `client/game.js` for every `say(id, ...)` call and fails if an id is
+missing from `voice-lines.json`.
+
+To generate real clips, run `tools/generate-voice.mjs`:
+
+```bash
+# no key set: prints setup instructions and exits 0 (the game already works via speechSynthesis)
+node tools/generate-voice.mjs
+
+# with an ElevenLabs account:
+ELEVENLABS_API_KEY=sk-...            \
+ELEVENLABS_VOICE_ID=voice_id_here    \  # optional — defaults to a documented placeholder voice
+node tools/generate-voice.mjs [id ...]  # omit ids to (re)generate every line
+```
+
+It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
+additionally down-samples each clip to 8kHz mono Ogg/Vorbis (a cheap-DAC "bit-crush" pass that
+matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing the
+manifest.
+
+> **Known gap**: `server/index.js`'s static-file `Content-Type` table doesn't list an `.ogg`
+> extension yet (it falls back to `application/octet-stream`), which most browsers still play
+> fine from an `<audio>` element via file-signature sniffing but isn't guaranteed everywhere. If
+> you generate real clips, add `'.ogg': 'audio/ogg'` (and `'.mp3': 'audio/mpeg'`, if you skip the
+> `ffmpeg` pass) to that server's `MIME` map.

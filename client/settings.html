@@ -39,10 +39,19 @@
       <h2>Preferences</h2>
       <p class="muted" style="font-size:12px;margin:0 0 12px">Saved to your account and applied automatically whenever you play, on any device.</p>
       <div class="field">
-        <label>Sound volume</label>
+        <label>Master volume</label>
         <div class="range-row"><input type="range" id="p-volume" min="0" max="100" step="5" /><span id="p-volume-val" class="muted"></span></div>
       </div>
+      <div class="field">
+        <label>Sound effects volume</label>
+        <div class="range-row"><input type="range" id="p-sfx-volume" min="0" max="100" step="5" /><span id="p-sfx-volume-val" class="muted"></span></div>
+      </div>
+      <div class="field">
+        <label>Narrator voice volume</label>
+        <div class="range-row"><input type="range" id="p-voice-volume" min="0" max="100" step="5" /><span id="p-voice-volume-val" class="muted"></span></div>
+      </div>
       <div class="switch-row"><input type="checkbox" id="p-narrator" /><label for="p-narrator" style="margin:0;text-transform:none;font-size:14px">Narrator ("Elf needs food badly")</label></div>
+      <div class="switch-row"><input type="checkbox" id="p-cutscenes" /><label for="p-cutscenes" style="margin:0;text-transform:none;font-size:14px">Cutscenes</label></div>
       <div class="switch-row"><input type="checkbox" id="p-colorblind" /><label for="p-colorblind" style="margin:0;text-transform:none;font-size:14px">Colour-blind palette</label></div>
       <div class="switch-row"><input type="checkbox" id="p-reduced-motion" /><label for="p-reduced-motion" style="margin:0;text-transform:none;font-size:14px">Reduced motion</label></div>
       <div class="field" style="margin-top:14px">

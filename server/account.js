@@ -56,7 +56,9 @@ export function getPrefs(userId) {
 }
 
 // Whitelisted so an arbitrary blob can't grow unbounded or smuggle unrelated data in.
-const PREF_KEYS = ['soundVolume', 'narrator', 'keyBindings', 'colorBlindPalette', 'reducedMotion'];
+// soundVolume doubles as the "master" bus for backward compatibility with existing saved prefs;
+// sfxVolume/voiceVolume are the other two mixer buses (see client/audio.js / client/voice.js).
+const PREF_KEYS = ['soundVolume', 'sfxVolume', 'voiceVolume', 'narrator', 'keyBindings', 'colorBlindPalette', 'reducedMotion', 'cutscenes'];
 
 export function setPrefs(userId, body) {
   const clean = {};

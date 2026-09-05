@@ -79,21 +79,29 @@ export const CLASSES = {
 };
 export const CLASS_IDS = Object.keys(CLASSES);
 
+// `snapKey` is the single unique character server/game/sim.js's snapshot() sends for this
+// monster type in the compact `m` array (see SNAP_KEY_TO_MONSTER below and client/game.js) —
+// kept explicit (rather than derived from the type name's first letter) because several monster
+// names share a first letter (ghost/grunt both 'g', demon/death both 'd') and a first-letter
+// scheme silently collides them on the wire.
 export const MONSTERS = {
-  ghost: { hp: 1, speed: 3.2, damage: 15, touchKills: true,  score: 10,  wakeRange: 13 },
-  grunt: { hp: 2, speed: 2.6, damage: 12, touchKills: false, score: 20,  wakeRange: 12, hitCooldown: 0.6 },
-  demon: { hp: 3, speed: 2.3, damage: 20, touchKills: false, score: 30,  wakeRange: 12, hitCooldown: 0.8, shoots: true, shotDamage: 15, range: 5.5, shotCooldown: 1.6 },
-  death: { hp: 9999, speed: 3.0, damage: 4, touchKills: false, score: 1000, wakeRange: 16, drainTotal: 200, immune: true },
+  ghost: { hp: 1, speed: 3.2, damage: 15, touchKills: true,  score: 10,  wakeRange: 13, snapKey: 'g' },
+  grunt: { hp: 2, speed: 2.6, damage: 12, touchKills: false, score: 20,  wakeRange: 12, hitCooldown: 0.6, snapKey: 'r' },
+  demon: { hp: 3, speed: 2.3, damage: 20, touchKills: false, score: 30,  wakeRange: 12, hitCooldown: 0.8, shoots: true, shotDamage: 15, range: 5.5, shotCooldown: 1.6, snapKey: 'd' },
+  death: { hp: 9999, speed: 3.0, damage: 4, touchKills: false, score: 1000, wakeRange: 16, drainTotal: 200, immune: true, snapKey: 'e' },
   // Lobber: keeps its distance (4-7 tiles) and lobs an arcing shot that flies over walls — see
   // Sim#stepLobber / stepShots's `arc` handling and client/game.js's growing/shrinking shot scale.
-  lobber: { hp: 2, speed: 2.0, damage: 0, touchKills: false, score: 50, wakeRange: 14, shotDamage: 15, shotCooldown: 2.0, minRange: 4, maxRange: 7 },
+  lobber: { hp: 2, speed: 2.0, damage: 0, touchKills: false, score: 50, wakeRange: 14, shotDamage: 15, shotCooldown: 2.0, minRange: 4, maxRange: 7, snapKey: 'l' },
   // Sorcerer: a grunt that blinks in and out of visibility (see Sim#stepSorcererBlink) — while
   // invisible it can't be hit by a shot or a potion, and the client draws it at 20% alpha.
-  sorcerer: { hp: 2, speed: 2.6, damage: 12, touchKills: false, score: 40, wakeRange: 12, hitCooldown: 0.6, blinkVisible: 1.5, blinkInvisible: 1.0 },
+  sorcerer: { hp: 2, speed: 2.6, damage: 12, touchKills: false, score: 40, wakeRange: 12, hitCooldown: 0.6, blinkVisible: 1.5, blinkInvisible: 1.0, snapKey: 's' },
   // Thief: hunts down whichever player carries a key or potion, steals it on contact, then flees
   // (see Sim#stepThief). Never spawns from a generator.
-  thief: { hp: 2, speed: 4.2, damage: 0, touchKills: false, score: 60, wakeRange: 16 },
+  thief: { hp: 2, speed: 4.2, damage: 0, touchKills: false, score: 60, wakeRange: 16, snapKey: 't' },
 };
+// Inverse of the above, keyed by snapKey — used by client/game.js to turn a snapshot monster
+// entry's single-char type back into a real monster type name for sprite lookup.
+export const SNAP_KEY_TO_MONSTER = Object.fromEntries(Object.entries(MONSTERS).map(([type, def]) => [def.snapKey, type]));
 
 export const GENERATOR_SPAWNS = { [T.GEN_GRUNT]: 'grunt', [T.GEN_GHOST]: 'ghost', [T.GEN_DEMON]: 'demon', [T.GEN_LOBBER]: 'lobber', [T.GEN_SORCERER]: 'sorcerer' };
 export const GENERATOR_SCORE = 100;

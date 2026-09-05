@@ -441,7 +441,7 @@ export class Sim {
         } else if (m.cd === 0) {
           m.cd = def.hitCooldown;
           this.hurtPlayer(target, def.damage, m.type);
-          this.onEvent({ type: 'sound', name: 'hit', x: m.x, y: m.y });
+          this.onEvent({ type: 'sound', name: 'hit', mtype: m.type, x: m.x, y: m.y });
         }
       }
       // ranged demons hang back
@@ -542,7 +542,7 @@ export class Sim {
             done = true;
             if (MONSTERS[m.type].immune) { this.onEvent({ type: 'sound', name: 'clank', x: m.x, y: m.y }); break; }
             m.hp -= s.dmg;
-            if (m.hp <= 0) this.killMonster(m, owner); else this.onEvent({ type: 'sound', name: 'hit', x: m.x, y: m.y });
+            if (m.hp <= 0) this.killMonster(m, owner); else this.onEvent({ type: 'sound', name: 'hit', mtype: m.type, x: m.x, y: m.y });
             break;
           }
         }
@@ -558,7 +558,7 @@ export class Sim {
       t: 's', tick: Math.round(this.time * 20), lt: Math.round(this.levelTime),
       p: [...this.players.values()].map((p) => [p.id, r2(p.x), r2(p.y), p.dir, Math.round(p.hp), p.keys, p.potions, p.score, p.dead ? 1 : 0]),
       // 6th element: 1 while a sorcerer is blinked invisible (client draws it at 20% alpha); omitted otherwise.
-      m: [...this.monsters.values()].map((m) => [m.id, m.type[0], r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined]),
+      m: [...this.monsters.values()].map((m) => [m.id, MONSTERS[m.type].snapKey, r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined]),
       g: [...this.generators.values()].map((g) => [g.x, g.y, g.hp]),
       // 6th element on an arc (lobber) shot: flight progress 0..1, for the client's growing/shrinking scale.
       b: [...this.shots.values()].map((s) => {
