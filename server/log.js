@@ -28,19 +28,25 @@ function safeReplacer() {
   };
 }
 
-function emit(level, msg, fields) {
-  let line;
+// Same guarded serialization emit() uses below, exposed for other modules that build their own
+// JSON responses from data that isn't guaranteed plain-JSON-safe (see server/admin.js `json()`,
+// which serializes DB rows rather than a fixed, known-safe shape).
+export function safeStringify(obj) {
   try {
-    line = JSON.stringify({ level, ts: new Date().toISOString(), msg, ...fields }, safeReplacer());
+    return JSON.stringify(obj, safeReplacer());
   } catch {
     // Serialization itself failed even with the replacer (e.g. a getter that throws) -- fall back
-    // to a minimal, always-serializable line so a bad `fields` blob can never take down logging.
+    // to a minimal, always-serializable line so a bad payload can never take down the caller.
     try {
-      line = JSON.stringify({ level, ts: new Date().toISOString(), msg: String(msg), fields: '<unserializable>' });
+      return JSON.stringify({ error: '<unserializable>' });
     } catch {
-      line = '{"level":"error","msg":"<log serialization failed>"}';
+      return '{"error":"<serialization failed>"}';
     }
   }
+}
+
+function emit(level, msg, fields) {
+  const line = safeStringify({ level, ts: new Date().toISOString(), msg, ...fields });
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);

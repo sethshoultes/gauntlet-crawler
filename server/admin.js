@@ -4,7 +4,7 @@
 // exposing anything new.
 import { db } from './db.js';
 import { rankForXp, rankTitle } from '../shared/progression.js';
-import { recentErrors } from './log.js';
+import { recentErrors, safeStringify } from './log.js';
 import { analytics } from './telemetry.js';
 
 let lobby = null;
@@ -24,8 +24,13 @@ export function isAdmin(user) {
   return user.id === 1;
 }
 
+// Uses log.js's safeStringify (guards circular refs / BigInt) instead of a bare JSON.stringify:
+// the caller (server/index.js's request handler) does catch a thrown error here and still
+// returns *some* response, but that would surface as an opaque error masking the actual admin
+// dashboard data the endpoint was asked for, over data (DB rows) this module doesn't fully
+// control the shape of.
 function json(res, status, body) {
-  const s = JSON.stringify(body);
+  const s = safeStringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(s) });
   res.end(s);
 }
