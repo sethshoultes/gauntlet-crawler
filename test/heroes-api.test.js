@@ -154,6 +154,16 @@ test('Hero Builder API: full lifecycle', async (t) => {
       assert.ok(r.data.error);
     });
 
+    await t.test('a non-integer stat notch (e.g. 1.4) is rejected with 400, not silently rounded', async () => {
+      const r = await api('/api/heroes', {
+        method: 'POST',
+        body: heroPayload({ id: aliceHeroId, stats: { ...VALID_STATS, speed: 1.4 } }),
+        token: alice,
+      });
+      assert.equal(r.status, 400, JSON.stringify(r.data));
+      assert.match(r.data.error, /whole number/i);
+    });
+
     await t.test('mine lists the created hero', async () => {
       const r = await api('/api/heroes/mine', { token: alice });
       assert.equal(r.status, 200);

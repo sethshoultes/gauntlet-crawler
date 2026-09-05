@@ -63,7 +63,7 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
     if (g[sy + dy]?.[sx + dx] === T.FLOOR) g[sy + dy][sx + dx] = T.START;
   }
   if (g[sy][sx] !== T.START) g[sy][sx] = T.START;
-  // Skip exit (#7): on deeper levels, a small chance the exit becomes a variant that jumps the
+  // Skip exit (see README's "Level format" section): on deeper levels, a small chance the exit becomes a variant that jumps the
   // party ahead 4 levels instead of 1 (see server/game/room.js onLevelComplete). exitRoom is
   // already the farthest-apart room from the start, satisfying "in a room far from the start".
   const skipExit = diff >= 3 && rng.chance(0.08);
@@ -100,7 +100,7 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   const ciderN = clamp((bias.cider ? rng.int(1, 2) : 0) + (rng.chance(0.25) ? 1 : 0), 0, 3);
   place(T.POISON_FOOD, poisonN);
   place(T.CIDER, ciderN);
-  // Transporter pair (#4): teleports the party between two spots. Two X tiles must be placed
+  // Transporter pair (README's "Features" section, "Transporters"): teleports the party between two spots. Two X tiles must be placed
   // together, or not at all.
   if (diff >= 2 && rng.chance(0.15 + diff * 0.005 + (bias.teleport ? 0.3 : 0)) && cells.length >= 2) {
     place(T.TRANSPORTER, 2);
@@ -175,7 +175,7 @@ export function biasFromPrompt(prompt = '') {
   };
 }
 
-/** Bonus level (#8): an open room full of treasure, no monsters, several exits. See
+/** Bonus level (README's "Features" section, "Bonus treasure rooms"): an open room full of treasure, no monsters, several exits. See
  *  server/game/room.js — after every 5th campaign level, levelFor() returns this instead of a
  *  regular generated level; Sim.loadLevel({treasureRoom:true}) starts a 30s auto-complete timer. */
 export function generateTreasureRoom({ seed, level = 1 } = {}) {

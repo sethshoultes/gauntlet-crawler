@@ -8,7 +8,7 @@ import {
 import { parseLevel } from '../../shared/level.js';
 
 const HALF = 0.38;            // entity half-size in tiles
-const PLAYER_SEPARATION = 0.7; // players block each other's movement within this distance (#9)
+const PLAYER_SEPARATION = 0.7; // players block each other's movement within this distance (README's "Features" section, "Players block each other")
 const TELEPORT_COOLDOWN = 1.0; // seconds before a player can use another transporter (avoid ping-pong)
 const THIEF_DESPAWN_DIST = 15; // tiles from every player before a fleeing thief vanishes with its loot
 const MONSTER_TYPE_BY_TILE = {
@@ -161,7 +161,7 @@ export class Sim {
     }
     return touched;
   }
-  /** Players are soft obstacles to each other (#9): a move that would put `e` within
+  /** Players are soft obstacles to each other (README's "Features" section, "Players block each other"): a move that would put `e` within
    *  PLAYER_SEPARATION tiles of another living player is cancelled on that axis. Shots still pass
    *  through teammates — this only applies to player movement (who === 'player'). */
   blockedByPlayer(e, nx, ny) {
@@ -228,7 +228,7 @@ export class Sim {
   killMonster(m, killer, viaPotion = false) {
     this.monsters.delete(m.id);
     const def = MONSTERS[m.type];
-    // A thief carrying stolen loot drops it where it died instead of keeping it (#3).
+    // A thief carrying stolen loot drops it where it died instead of keeping it (README's "Features" section, "New monster types").
     if (m.type === 'thief' && m.stolen) {
       const tx = Math.floor(m.x), ty = Math.floor(m.y);
       if (this.tile(tx, ty) === T.FLOOR) this.setTile(tx, ty, m.stolen === 'potion' ? T.POTION : T.KEY);
@@ -253,7 +253,7 @@ export class Sim {
       this.onEvent({ type: 'sound', name: 'hit', x: gen.x + 0.5, y: gen.y + 0.5 });
     }
   }
-  /** Nearest OTHER transporter tile from (x,y) — random among ties (#4). Null if fewer than 2 exist. */
+  /** Nearest OTHER transporter tile from (x,y) — random among ties (README's "Features" section, "Transporters"). Null if fewer than 2 exist. */
   otherTransporter(x, y) {
     const others = this.transporters.filter(([tx, ty]) => Math.hypot(tx - x, ty - y) > 0.5);
     if (!others.length) return null;
@@ -403,7 +403,7 @@ export class Sim {
       m.blinkTimer = m.visible ? def.blinkVisible : def.blinkInvisible;
     }
   }
-  /** Lobber AI (#1): holds 4-7 tiles from its target and lobs an arcing shot every ~2s that flies
+  /** Lobber AI (README's "Features" section, "New monster types"): holds 4-7 tiles from its target and lobs an arcing shot every ~2s that flies
    *  clean over walls, landing on the target's launch-time position (see stepShots's `arc` path). */
   stepLobber(m, def, dt) {
     const target = this.nearestPlayer(m.x, m.y, def.wakeRange);
@@ -424,7 +424,7 @@ export class Sim {
       this.onEvent({ type: 'sound', name: 'fireball', x: m.x, y: m.y });
     }
   }
-  /** Thief AI (#3): hunts the nearest player carrying a key or potion, steals one on contact, then
+  /** Thief AI (README's "Features" section, "New monster types"): hunts the nearest player carrying a key or potion, steals one on contact, then
    *  flees; despawns with the loot once 15+ tiles from every player. Killing it drops the item
    *  (see killMonster). Never touches/damages a player directly. */
   stepThief(m, def, dt) {
@@ -545,7 +545,8 @@ export class Sim {
     for (const s of [...this.shots.values()]) {
       if (s.arc) {
         // Lobber shots fly clean over walls/monsters: no collision at all in flight, they just
-        // count down to their landing time and damage anyone standing at the target spot (#1).
+        // count down to their landing time and damage anyone standing at the target spot (README's
+        // "Features" section, "New monster types").
         s.elapsed += dt;
         const t = Math.min(1, s.elapsed / s.flight);
         s.x = s.x0 + (s.tx - s.x0) * t; s.y = s.y0 + (s.ty - s.y0) * t;

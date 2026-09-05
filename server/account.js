@@ -33,8 +33,18 @@ export function changePassword(userId, currentToken, current, next) {
 }
 
 /** Delete the account and everything that points at it: sessions, stat counters, achievements,
- *  run history, owned levels (which also unpublishes them — a deleted row can't be listed) and
- *  saved preferences, then the user row itself. Requires the current password. */
+ *  run history, owned levels (which also unpublishes them — a deleted row can't be listed),
+ *  owned custom heroes (server/heroes.js) and saved preferences, then the user row itself.
+ *  Requires the current password.
+ *
+ *  `events` (server/telemetry.js) and `errors` (server/log.js) are NOT deleted, only
+ *  de-identified (user_id -> NULL): every other table here holds the user's own content or
+ *  1:1 account state, but these two are aggregate/operational logs — deleting rows out from
+ *  under them would quietly corrupt historical DAU/analytics counts and error-rate history for
+ *  days the account was active. Nulling user_id removes the link back to the deleted account
+ *  (nothing in either table is personally identifying beyond that: IPs are already hashed with a
+ *  salt, see server/telemetry.js hashIp) while leaving the aggregate counts intact, and both
+ *  tables already age out under their own retention policy (events: startRetentionJob, 90 days). */
 export function deleteAccount(userId, password) {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!row) throw httpError(404, 'User not found');
@@ -44,7 +54,10 @@ export function deleteAccount(userId, password) {
   db.prepare('DELETE FROM achievements WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM runs WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM levels WHERE owner_id = ?').run(userId);
+  db.prepare('DELETE FROM heroes WHERE owner_id = ?').run(userId);
   db.prepare('DELETE FROM prefs WHERE user_id = ?').run(userId);
+  db.prepare('UPDATE events SET user_id = NULL WHERE user_id = ?').run(userId);
+  db.prepare('UPDATE errors SET user_id = NULL WHERE user_id = ?').run(userId);
   db.prepare('DELETE FROM users WHERE id = ?').run(userId);
   return { ok: true };
 }

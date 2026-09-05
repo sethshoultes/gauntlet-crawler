@@ -23,7 +23,7 @@ const WAVE_BANNER_SECONDS = 3;   // "WAVE N" banner shown before a wave's monste
 const WAVE_TIMEOUT_MS = 40000;  // a wave advances automatically after this even if not fully cleared
 const WIPE_GRACE_MS = 10000;    // Death mode: end the run if everyone stays dead this long, uncontested
 const WAVE_SPAWN_MIN_DIST = 6;  // tiles a wave spawn must be from every player
-const TREASURE_ROOM_SECONDS = 30; // bonus level timer (#8) — auto-completes with no bonus at 0
+const TREASURE_ROOM_SECONDS = 30; // bonus level timer (README's "Features" section, "Bonus treasure rooms") — auto-completes with no bonus at 0
 
 export class Room {
   constructor({ id, name, seed, source = { type: 'campaign' }, isPublic = true, onEmpty }) {
@@ -51,8 +51,8 @@ export class Room {
     this.waveBannerTimer = null;  // "WAVE N" banner delay before monsters actually spawn
     this.waveTimer = null;        // forces the wave to advance after WAVE_TIMEOUT_MS
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
-    this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (#7)
-    this.treasureTimer = null;    // bonus-level 30s auto-complete timer (#8)
+    this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (see README's "Level format" section)
+    this.treasureTimer = null;    // bonus-level 30s auto-complete timer (README's "Features" section, "Bonus treasure rooms")
     this.sim = new Sim(this.levelFor(1), {
       levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign',
       rng: makeRng(`${seed}|sim`),
@@ -82,7 +82,7 @@ export class Room {
     return generateLevel({ seed: this.seed, level: n });
   }
 
-  /** Bonus level (#8): every 6th level (i.e. after every 5 regular levels) in any non-Death mode
+  /** Bonus level (README's "Features" section, "Bonus treasure rooms"): every 6th level (i.e. after every 5 regular levels) in any non-Death mode
    *  is a generated treasure room instead — see shared/procgen.js generateTreasureRoom(). */
   isTreasureLevel(n) { return this.source.type !== 'death' && n > 1 && n % 6 === 0; }
 
@@ -496,7 +496,7 @@ export class Room {
     this.changing = true;
     if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
     const wasTreasure = this.sim.treasureRoom;
-    const skipAmt = e.skip === 4 ? 4 : 1; // exit variant '8' jumps the party ahead 4 levels (#7)
+    const skipAmt = e.skip === 4 ? 4 : 1; // exit variant '8' jumps the party ahead 4 levels (see README's "Level format" section)
     this.pendingSkip = skipAmt;
     const n = this.clients.size;
     let totalKills = 0, anyDeaths = false;
@@ -643,8 +643,8 @@ export class Room {
     this.advanceLevel();
   }
 
-  /** Load the next level (honoring a pending skip-exit jump — #7) and, if it's a bonus treasure
-   *  room (#8), start its 30s timer. Shared by the normal post-intermission path and the
+  /** Load the next level (honoring a pending skip-exit jump — see README's "Level format" section) and, if it's a bonus treasure
+   *  room (README's "Features" section, "Bonus treasure rooms"), start its 30s timer. Shared by the normal post-intermission path and the
    *  no-intermission path a treasure room takes straight from onLevelComplete(). */
   advanceLevel() {
     this.levelIndex += this.pendingSkip || 1;

@@ -64,10 +64,12 @@ const galleryPage = db.prepare(`SELECT h.*, u.username AS author FROM heroes h J
 const galleryCount = db.prepare('SELECT COUNT(*) AS n FROM heroes WHERE published = 1');
 
 function normalizeBody(b) {
-  // Coerce stat notches to integers defensively before validateHero's stricter Number.isInteger
-  // check runs, so "5" (a string from a sloppy client) doesn't slip past as invalid-but-truthy.
+  // Coerce stat notches to Numbers (not integers) before validateHero's Number.isInteger check
+  // runs, so "5" (a string from a sloppy client) still reads as a plain number — but a non-integer
+  // like 1.4 is left non-integer so that check actually rejects it. Rounding here used to silently
+  // coerce 1.4 -> 1, which meant validateHero could never see (and reject) a non-integer notch.
   const stats = {};
-  for (const k of STATS) stats[k] = Math.round(Number(b?.stats?.[k]));
+  for (const k of STATS) stats[k] = Number(b?.stats?.[k]);
   return {
     id: b?.id || null,
     name: typeof b?.name === 'string' ? b.name.trim() : '',

@@ -74,8 +74,14 @@ export function analytics() {
     `SELECT date(ended_at, 'unixepoch') AS day, COUNT(*) AS n FROM runs WHERE ended_at >= ? GROUP BY day ORDER BY day`
   ).all(since30);
   const avgRunLength = db.prepare('SELECT AVG(seconds) AS avg FROM runs').get().avg || 0;
+  // `level_reached` is declared INTEGER, so SQLite's `/` already does integer division here (7/5
+  // -> 1, not 1.4) and this buckets levels into 0/5/10/... just fine as-is — verified with a
+  // throwaway node:sqlite check (`typeof(level_reached/5)` reports 'integer', not 'real'). The
+  // explicit CAST below doesn't change behavior; it's here so the query reads unambiguously
+  // correct without relying on the column's declared type, in case `runs` is ever read from
+  // elsewhere with looser typing (e.g. a REAL literal parameter).
   const depthHist = db.prepare(
-    `SELECT (level_reached / 5) * 5 AS bucket, COUNT(*) AS n FROM runs GROUP BY bucket ORDER BY bucket`
+    `SELECT CAST(level_reached / 5 AS INTEGER) * 5 AS bucket, COUNT(*) AS n FROM runs GROUP BY bucket ORDER BY bucket`
   ).all();
   const topLevels = db.prepare(
     `SELECT l.id, l.name, l.plays, u.username AS author FROM levels l JOIN users u ON u.id = l.owner_id

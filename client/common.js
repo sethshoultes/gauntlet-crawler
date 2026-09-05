@@ -43,7 +43,11 @@ export function track(kind, data) {
   try {
     const headers = { 'Content-Type': 'application/json' };
     const t = token(); if (t) headers['Authorization'] = 'Bearer ' + t;
-    fetch('/api/telemetry', { method: 'POST', headers, keepalive: true, body: JSON.stringify({ kind, data, guestId: telemetryGuestId() }) }).catch(() => {});
+    // Only attach the guest analytics id when there's no auth token — a logged-in user is already
+    // identified server-side by their bearer token (server/telemetry.js uses `user_id` from it),
+    // so tagging their events with guestId too would double-count them in guest metrics.
+    const body = { kind, data, ...(t ? {} : { guestId: telemetryGuestId() }) };
+    fetch('/api/telemetry', { method: 'POST', headers, keepalive: true, body: JSON.stringify(body) }).catch(() => {});
   } catch {}
 }
 

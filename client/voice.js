@@ -6,8 +6,14 @@
 // mixer volume (see client/audio.js's sibling master/SFX buses — voice deliberately has no
 // WebAudio graph of its own since both playback paths, HTMLAudio and speechSynthesis, use their
 // own native volume knobs).
+import { isMuted, onMuteChange } from './audio.js';
+
 const VOICE_VOL_KEY = 'gc_vol_voice';
 const MIN_GAP_MS = 2500; // narrator lines are rate-limited so they don't talk over each other
+
+// Cancel any in-flight clip/speechSynthesis the instant mute is turned on, rather than waiting
+// for whatever line is currently playing to finish.
+onMuteChange((muted) => { if (muted) stopSpeaking(); });
 
 function readVoiceVolume() {
   try {
@@ -56,6 +62,7 @@ let lastSay = 0;
  *  Rate-limited across all lines, same as the game's previous inline say(). Callers are expected
  *  to gate this on their own narrator-enabled preference (see client/game.js's G.narrate). */
 export function say(lineId, text) {
+  if (isMuted()) return; // honor the global mute flag (client/audio.js) for both playback paths
   const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
   if (now - lastSay < MIN_GAP_MS) return;
   lastSay = now;

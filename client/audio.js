@@ -57,9 +57,15 @@ export function initAudio() {
   window.addEventListener('keydown', resume, { once: true });
 }
 
+const muteListeners = new Set();
+/** Subscribe to mute toggles (used by client/voice.js to cancel in-flight narration the moment
+ *  mute is turned on, without the two modules importing each other). Returns an unsubscribe fn. */
+export function onMuteChange(fn) { muteListeners.add(fn); return () => muteListeners.delete(fn); }
+
 export function setMuted(v) {
   muted = !!v;
   try { localStorage.setItem('gc_mute', muted ? '1' : '0'); } catch {}
+  muteListeners.forEach((fn) => { try { fn(muted); } catch {} });
 }
 export function isMuted() { return muted; }
 

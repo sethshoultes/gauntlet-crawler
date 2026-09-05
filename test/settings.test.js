@@ -41,7 +41,9 @@ async function withServer(fn) {
   const baseUrl = `http://127.0.0.1:${port}`;
   const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
+    // GAUNTLET_DEBUG=1 exposes POST /api/heroes/debug/xp (server/heroes.js), which the account
+    // deletion cascade test below uses to unlock the Hero Builder without a real playthrough.
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, GAUNTLET_DEBUG: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let out = '';
@@ -111,9 +113,23 @@ test('preferences round-trip through GET/PUT /api/me/prefs', async () => {
   });
 });
 
-test('deleting an account cascades: sessions, published levels, and login all go away', async () => {
+test('deleting an account cascades: sessions, published levels, custom heroes, and login all go away', async () => {
   await withServer(async (baseUrl) => {
     const reg = await postJson(baseUrl, '/api/register', { username: 'doomed_user', password: 'hunter22' }).then((r) => r.json());
+
+    // Unlock the Hero Builder (rank >= 3) and create a custom hero so we can assert it's gone
+    // after account deletion (server/account.js deleteAccount -> DELETE FROM heroes).
+    await postJson(baseUrl, '/api/heroes/debug/xp', { amount: 700 }, authed(reg.token));
+    const hero = await fetch(`${baseUrl}/api/heroes`, {
+      method: 'POST', headers: { ...authed(reg.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Doomed Hero', title: '', motto: '',
+        stats: { speed: 2, shot: 2, fireRate: 2, armor: 2, magic: 2, health: 2 },
+        weapon: 'axe', trait: 'thick_skin', pixels: new Array(8).fill('.222222.'),
+      }),
+    }).then((r) => r.json());
+    assert.ok(hero.id, JSON.stringify(hero));
+
     const level = {
       name: 'Doomed Level', description: '',
       rows: [
@@ -137,6 +153,9 @@ test('deleting an account cascades: sessions, published levels, and login all go
     assert.equal((await postJson(baseUrl, '/api/login', { username: 'doomed_user', password: 'hunter22' })).status, 400);
     // The level they published is gone (deleted, not just unpublished).
     assert.equal((await fetch(`${baseUrl}/api/levels/${created.id}`)).status, 404);
+    // Their custom hero is gone too (it was private, so a guest 403'd on it before; now it's a
+    // plain 404 since the row no longer exists at all).
+    assert.equal((await fetch(`${baseUrl}/api/heroes/${hero.id}`)).status, 404);
     // Re-registering the same username works again (old row is really gone).
     assert.equal((await postJson(baseUrl, '/api/register', { username: 'doomed_user', password: 'newpass99' })).status, 200);
   });
