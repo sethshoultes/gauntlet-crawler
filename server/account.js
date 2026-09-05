@@ -86,8 +86,9 @@ const PREF_KEYS = ['soundVolume', 'sfxVolume', 'voiceVolume', 'narrator', 'keyBi
 
 // Per-field shape for each whitelisted key: volumes are finite numbers in 0..100 (percent), the boolean
 // toggles are strict booleans, and keyBindings is a small flat map of short strings (action name
-// -> key label). Anything that doesn't match its field's shape is dropped rather than stored, so
-// a malformed value can't silently corrupt a player's saved settings or bloat the row.
+// -> key label). Keys outside PREF_KEYS are dropped; a whitelisted key whose value fails its
+// validator rejects the whole request with HTTP 400 (nothing is written), so a malformed value
+// can't silently corrupt a player's saved settings or bloat the row.
 const PREF_MAX_JSON_BYTES = 8000;
 const KEY_BINDING_VALUE_MAX = 32;
 const KEY_BINDINGS_MAX_ENTRIES = 64;
