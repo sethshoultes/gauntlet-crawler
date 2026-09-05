@@ -20,6 +20,7 @@ import { STATS as HERO_STATS, PALETTE as HERO_PALETTE } from '/shared/hero-build
 import { initAudio, sfx, setMuted } from './audio.js';
 import { say as voiceSay } from './voice.js';
 import { playCutscene, hasSeen, markSeen, getScene } from './cutscenes.js';
+import * as Input from './input.js'; // touch d-pad, auto-fire and gamepad/local-multiplayer input (#15)
 const RESUME_KEY = 'gc_resume';
 const GUEST_KEY = 'gc_guest_id';
 // Durable guest identity (#7): minted by the server on our first join and echoed back in every
@@ -292,6 +293,7 @@ function leaveGame(reason) {
   G.reconnecting = false; G.reconnectAttempts = 0; G.inRoom = false;
   if (G.ws) { try { G.ws.close(); } catch {} }
   G.ws = null; G.level = null; G.cur = G.prev = null; G.players.clear(); G.overlay = null; G.room = null;
+  Input.resetLocalPlayers();
   clearResume();
   $('#game').classList.remove('on'); $('#roomscreen').classList.remove('on'); $('#session').classList.remove('on');
   $('#lobby').style.display = ''; $('#touch').classList.remove('on');
@@ -422,6 +424,7 @@ function onMessage(m) {
       break;
     case 'kicked': leaveGame(m.reason); break;
     case 'left': leaveGame(); break;
+    case 'welcome_local': Input.onWelcomeLocal(m); break; // ack for an extra local gamepad hero (#15)
   }
 }
 
@@ -619,27 +622,19 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 window.addEventListener('blur', () => keys.clear());
-const touchHeld = { up: false, down: false, left: false, right: false, fire: false };
-(function buildDpad() {
-  const pad = $('#dpad');
-  const cells = [['', ''], ['up', '▲'], ['', ''], ['left', '◀'], ['', ''], ['right', '▶'], ['', ''], ['down', '▼'], ['', '']];
-  for (const [act, label] of cells) {
-    const b = document.createElement('button'); b.textContent = label; if (!act) b.style.visibility = 'hidden';
-    const on = (v) => (ev) => { ev.preventDefault(); touchHeld[act] = v; };
-    b.addEventListener('touchstart', on(true)); b.addEventListener('touchend', on(false)); b.addEventListener('touchcancel', on(false));
-    pad.appendChild(b);
-  }
-  document.querySelectorAll('#touch [data-act]').forEach((b) => {
-    const act = b.dataset.act;
-    if (act === 'potion') b.addEventListener('touchstart', (ev) => { ev.preventDefault(); sendInput({ potion: true }); });
-    else { b.addEventListener('touchstart', (ev) => { ev.preventDefault(); touchHeld.fire = true; }); b.addEventListener('touchend', (ev) => { ev.preventDefault(); touchHeld.fire = false; }); }
-  });
-})();
+// Touch d-pad/auto-fire UI and Gamepad API handling (mobile layout + local multiplayer, #15) live
+// in client/input.js; it owns the #touch layout end-to-end (replacing the old inline touch dpad).
+Input.initInput({
+  getWs: () => G.ws, isInRoom: () => G.inRoom, log, say,
+  sendInput: (extra) => sendInput(extra),
+});
 function sendInput(extra = {}) {
   if (!G.ws || G.ws.readyState !== 1) return;
-  const dx = (keys.has('d') || keys.has('arrowright') || touchHeld.right ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') || touchHeld.left ? 1 : 0);
-  const dy = (keys.has('s') || keys.has('arrowdown') || touchHeld.down ? 1 : 0) - (keys.has('w') || keys.has('arrowup') || touchHeld.up ? 1 : 0);
-  const fire = keys.has(' ') || keys.has('control') || touchHeld.fire;
+  const ext = Input.getPrimaryState(); // touch + gamepad-0 + auto-fire, merged with the keyboard below
+  const kx = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
+  const ky = (keys.has('s') || keys.has('arrowdown') ? 1 : 0) - (keys.has('w') || keys.has('arrowup') ? 1 : 0);
+  const dx = kx || ext.dx, dy = ky || ext.dy;
+  const fire = keys.has(' ') || keys.has('control') || ext.fire;
   const msg = { t: 'input', dx, dy, fire, ...extra };
   const s = JSON.stringify(msg);
   if (s !== G.lastSent || extra.potion || extra.respawn) { G.ws.send(s); G.lastSent = JSON.stringify({ t: 'input', dx, dy, fire }); }
@@ -687,6 +682,7 @@ function lerpSnap(now) {
 let lastFrame = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
+  Input.poll(); // gamepad state, ~60 Hz (#15)
   const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   if (!G.level || !G.grid) return;

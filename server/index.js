@@ -13,7 +13,7 @@ import { Lobby } from './game/lobby.js';
 import { generateFromPrompt, aiAvailable, remixLevel, explainLevel } from './ai/levelgen.js';
 import { aiAvailable as aiNarratorAvailable } from './ai/narrator.js';
 import { validateLevel, parseLevel } from '../shared/level.js';
-import { CLASSES } from '../shared/constants.js';
+import { CLASSES, MAX_PLAYERS } from '../shared/constants.js';
 import { generateLevel } from '../shared/procgen.js';
 import { rankForXp } from '../shared/progression.js';
 import { unlockedFor, catalogueFor } from '../shared/unlocks.js';
@@ -327,6 +327,13 @@ wss.on('connection', (ws, req) => {
   let pid = crypto.randomBytes(4).toString('hex');
   let room = null;
   const ip = req.socket.remoteAddress || 'x';
+  // Local co-op (#15): extra gamepads on this same connection each get their own player bound to
+  // this socket via {t:'join_local', slot} rather than a second WebSocket — slot (1-3; slot 0 is
+  // this connection's own `pid`) -> the local pid Room#joinLocal assigned it.
+  const localPids = new Map();
+  /** Drop every local co-op player this connection minted (see 'join_local' below) from `room`
+   *  before it changes rooms, or the socket closes, so they don't linger as orphaned entities. */
+  const leaveLocals = () => { if (room) for (const lpid of localPids.values()) room.leave(lpid); localPids.clear(); };
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   const send = (m) => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };
@@ -335,7 +342,7 @@ wss.on('connection', (ws, req) => {
     try {
       switch (msg.t) {
         case 'join': {
-          if (room) { room.leave(pid); room = null; }
+          if (room) { leaveLocals(); room.leave(pid); room = null; }
           const user = auth.userFromToken(msg.token);
           // A Hero Builder custom hero (`custom:<id>`) isn't a CLASSES entry — Room#pickHero does
           // the real ownership/rank check and falls back to warrior itself; this pre-filter only
@@ -374,7 +381,32 @@ wss.on('connection', (ws, req) => {
           }
           break;
         }
-        case 'input': if (room) room.handleInput(pid, msg); break;
+        case 'input': {
+          if (!room) break;
+          // slot 0 (or no slot) is this connection's own player; slots 1-3 name a local co-op
+          // player joined via 'join_local' below, routed to the pid that join minted for it.
+          const targetPid = (msg.slot ? localPids.get(msg.slot) : null) || pid;
+          room.handleInput(targetPid, msg);
+          break;
+        }
+        case 'join_local': {
+          // Local co-op (#15): add another player to this same room, bound to this socket, for a
+          // second/third/fourth gamepad on one machine. Minimal protocol extension — see
+          // Room#joinLocal — since the client/server 'join' handshake otherwise assumes one player
+          // per WebSocket connection.
+          if (!room) throw new Error('Join a room first');
+          const slot = Number(msg.slot);
+          if (!Number.isInteger(slot) || slot < 1 || slot > MAX_PLAYERS - 1) throw new Error('Invalid local player slot');
+          if (localPids.has(slot)) break; // already joined this slot on this connection
+          const isCustomCls = typeof msg.cls === 'string' && /^custom:\d+$/.test(msg.cls);
+          const cls = (CLASSES[msg.cls] || isCustomCls) ? msg.cls : 'warrior';
+          const name = String(msg.name || `P${slot + 1}`).replace(/[^\w ]/g, '').slice(0, 12) || `P${slot + 1}`;
+          const lpid = `${pid}L${slot}`;
+          room.joinLocal(ws, { pid: lpid, name, cls, palette: msg.palette || null });
+          localPids.set(slot, lpid);
+          send({ t: 'welcome_local', slot, pid: lpid });
+          break;
+        }
         case 'chat': if (room) room.chat(pid, msg.text); break;
         case 'pick': if (room) room.pick(pid, msg.id); break;
         case 'debug':
@@ -398,6 +430,7 @@ wss.on('connection', (ws, req) => {
           if (room) {
             const uid = room.clients.get(pid)?.user?.id || null;
             const roomId = room.id;
+            leaveLocals();
             room.leave(pid); room = null; send({ t: 'left' });
             telemetry.recordEvent({ kind: 'leave', userId: uid, ip, data: { roomId } });
           }
@@ -405,7 +438,7 @@ wss.on('connection', (ws, req) => {
       }
     } catch (e) { send({ t: 'error', error: e.message }); }
   });
-  ws.on('close', () => { if (room) room.disconnect(pid); });
+  ws.on('close', () => { if (room) { room.disconnect(pid); for (const lpid of localPids.values()) room.disconnect(lpid); } });
 });
 setInterval(() => heartbeat(wss.clients), 30000);
 

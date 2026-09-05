@@ -485,6 +485,71 @@ async function main() {
       await pageA.click('#leave').catch(() => {});
     });
 
+    // ---------------- 10. Touch layout (#15) ----------------
+    await scenario('10. Touch layout: ?touch=1 forces the d-pad to render, and tapping a zone moves the hero', async () => {
+      const ctxC = await browser.newContext();
+      const pageC = await ctxC.newPage(); attach(pageC, 'C');
+
+      await pageC.goto(`${baseUrl}/?touch=1`, { waitUntil: 'load' });
+      await pageC.waitForSelector('#heroes .hero', { timeout: 10_000 });
+      await pageC.click('#heroes .hero:nth-child(1)'); // Warrior
+      await pageC.fill('#gname', 'TouchTester');
+      await pageC.click('#create');
+      await pageC.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+      await pageC.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 }); // solo host, no ready-up needed
+      await pageC.click('#rs-start');
+      await pageC.waitForSelector('#game.on', { timeout: 15_000 });
+
+      const touchRoomId = new URL(pageC.url()).searchParams.get('room');
+      if (!touchRoomId) throw new Error(`browser C URL did not carry a room id for the touch-layout room: ${pageC.url()}`);
+
+      // client/input.js force-shows the layout via a `touch-force` class when `?touch=1` is
+      // present, since headless Chromium reports a fine (not coarse) pointer.
+      await pageC.waitForSelector('#touch.touch-force', { timeout: 5_000 });
+      const dirCount = await pageC.locator('.input-dpad .input-dir:not(.input-dir-mid)').count();
+      if (dirCount !== 8) throw new Error(`expected 8 direction tap zones in the touch d-pad, got ${dirCount}`);
+      if (!(await pageC.locator('.input-fire').isVisible())) throw new Error('touch fire button is not visible');
+      if (!(await pageC.locator('.input-autofire').isVisible())) throw new Error('touch auto-fire toggle is not visible');
+
+      // The HUD has no position readout, so spy on the room's raw snapshot stream (same pattern as
+      // scenarios 3/5's debug helper) to read TouchTester's own hero position before/after the tap.
+      const helperWs3 = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await once(helperWs3, 'open');
+      let myPid = null;
+      let lastSnap = null;
+      helperWs3.on('message', (data) => {
+        let msg; try { msg = JSON.parse(data); } catch { return; }
+        if (msg.t === 'players' && !myPid) {
+          const me = msg.list.find((p) => p.name === 'TouchTester');
+          if (me) myPid = me.id;
+        }
+        if (msg.t === 's') lastSnap = msg;
+      });
+      helperWs3.send(JSON.stringify({ t: 'join', roomId: touchRoomId, name: 'TouchSpy' }));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (!myPid) throw new Error('helper spy never saw a "players" packet naming TouchTester');
+      const posOf = () => { const p = lastSnap?.p?.find((pp) => pp[0] === myPid); return p ? { x: p[1], y: p[2] } : null; };
+      const before = posOf();
+      if (!before) throw new Error('no snapshot position for TouchTester before the tap');
+
+      // A held pointer on the "east" zone (▶) should move the hero right, same as holding 'd'.
+      const eastBtn = pageC.locator('.input-dpad .input-dir', { hasText: '▶' });
+      const box = await eastBtn.boundingBox();
+      if (!box) throw new Error('east tap zone has no bounding box (not rendered/visible)');
+      await pageC.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await pageC.mouse.down();
+      await pageC.waitForTimeout(1200);
+      await pageC.mouse.up();
+
+      const after = posOf();
+      if (!after) throw new Error('no snapshot position for TouchTester after the tap');
+      if (!(after.x > before.x)) throw new Error(`expected TouchTester's x to increase after holding the east tap zone (before=${before.x}, after=${after.x})`);
+
+      try { helperWs3.send(JSON.stringify({ t: 'leave' })); helperWs3.close(); } catch { /* best effort */ }
+      await pageC.click('#leave').catch(() => {});
+      await ctxC.close().catch(() => {});
+    });
+
     await ctxA.close().catch(() => {});
     await ctxB.close().catch(() => {});
   } catch (err) {

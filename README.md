@@ -38,7 +38,17 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   up dimmed ("away") in the HUD until then.
 - Move with `WASD` or arrows. Hold `Space` to fire; while firing you stand still and the stick turns you, just like the arcade.
 - `Q` or `Shift` uses a magic potion (clears monsters around you; kills Death). `Enter` inserts a coin after you die.
-- `T` chats, `M` toggles sound, `N` toggles the narrator. Touch controls appear on phones.
+- `T` chats, `M` toggles sound, `N` toggles the narrator.
+- **Mobile and gamepad** (#15, `client/input.js`): on a coarse (touch) pointer, or with `?touch=1` in the URL, an oversized
+  8-direction d-pad, a fire button, an **AUTO-FIRE** toggle (persists for the run, remembered in `localStorage`) and a
+  potion button replace the keyboard controls; each direction/fire zone tracks its own pointer, so steering and firing
+  work together with two fingers down at once. Standard USB/Bluetooth gamepads (Xbox, PlayStation, generic) work too,
+  polled every frame: the left stick or d-pad steers (0.35 deadzone), face buttons 0-3 or the right trigger fire, and a
+  non-standard pad falls back to plain axes 0/1 and buttons 0-3. Gamepad connects/disconnects are announced in the log
+  and narrator ("Controller 2 connected"). Pad 0 always drives your own hero; pads 1-3 each open an **extra local hero**
+  in the same room on the same connection (capped at 4 players total) via a small `{t:'join_local', slot}` protocol
+  extension (`server/game/room.js` `Room#joinLocal`) — no lobby ready-up needed for the extra heroes, and input for them
+  is tagged with their `slot`.
 - A master/SFX/narrator-voice **volume mixer**, a **Cutscenes** on/off toggle, colour-blind palette and reduced-motion
   options all live in [Settings](#settings) (`/settings.html`) and take effect immediately.
 - A short pixel-art cutscene plays the first time you see the lobby, the first time you pick each
@@ -61,7 +71,9 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   Each monster type carries its own single-character `snapKey` (`shared/constants.js`) so the wire format never collides
   two types starting with the same letter (ghost/grunt both "g", demon/death both "d" — a bug that used to make grunts
   draw as ghosts and Death draw as a demon); `SNAP_KEY_TO_MONSTER` maps it back to a real type on the client.
-- **Rooms** of up to four players, public room list, quick play, deep links (`/?room=ID`), in-game chat.
+- **Rooms** of up to four players, public room list, quick play, deep links (`/?room=ID`), in-game chat. A room's four
+  slots can be filled by separate connections, extra local gamepads on one machine (see "Mobile and gamepad" below), or
+  a mix of both.
 - **Pre-game room screen**: ready-up, host-only start (gated on all-ready, or auto-start on a 5s countdown), host settings
   (campaign vs. a published custom level, private/public), hero switching before start, and host-only kick. A kick sticks
   for that room's whole lifetime — for logged-in players by account, and for guests via a signed guest id (`gc_guest_id`
@@ -637,6 +649,7 @@ client/            static browser app (no build step)
   attract.html/js          attract-mode title screen
   cutscenes-demo.html      dev page for reviewing cutscenes
   common.js, sprites.js, font.js, pixelsprite.js, audio.js, voice.js, cutscenes.js   shared client modules
+  input.js                touch d-pad/auto-fire + Gamepad API + local co-op input (#15)
 test/               node:test unit suites, plus smoke.mjs and e2e.mjs (Playwright)
 tools/              tools/generate-voice.mjs — narrator voice clip generation
 deploy/             Hetzner/Docker deployment scripts and Caddy config
@@ -796,10 +809,11 @@ mid-intermission (#9), in-game cutscene triggers (#23), the Hero Builder's lobby
 integration (#24), an AI-generated launch trailer and title backdrop (#21), and AI remix/tune/explain
 for existing levels plus AI-written names for procedural levels (#17).
 
-Sound synthesis (#20), pre-rendered narrator voice lines (#19), and optional opt-in AI narrator
-commentary (#18) are also implemented (see [Sound](#sound), [Narrator voice](#narrator-voice), and
-[AI Narrator](#ai-narrator-18) above) even though all three issues are still open on the tracker
-pending someone closing them out.
+Sound synthesis (#20), pre-rendered narrator voice lines (#19), optional opt-in AI narrator
+commentary (#18), and the mobile touch layout/gamepad support (#15) are also implemented (see
+[Sound](#sound), [Narrator voice](#narrator-voice), [AI Narrator](#ai-narrator-18), and
+"Mobile and gamepad" above) even though all four issues are still open on the tracker pending
+someone closing them out.
 
 Open, not yet implemented:
 
@@ -807,7 +821,6 @@ Open, not yet implemented:
   dissolve walls and timed walls (#11), acid puddles/stun tiles/force fields from Gauntlet II
   (#12), an "It" tag mode and mystery treasure rooms from Gauntlet II (#13).
 - **Presentation**: an original-style attract mode and high-score name entry (#14).
-- **Mobile**: a full touch layout and gamepad support (#15).
 - **AI assist**: describe a hero and get a build/sprite suggestion (#16).
 - **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
 

@@ -293,6 +293,31 @@ export class Room {
     return null;
   }
 
+  /** Add another local player bound to the same connection (`ws`) as an existing client — local
+   *  co-op via extra gamepads on one machine (#15, `{t:'join_local'}` in server/index.js). Unlike
+   *  `join()` this skips the guest-identity/resume/kick machinery a second real connection needs
+   *  (it's the same browser tab, not a new socket) and starts `ready` so it never blocks the
+   *  primary player's ready-up. Input for it arrives tagged with a `slot`, routed to this `pid` by
+   *  the caller (see server/index.js's `input` case). */
+  joinLocal(ws, { pid, name, cls, palette }) {
+    if (this.full) throw new Error('Room is full');
+    const picked = this.pickHero(null, cls, palette);
+    const c = {
+      ws, pid, user: null, name, cls: picked.cls, palette: picked.palette, classDef: picked.classDef || null, custom: picked.custom || null,
+      guestId: null, joinedAt: Date.now(), streak: 0, rank: null, title: null, perks: null,
+      ready: true, away: false, awaySince: null, awayTimer: null, resume: null,
+      aiNarrator: false, killStreak: 0, killStreakAnnounced: 0, lastHp: null, local: true,
+    };
+    this.clients.set(pid, c);
+    if (this.state !== 'lobby') this.enterGame(c);
+    this.broadcastRoom();
+    if (this.state !== 'lobby') this.broadcast(this.playersPacket());
+    const heroLabel = picked.custom ? picked.custom.name : cap(picked.cls);
+    this.broadcast({ t: 'notice', text: `${name} the ${heroLabel} enters the dungeon` });
+    this.checkAutoStart();
+    return c;
+  }
+
   /** Called when a live socket drops. Keeps the player's slot/entity for a grace period. */
   disconnect(pid) {
     const c = this.clients.get(pid);

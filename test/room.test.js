@@ -665,4 +665,38 @@ test('collecting all four amulet kinds in one run unlocks the Amulet Collector a
   } finally { room.close(); }
 });
 
+// ---------- local co-op (#15): joinLocal binds a second/third/fourth player to one connection ----------
+test('joinLocal adds another player bound to the same ws, ready by default, capped by MAX_PLAYERS', () => {
+  const room = makeRoom({ id: 'local-1' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    const local = room.joinLocal(ws, { pid: 'aL1', name: 'Ann P2', cls: 'elf', palette: null });
+    assert.equal(local.ready, true, 'a local player never blocks the room ready-up gate');
+    assert.equal(local.ws, ws, 'a local player shares the primary connection\'s socket');
+    assert.equal(room.clients.size, 2);
+
+    room.joinLocal(ws, { pid: 'aL2', name: 'Ann P3', cls: 'wizard', palette: null });
+    room.joinLocal(ws, { pid: 'aL3', name: 'Ann P4', cls: 'valkyrie', palette: null });
+    assert.equal(room.clients.size, 4, 'room now full at MAX_PLAYERS');
+    assert.throws(() => room.joinLocal(ws, { pid: 'aL4', name: 'Ann P5', cls: 'warrior' }), /full/i);
+  } finally { room.close(); }
+});
+
+test('joinLocal mid-game spawns the local player straight into the sim, and leave() removes it cleanly', () => {
+  const room = makeRoom({ id: 'local-2' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.joinLocal(ws, { pid: 'aL1', name: 'Ann P2', cls: 'elf', palette: null });
+    assert.ok(room.sim.players.has('aL1'), 'a local player joining mid-game gets a sim entity immediately, like a late joiner');
+
+    room.leave('aL1');
+    assert.equal(room.clients.has('aL1'), false);
+    assert.equal(room.sim.players.has('aL1'), false);
+    assert.equal(room.clients.has('a'), true, 'the primary player is unaffected by a local player leaving');
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });
