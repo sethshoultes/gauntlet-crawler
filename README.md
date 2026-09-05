@@ -151,9 +151,10 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   renders and behaves exactly like a wall until revealed. A **switch** (tile `L`, a walkable floor tile) placed
   across the room reveals every hidden exit in the level at once when a hero steps on it; collecting every last
   piece of treasure does the same, so the room is always solvable without the switch too. `shared/level.js`'s
-  `exitReachable` only ever treats a hidden exit as reachable when the level actually has a switch or at least
-  one treasure tile — otherwise it's unopenable and treated exactly like a permanent wall, same as an unmatched
-  pressure-plate wall group. The reveal reuses the tile-change flash from #11 (no separate animation plumbing)
+  `exitReachable` never paths *through* a hidden exit (it is a wall until revealed, an exit afterwards): the
+  level counts as solvable only when a hero can stand next to the hidden exit and can also reach a switch, or
+  reach every treasure tile — one sealed-off treasure means the exit never opens. With no reveal condition at
+  all it is treated exactly like a permanent wall, same as an unmatched pressure-plate wall group. The reveal reuses the tile-change flash from #11 (no separate animation plumbing)
   plus a "MYSTERY ROOM: find the exit" HUD banner that clears itself the moment the last hidden exit opens; the
   30s bonus-room timer still auto-completes the level with no bonus if nobody ever finds (or reveals) a way out.
 - **New monster types**: the **Lobber** (tile `4`, generator `l`) keeps 4-7 tiles from its target and lobs an

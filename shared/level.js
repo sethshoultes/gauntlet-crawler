@@ -3,14 +3,6 @@
 // save/publish) and the client (editor.js preview).
 import { T, ALL_TILES, EXIT_TILES, EXIT_LIKE_TILES, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS } from './constants.js';
 
-// Mystery treasure rooms (#13): a hidden exit only counts as reachable (see exitReachable below) if
-// the level gives players a way to ever reveal it — a switch tile, or at least one treasure tile
-// (the "collect it all" reveal condition, see server/game/sim.js revealHiddenExits()). With
-// neither, a hidden exit can never open, so it stays impassable like a permanent wall.
-function hiddenExitOpenable(rows) {
-  return rows.some((r) => r.includes(T.SWITCH)) || rows.some((r) => r.includes(T.TREASURE));
-}
-
 export const MIN_SIZE = 12;
 export const MAX_SIZE = 64;
 
@@ -66,7 +58,13 @@ export function validateLevel(raw) {
  *  plate that dissolves it — with no plate placed it can never open, so it stays solid for
  *  reachability purposes. A timed wall (TIMED_WALLS) is always treated as eventually passable: its
  *  timer fires unconditionally, converting it to floor or an exit (see server/game/sim.js
- *  stepTimedWalls). */
+ *  stepTimedWalls).
+ *
+ *  Mystery treasure rooms (#13): a hidden exit behaves like a wall until revealed and like an exit
+ *  afterwards, so it is never pathed *through* here — it only satisfies reachability when the
+ *  player can stand next to it AND can actually trigger the reveal (server/game/sim.js
+ *  revealHiddenExits): reach a switch tile, or reach every treasure tile (the "collect it all"
+ *  condition needs all of them, so one unreachable treasure means the exit never opens). */
 export function exitReachable(lvl) {
   const { w, h, rows, starts } = lvl;
   const hasKey = rows.some((r) => r.includes(T.KEY));
@@ -74,24 +72,26 @@ export function exitReachable(lvl) {
   for (const [plateGlyph, wallGlyph] of Object.entries(TRAP_PLATES)) {
     if (rows.some((r) => r.includes(plateGlyph))) openableGroups.add(wallGlyph);
   }
-  // Mystery treasure rooms (#13): a hidden exit is only ever a real exit if it can eventually be
-  // revealed (hiddenExitOpenable above) — otherwise it's treated exactly like a wall, both as a
-  // terminal tile (never satisfies the BFS) and as something to path through.
-  const hiddenOk = hiddenExitOpenable(rows);
   const seen = new Uint8Array(w * h);
   const q = [starts[0]];
   seen[starts[0][1] * w + starts[0][0]] = 1;
+  let hiddenExitAdjacent = false;
+  let switchReached = false;
+  let treasureTotal = 0;
+  let treasureReached = 0;
+  for (const r of rows) for (const c of r) if (c === T.TREASURE) treasureTotal++;
   while (q.length) {
     const [x, y] = q.shift();
     const here = rows[y][x];
     if (EXIT_TILES.has(here)) return true;
-    if (here === T.HIDDEN_EXIT && hiddenOk) return true;
+    if (here === T.SWITCH) switchReached = true;
+    if (here === T.TREASURE) treasureReached++;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const c = rows[ny][nx];
       if (c === T.WALL) continue;
-      if (c === T.HIDDEN_EXIT && !hiddenOk) continue; // can never open: treated like a permanent wall
+      if (c === T.HIDDEN_EXIT) { hiddenExitAdjacent = true; continue; } // terminal once revealed, never a corridor
       if (c === T.DOOR && !hasKey) continue;
       if (GROUP_WALLS.has(c) && !openableGroups.has(c)) continue;
       const i = ny * w + nx;
@@ -100,7 +100,8 @@ export function exitReachable(lvl) {
       q.push([nx, ny]);
     }
   }
-  return false;
+  if (!hiddenExitAdjacent) return false;
+  return switchReached || (treasureTotal > 0 && treasureReached === treasureTotal);
 }
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */

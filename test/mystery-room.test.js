@@ -117,8 +117,59 @@ test('exitReachable treats a hidden exit as an exit only when the level has a sw
   assert.ok(exitReachable(parseLevel({ rows: SWITCH_ROOM_ROWS })), 'a switch makes the hidden exit reachable');
   assert.deepEqual(validateLevel({ rows: SWITCH_ROOM_ROWS }), []);
 
-  assert.ok(exitReachable(parseLevel({ rows: TREASURE_ROOM_ROWS })), 'at least one treasure tile makes the hidden exit reachable');
+  assert.ok(exitReachable(parseLevel({ rows: TREASURE_ROOM_ROWS })), 'reachable treasure makes the hidden exit reachable');
   assert.deepEqual(validateLevel({ rows: TREASURE_ROOM_ROWS }), []);
+});
+
+// 12x12: start at top-left, one treasure in the open, a second treasure walled off in the bottom-right
+// corner (unreachable), hidden exit on the right edge of the open area.
+const HALF_TREASURE_ROWS = [
+  '############',
+  '#S.........#',
+  '#..........#',
+  '#....T.....#',
+  '#..........#',
+  '#.........H#',
+  '#..........#',
+  '#..........#',
+  '#......#####',
+  '#......#..T#',
+  '#......#...#',
+  '############',
+];
+// No switch and no treasure, so the hidden exit can never reveal; the only real exit sits behind
+// it, so the only way there would be to path *through* the H tile itself, which gameplay never allows.
+const H_AS_CORRIDOR_ROWS = [
+  '############',
+  '#S.........#',
+  '#..........#',
+  '#..........#',
+  '#..........#',
+  '#.......#H##',
+  '#.......#.E#',
+  '#.......####',
+  '#..........#',
+  '#..........#',
+  '#..........#',
+  '############',
+];
+
+test('a hidden exit is not reachable when some treasure can never be collected', () => {
+  assert.equal(exitReachable(parseLevel({ rows: HALF_TREASURE_ROWS })), false, 'the reveal needs every treasure; one is sealed off');
+  assert.match(validateLevel({ rows: HALF_TREASURE_ROWS })[0], /not reachable/);
+  // Give the sealed corner a switch-based reveal instead and the same layout validates.
+  const withSwitch = HALF_TREASURE_ROWS.map((r, y) => (y === 2 ? '#L.........#' : r));
+  assert.deepEqual(validateLevel({ rows: withSwitch }), []);
+});
+
+test('a hidden exit is never used as a corridor to something behind it', () => {
+  assert.equal(exitReachable(parseLevel({ rows: H_AS_CORRIDOR_ROWS })), false);
+  // A real exit does count when it is genuinely walkable-to.
+  const open = H_AS_CORRIDOR_ROWS.map((r, y) => (y === 5 ? '#.......#.##' : r));
+  assert.ok(exitReachable(parseLevel({ rows: open })));
+  // And with a reveal condition present, the adjacent hidden exit itself is the exit that counts.
+  const withTreasure = H_AS_CORRIDOR_ROWS.map((r, y) => (y === 3 ? '#....T.....#' : r));
+  assert.ok(exitReachable(parseLevel({ rows: withTreasure })));
 });
 
 test('procgen mystery treasure rooms validate and carry both the hidden-exit and switch glyphs', () => {
