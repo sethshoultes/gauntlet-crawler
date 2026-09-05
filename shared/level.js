@@ -27,7 +27,7 @@ export function parseLevel(raw) {
     if (EXIT_TILES.has(rows[y][x])) exits.push([x, y]);
   }
   if (starts.length === 0) throw new Error('level has no start (S) tile');
-  if (exits.length === 0) throw new Error('level has no exit (E) tile');
+  if (exits.length === 0) throw new Error('level has no exit tile (E or 8)');
   return {
     name: String(raw.name || 'Untitled').slice(0, 40),
     description: String(raw.description || '').slice(0, 200),
@@ -95,7 +95,9 @@ export function repairLevel(raw) {
     grid[1][1] = T.FLOOR; return [1, 1];
   };
   if (!find(T.START)) { const [x, y] = floorSpot(); grid[y][x] = T.START; }
-  if (!find(T.EXIT)) {
+  // Any exit variant counts: a level that only uses the skip exit (8) must not get an extra E.
+  const hasExit = grid.some((row) => row.some((c) => EXIT_TILES.has(c)));
+  if (!hasExit) {
     let placed = false;
     for (let y = h - 2; y > 0 && !placed; y--) for (let x = w - 2; x > 0 && !placed; x--) if (grid[y][x] === T.FLOOR) { grid[y][x] = T.EXIT; placed = true; }
     if (!placed) { grid[h - 2][w - 2] = T.EXIT; }

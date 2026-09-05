@@ -66,3 +66,30 @@ test('repairLevel fixes borders, missing start/exit and connectivity', () => {
   assert.ok(exitReachable(parseLevel(fixed)));
   assert.ok(fixed.rows.every((r) => r.length === fixed.rows[0].length));
 });
+
+test('repairLevel keeps a level that only has a skip exit (8) and adds no extra E', () => {
+  const rows = [
+    '############',
+    '#S.........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#.........8#',
+    '############',
+  ];
+  const fixed = repairLevel({ name: 'skip-only', rows });
+  const joined = fixed.rows.join('');
+  assert.ok(!joined.includes('E'), 'no classic exit should be added');
+  assert.equal((joined.match(/8/g) || []).length, 1);
+  assert.deepEqual(validateLevel(fixed), []);
+});
+
+test('the missing-exit error names both exit tiles', () => {
+  const rows = Array.from({ length: 12 }, (_, y) => (y === 0 || y === 11 ? '############' : y === 1 ? '#S.........#' : '#..........#'));
+  assert.throws(() => parseLevel({ rows }), /E or 8/);
+});
