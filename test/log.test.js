@@ -73,3 +73,13 @@ test('error() with a BigInt field does not throw', () => {
 });
 
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });
+
+test('caller-supplied fields cannot overwrite the reserved level/ts/msg keys', () => {
+  const calls = captureConsole('log', () => log.info('real message', { level: 'error', msg: 'spoofed', ts: 'yesterday', extra: 1 }));
+  assert.equal(calls.length, 1);
+  const parsed = JSON.parse(calls[0][0]);
+  assert.equal(parsed.level, 'info');
+  assert.equal(parsed.msg, 'real message');
+  assert.notEqual(parsed.ts, 'yesterday');
+  assert.equal(parsed.extra, 1);
+});

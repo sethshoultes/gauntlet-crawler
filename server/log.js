@@ -46,7 +46,9 @@ export function safeStringify(obj) {
 }
 
 function emit(level, msg, fields) {
-  const line = safeStringify({ level, ts: new Date().toISOString(), msg, ...fields });
+  // Spread caller fields first so the reserved keys always win: a field named `level`, `ts` or
+  // `msg` must not be able to spoof or overwrite the log line's own metadata.
+  const line = safeStringify({ ...fields, level, ts: new Date().toISOString(), msg });
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);

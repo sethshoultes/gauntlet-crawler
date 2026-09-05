@@ -137,6 +137,23 @@ test('an oversized prefs payload is rejected with 400 and does not overwrite wha
   });
 });
 
+test('the prefs size cap counts UTF-8 bytes, not UTF-16 code units', async () => {
+  await withServer(async (baseUrl) => {
+    const reg = await postJson(baseUrl, '/api/register', { username: 'prefs_bytes', password: 'hunter22' }).then((r) => r.json());
+    // 64 entries of 32-char keys and values made of a 2-byte character: every field passes the
+    // per-field validators and the payload is well under 8000 characters, but over 8000 bytes.
+    const keyBindings = {};
+    for (let i = 0; i < 64; i++) keyBindings['\u00e9'.repeat(30) + String(i).padStart(2, '0')] = '\u00e9'.repeat(32);
+    const body = JSON.stringify({ keyBindings });
+    assert.ok(body.length < 8000, 'payload must be under the cap in characters');
+    assert.ok(Buffer.byteLength(body, 'utf8') > 8000, 'payload must be over the cap in bytes');
+    const res = await fetch(`${baseUrl}/api/me/prefs`, { method: 'PUT', headers: { ...authed(reg.token), 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 400);
+    const after = await fetch(`${baseUrl}/api/me/prefs`, { headers: authed(reg.token) }).then((r) => r.json());
+    assert.deepEqual(after.prefs, {});
+  });
+});
+
 test('prefs with out-of-range or wrong-typed values are rejected with 400', async () => {
   await withServer(async (baseUrl) => {
     const reg = await postJson(baseUrl, '/api/register', { username: 'prefs_invalid', password: 'hunter22' }).then((r) => r.json());
