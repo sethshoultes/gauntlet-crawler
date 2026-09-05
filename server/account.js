@@ -83,11 +83,49 @@ export function getPrefs(userId) {
 // sfxVolume/voiceVolume are the other two mixer buses (see client/audio.js / client/voice.js).
 const PREF_KEYS = ['soundVolume', 'sfxVolume', 'voiceVolume', 'narrator', 'keyBindings', 'colorBlindPalette', 'reducedMotion', 'cutscenes'];
 
+// Per-field shape for each whitelisted key: volumes are finite numbers in 0..1, the boolean
+// toggles are strict booleans, and keyBindings is a small flat map of short strings (action name
+// -> key label). Anything that doesn't match its field's shape is dropped rather than stored, so
+// a malformed value can't silently corrupt a player's saved settings or bloat the row.
+const PREF_MAX_JSON_BYTES = 8000;
+const KEY_BINDING_VALUE_MAX = 32;
+const KEY_BINDINGS_MAX_ENTRIES = 64;
+
+// The client (client/settings.js) sends these as 0-100 percentages (range-input sliders,
+// min=0/max=100 in settings.html), not a 0..1 fraction, so that's the range validated here.
+function isVolume(v) { return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100; }
+function isBool(v) { return typeof v === 'boolean'; }
+function isKeyBindings(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const entries = Object.entries(v);
+  if (entries.length > KEY_BINDINGS_MAX_ENTRIES) return false;
+  return entries.every(([k, val]) => typeof k === 'string' && k.length <= KEY_BINDING_VALUE_MAX && typeof val === 'string' && val.length <= KEY_BINDING_VALUE_MAX);
+}
+
+const PREF_VALIDATORS = {
+  soundVolume: isVolume,
+  sfxVolume: isVolume,
+  voiceVolume: isVolume,
+  narrator: isBool,
+  colorBlindPalette: isBool,
+  reducedMotion: isBool,
+  cutscenes: isBool,
+  keyBindings: isKeyBindings,
+};
+
 export function setPrefs(userId, body) {
+  const src = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  // Reject an oversized body up front rather than truncating it: truncating the serialized JSON
+  // can cut mid-token and later parse as `{}`, silently wiping every previously saved preference.
+  if (JSON.stringify(src).length > PREF_MAX_JSON_BYTES) throw httpError(400, 'Preferences payload is too large');
   const clean = {};
-  const src = body && typeof body === 'object' ? body : {};
-  for (const k of PREF_KEYS) if (k in src) clean[k] = src[k];
-  const json = JSON.stringify(clean).slice(0, 8000);
+  for (const k of PREF_KEYS) {
+    if (!(k in src)) continue;
+    const validate = PREF_VALIDATORS[k];
+    if (validate && !validate(src[k])) throw httpError(400, `Invalid value for preference "${k}"`);
+    clean[k] = src[k];
+  }
+  const json = JSON.stringify(clean);
   db.prepare(`INSERT INTO prefs (user_id, json, updated_at) VALUES (?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at`).run(userId, json, now());
   return clean;

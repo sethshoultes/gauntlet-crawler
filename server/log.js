@@ -12,8 +12,35 @@ function insertError() {
   return insertErrorStmt;
 }
 
+// Replacer for the common ways an arbitrary `fields` blob can make JSON.stringify throw:
+// BigInt (TypeError: Do not know how to serialize a BigInt) and circular references (TypeError:
+// Converting circular structure to JSON). Cycles are broken by substituting a marker instead of
+// re-visiting an already-seen object; `seen` is fresh per stringify call via the closure below.
+function safeReplacer() {
+  const seen = new WeakSet();
+  return function replacer(_key, value) {
+    if (typeof value === 'bigint') return `${value.toString()}n`;
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) return '[Circular]';
+      seen.add(value);
+    }
+    return value;
+  };
+}
+
 function emit(level, msg, fields) {
-  const line = JSON.stringify({ level, ts: new Date().toISOString(), msg, ...fields });
+  let line;
+  try {
+    line = JSON.stringify({ level, ts: new Date().toISOString(), msg, ...fields }, safeReplacer());
+  } catch {
+    // Serialization itself failed even with the replacer (e.g. a getter that throws) -- fall back
+    // to a minimal, always-serializable line so a bad `fields` blob can never take down logging.
+    try {
+      line = JSON.stringify({ level, ts: new Date().toISOString(), msg: String(msg), fields: '<unserializable>' });
+    } catch {
+      line = '{"level":"error","msg":"<log serialization failed>"}';
+    }
+  }
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);

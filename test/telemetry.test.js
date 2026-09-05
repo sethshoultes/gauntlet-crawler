@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -106,6 +107,53 @@ test('telemetry beacons are stored and reflected in admin analytics', async () =
     assert.ok(Array.isArray(analytics.topLevels));
     assert.equal(typeof analytics.avgRunLength, 'number');
   });
+});
+
+test('an authenticated beacon ignores a client-supplied guestId: guest_id is stored NULL, user_id is set', async () => {
+  // Needs its own dataDir (rather than withServer(), which hides it) so this test can open the
+  // same sqlite file directly afterward and inspect the raw `events` row server/index.js wrote —
+  // same pattern as the WS join telemetry test below.
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-telemetry-authed-guest-test-'));
+  const port = await findFreePort();
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out = '';
+  server.stdout.on('data', (d) => { out += d.toString(); });
+  server.stderr.on('data', (d) => { out += d.toString(); });
+  const exit = once(server, 'exit');
+  try {
+    await Promise.race([waitForServer(baseUrl), exit.then(([c]) => { throw new Error(`server exited early (${c}):\n${out}`); })]);
+
+    const admin = await fetch(`${baseUrl}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'telem_authed_gid', password: 'hunter22' }) }).then((r) => r.json());
+    assert.ok(admin.user, `registration should have succeeded: ${JSON.stringify(admin)}`);
+
+    const beacon = await fetch(`${baseUrl}/api/telemetry`, {
+      method: 'POST', headers: { ...authed(admin.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'pageview', guestId: 'guest-should-be-ignored', data: { path: '/authed-with-guestid' } }),
+    });
+    assert.equal(beacon.status, 200);
+
+    // Give the write a beat to land on disk (WAL commit), then inspect the sqlite file with a
+    // fresh, independent connection -- NOT via `import('../server/db.js')`, whose module (and the
+    // single DB connection it opens at import time) is cached per-process: a second dynamic
+    // import from another test in this file would silently reuse the first test's connection
+    // (and thus its dataDir) instead of opening this one.
+    await new Promise((r) => setTimeout(r, 300));
+    const probe = new DatabaseSync(path.join(dataDir, 'gauntlet.sqlite'), { readOnly: true });
+    const row = probe.prepare("SELECT user_id, guest_id FROM events WHERE kind = 'pageview' ORDER BY id DESC LIMIT 1").get();
+    probe.close();
+    assert.ok(row, 'expected the pageview event to be recorded');
+    assert.equal(row.user_id, admin.user.id, 'the event should be attributed to the authenticated user');
+    assert.equal(row.guest_id, null, 'a client-supplied guestId must be ignored once the request is authenticated');
+  } finally {
+    if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
+    await once(server, 'exit').catch(() => {});
+    await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+  }
 });
 
 test('telemetry beacons are rate limited per IP', async () => {

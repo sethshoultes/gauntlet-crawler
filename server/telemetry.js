@@ -61,7 +61,10 @@ const CLIENT_KINDS = new Set(['pageview', 'session_start', 'level_reached', 'run
 export function recordClient(body, { user, ip } = {}) {
   const kind = body && CLIENT_KINDS.has(body.kind) ? body.kind : null;
   if (!kind) throw Object.assign(new Error('Unknown telemetry kind'), { status: 400 });
-  const guestId = typeof body.guestId === 'string' ? body.guestId : null;
+  // Ignore any client-supplied guestId once the request is authenticated: an authenticated beacon
+  // is already attributable via userId, and trusting a client-chosen guestId alongside it would
+  // let one signed-in user's beacons masquerade as, or get double-counted with, guest traffic.
+  const guestId = !user && typeof body.guestId === 'string' ? body.guestId : null;
   const data = body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : null;
   recordEvent({ kind, userId: user?.id || null, guestId, data, ip });
 }

@@ -113,6 +113,53 @@ test('preferences round-trip through GET/PUT /api/me/prefs', async () => {
   });
 });
 
+test('an oversized prefs payload is rejected with 400 and does not overwrite what was already saved', async () => {
+  await withServer(async (baseUrl) => {
+    const reg = await postJson(baseUrl, '/api/register', { username: 'prefs_oversize', password: 'hunter22' }).then((r) => r.json());
+
+    const goodPrefs = { soundVolume: 55, narrator: true, keyBindings: { up: 'ArrowUp' } };
+    const firstPut = await fetch(`${baseUrl}/api/me/prefs`, { method: 'PUT', headers: { ...authed(reg.token), 'Content-Type': 'application/json' }, body: JSON.stringify(goodPrefs) });
+    assert.equal(firstPut.status, 200);
+
+    // A keyBindings value alone longer than the 8000-byte limit — previously this was silently
+    // truncated with `.slice(0, 8000)`, which can cut mid-token and parse back as `{}`, wiping
+    // every previously saved preference. It must now be rejected outright instead.
+    const oversized = { ...goodPrefs, keyBindings: { up: 'x'.repeat(9000) } };
+    const badPut = await fetch(`${baseUrl}/api/me/prefs`, { method: 'PUT', headers: { ...authed(reg.token), 'Content-Type': 'application/json' }, body: JSON.stringify(oversized) });
+    assert.equal(badPut.status, 400);
+    const badBody = await badPut.json();
+    assert.equal(typeof badBody.error, 'string');
+
+    // The previously saved (valid) prefs must be completely unchanged, not wiped or partially
+    // overwritten.
+    const after = await fetch(`${baseUrl}/api/me/prefs`, { headers: authed(reg.token) }).then((r) => r.json());
+    assert.deepEqual(after.prefs, goodPrefs);
+  });
+});
+
+test('prefs with out-of-range or wrong-typed values are rejected with 400', async () => {
+  await withServer(async (baseUrl) => {
+    const reg = await postJson(baseUrl, '/api/register', { username: 'prefs_invalid', password: 'hunter22' }).then((r) => r.json());
+
+    const cases = [
+      { soundVolume: 500 },                 // out of range (client sends 0-100 percentages)
+      { soundVolume: -1 },                   // negative
+      { soundVolume: 'loud' },               // wrong type
+      { narrator: 'yes' },                   // must be a strict boolean
+      { keyBindings: 'not-an-object' },      // must be an object map
+      { keyBindings: { fire: 123 } },        // binding values must be strings
+    ];
+    for (const bad of cases) {
+      const res = await fetch(`${baseUrl}/api/me/prefs`, { method: 'PUT', headers: { ...authed(reg.token), 'Content-Type': 'application/json' }, body: JSON.stringify(bad) });
+      assert.equal(res.status, 400, `expected 400 for ${JSON.stringify(bad)}`);
+    }
+
+    // Nothing invalid ever got stored.
+    const got = await fetch(`${baseUrl}/api/me/prefs`, { headers: authed(reg.token) }).then((r) => r.json());
+    assert.deepEqual(got.prefs, {});
+  });
+});
+
 test('deleting an account cascades: sessions, published levels, custom heroes, and login all go away', async () => {
   await withServer(async (baseUrl) => {
     const reg = await postJson(baseUrl, '/api/register', { username: 'doomed_user', password: 'hunter22' }).then((r) => r.json());
