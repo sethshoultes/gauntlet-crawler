@@ -152,6 +152,9 @@ async function main() {
     if (server.exitCode === null && server.pid) {
       try { process.kill(server.pid, 'SIGTERM'); } catch { /* already gone */ }
     }
+    // Reuse the exit promise created at spawn time: a fresh once(server, 'exit') here would hang
+    // forever if the child already exited (e.g. a startup failure above).
+    await serverExit.catch(() => {});
     await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 

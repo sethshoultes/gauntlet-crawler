@@ -3,59 +3,16 @@
 // pattern as test/server-static.test.js.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
-import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.on('error', reject);
-    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
-  });
-}
-
-function waitForServer(url, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      fetch(url).then(resolve).catch((err) => {
-        if (Date.now() > deadline) return reject(err);
-        setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
+import { startServer } from './helpers/server.mjs';
 
 async function withServer(fn) {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-telemetry-test-'));
-  const port = await findFreePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let out = '';
-  server.stdout.on('data', (d) => { out += d.toString(); });
-  server.stderr.on('data', (d) => { out += d.toString(); });
-  const exit = once(server, 'exit');
+  const server = await startServer();
   try {
-    await Promise.race([waitForServer(baseUrl), exit.then(([c]) => { throw new Error(`server exited early (${c}):\n${out}`); })]);
-    await fn(baseUrl);
+    await fn(server.baseUrl);
   } finally {
-    if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await exit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
-    await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+    await server.stop();
   }
 }
 
@@ -113,21 +70,9 @@ test('an authenticated beacon ignores a client-supplied guestId: guest_id is sto
   // Needs its own dataDir (rather than withServer(), which hides it) so this test can open the
   // same sqlite file directly afterward and inspect the raw `events` row server/index.js wrote —
   // same pattern as the WS join telemetry test below.
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-telemetry-authed-guest-test-'));
-  const port = await findFreePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let out = '';
-  server.stdout.on('data', (d) => { out += d.toString(); });
-  server.stderr.on('data', (d) => { out += d.toString(); });
-  const exit = once(server, 'exit');
+  const server = await startServer();
+  const { baseUrl, dataDir } = server;
   try {
-    await Promise.race([waitForServer(baseUrl), exit.then(([c]) => { throw new Error(`server exited early (${c}):\n${out}`); })]);
-
     const admin = await fetch(`${baseUrl}/api/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'telem_authed_gid', password: 'hunter22' }) }).then((r) => r.json());
     assert.ok(admin.user, `registration should have succeeded: ${JSON.stringify(admin)}`);
 
@@ -150,9 +95,7 @@ test('an authenticated beacon ignores a client-supplied guestId: guest_id is sto
     assert.equal(row.user_id, admin.user.id, 'the event should be attributed to the authenticated user');
     assert.equal(row.guest_id, null, 'a client-supplied guestId must be ignored once the request is authenticated');
   } finally {
-    if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await exit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
-    await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+    await server.stop();
   }
 });
 
@@ -192,21 +135,9 @@ test('client errors are stored with a truncated stack and surfaced to admins', a
 test('WS join telemetry records the final guestId Room#join assigns, not a mismatched requested one', async () => {
   // Needs its own dataDir (rather than withServer(), which hides it) so this test can open the
   // same sqlite file directly afterward and inspect the raw `events` row server/index.js wrote.
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-telemetry-guestid-test-'));
-  const port = await findFreePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let out = '';
-  server.stdout.on('data', (d) => { out += d.toString(); });
-  server.stderr.on('data', (d) => { out += d.toString(); });
-  const exit = once(server, 'exit');
+  const server = await startServer();
+  const { baseUrl, port, dataDir } = server;
   try {
-    await Promise.race([waitForServer(baseUrl), exit.then(([c]) => { throw new Error(`server exited early (${c}):\n${out}`); })]);
-
     const { default: WebSocket } = await import('ws');
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
     const requestedGuestId = 'not-a-real-guest-id'; // fails Room#isValidGuestId's /^[0-9a-f]{32}$/ check
@@ -231,8 +162,6 @@ test('WS join telemetry records the final guestId Room#join assigns, not a misma
     assert.equal(row.guest_id, welcome.guestId, "telemetry must record the room's final assigned guestId");
     assert.notEqual(row.guest_id, requestedGuestId, 'telemetry must not record the mismatched requested guestId');
   } finally {
-    if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await exit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
-    await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+    await server.stop();
   }
 });

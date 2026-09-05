@@ -3,36 +3,7 @@
 // is reachable, then drives the whole Hero Builder API lifecycle over plain fetch.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import net from 'node:net';
-import { fileURLToPath } from 'node:url';
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.unref();
-    srv.on('error', reject);
-    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
-  });
-}
-function waitForServer(url, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const attempt = () => {
-      fetch(url).then(resolve).catch((err) => {
-        if (Date.now() > deadline) return reject(err);
-        setTimeout(attempt, 200);
-      });
-    };
-    attempt();
-  });
-}
+import { startServer } from './helpers/server.mjs';
 
 const VALID_STATS = { speed: 2, shot: 2, fireRate: 2, armor: 2, magic: 2, health: 2 }; // 12 notches
 const VALID_PIXELS = new Array(8).fill('.222222.');
@@ -46,18 +17,8 @@ function heroPayload(overrides = {}) {
 }
 
 test('Hero Builder API: full lifecycle', async (t) => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-heroes-test-'));
-  const port = await findFreePort();
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
-    cwd: ROOT,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, GAUNTLET_DEBUG: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let serverOutput = '';
-  server.stdout.on('data', (d) => { serverOutput += d.toString(); });
-  server.stderr.on('data', (d) => { serverOutput += d.toString(); });
-  const serverExit = once(server, 'exit');
+  const server = await startServer({ env: { GAUNTLET_DEBUG: '1' } });
+  const { baseUrl } = server;
 
   async function api(pathname, { method = 'GET', body, token } = {}) {
     const headers = { 'Content-Type': 'application/json' };
@@ -78,11 +39,6 @@ test('Hero Builder API: full lifecycle', async (t) => {
   }
 
   try {
-    await Promise.race([
-      waitForServer(baseUrl),
-      serverExit.then(([code]) => { throw new Error(`server exited early (code ${code}):\n${serverOutput}`); }),
-    ]);
-
     await t.test('gallery is open to guests', async () => {
       const r = await api('/api/heroes/gallery');
       assert.equal(r.status, 200);
@@ -234,8 +190,6 @@ test('Hero Builder API: full lifecycle', async (t) => {
 
     assert.equal(server.exitCode, null, 'server must still be running throughout');
   } finally {
-    if (server.exitCode === null && server.pid) { try { process.kill(server.pid, 'SIGTERM'); } catch {} }
-    await serverExit.catch(() => {}); // reuse the existing exit promise: a fresh once() would hang if the child already exited
-    await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+    await server.stop();
   }
 });
