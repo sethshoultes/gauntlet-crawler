@@ -217,6 +217,92 @@ g grunt generator   h ghost generator   m demon generator   l lobber generator  
 1 ghost   2 grunt   3 demon   4 lobber   5 sorcerer   6 thief (no generator)   Z Death   W secret wall
 ```
 
+## Hero Builder
+
+A player-authored custom hero: a 6-stat "notch" point-buy, a weapon, a trait, and hand-painted
+8x8 pixel art. Lives entirely in its own files (`shared/hero-builder.js`, `server/heroes.js`,
+`client/heroes.html`/`client/heroes.js`, `client/pixelsprite.js`) and its own `heroes` sqlite
+table — see "Integration contract" below for exactly what the sim/room/lobby need to add to let a
+custom hero actually be played, which is **not yet wired up**.
+
+- **Unlocks at rank 3** (Adventurer). Below that, `/heroes.html` shows a locked message instead of
+  the builder.
+- **Stats** (`shared/hero-builder.js` `STATS`): Speed, Shot Power, Fire Rate, Armor, Magic, and
+  Health, each 0-5 notches ("Health" has no classic-class equivalent — see below). A rank-3 player
+  gets a **12-notch budget**, +1 more at rank 6, +1 more at rank 9, and +1 for the `legend`
+  achievement (max 15). Per-stat cap is always 5, regardless of budget.
+  - **Classic-class calibration**: `notchesFromClass(cls)` converts one of the four classic
+    `CLASSES` entries (warrior/valkyrie/wizard/elf) into a notch vector using fixed, hand-tuned
+    linear ranges per stat (documented in `shared/hero-builder.js`, not derived at runtime from
+    `CLASSES` so a future locked-archetype tweak can't silently shift the budget). Converted, the
+    four classics land at **Warrior 11, Valkyrie 11, Wizard 13, Elf 13** notches — i.e. within
+    11-13 of the 12-notch budget, so a from-scratch Hero Builder character is roughly as strong as
+    (never stronger than) a classic hero. `fireRate` is the inverse of `shotCooldown` (higher notch
+    = faster shots); `health` is a Hero-Builder-only stat (the four classics all share
+    `START_HEALTH`, so their mapped `health` notch is always 0) that adds a flat bonus to max
+    health via `maxHealthBonus`.
+- **Weapons** (`WEAPONS`): axe, arrow, fireball (80% splash), hammer, dagger (short range, fast),
+  skull (gentle homing). Each carries `shotSpeedMul`/`damageMul`/`cooldownMul`/`range`/`sprite` on
+  top of the notch-derived base stats. All six are available as soon as the builder itself is
+  (rank 3) — there's no per-weapon lock.
+- **Traits** (`TRAITS`, pick at most one): Glutton (+50% food healing, needs the `glutton`
+  achievement), Scavenger (+25% treasure/generator score, rank 3), Thick Skin (-10% damage taken,
+  rank 3), Locksmith (open doors one tile further away, needs the `locksmith` achievement),
+  Sprinter (+8% speed, needs `speedrunner`), Arcanist (+20% potion radius, needs `alchemist`).
+- **Pixel art**: exactly 8 rows of 8 characters, each `.` (transparent) or `0`-`7` indexing
+  `PALETTE` (8 hex colours lifted from `client/sprites.js`' `PAL`). At least 8 pixels must be
+  painted. The hero's `color` (for `toClassDef`) is the most-used non-transparent colour.
+- **Server rules** (`server/heroes.js`, table `heroes`): up to **5 heroes per account**; writes
+  (create/update/delete/publish/clone) are rate-limited to 30/min per user; every route except
+  `GET /api/heroes/gallery` requires login (401 for guests). Publishing re-validates the hero
+  against the owner's *current* rank/achievements, so a hero built long ago can't go public if a
+  later rule change put it over budget.
+- **Gallery**: `GET /api/heroes/gallery` lists published heroes (paginated, `?page=`/`?limit=`),
+  sorted by clone count. `POST /api/heroes/:id/clone` copies a published hero into the caller's own
+  collection (subject to the same 5-hero limit) and bumps the original's clone count — a simple
+  "fork" mechanic with no attribution tracking beyond the copy's own `author` field at read time.
+- **Routes**: `GET /api/heroes/mine`, `GET /api/heroes/budget` (rank, unlocked weapons/traits,
+  notch budget), `GET /api/heroes/gallery`, `POST /api/heroes` (create, or update when `id` is
+  set), `GET /api/heroes/:id` (own or published), `DELETE /api/heroes/:id`, `POST
+  /api/heroes/:id/publish` (toggle), `POST /api/heroes/:id/clone`. `POST /api/heroes/debug/xp`
+  (body `{amount}`) is a test-only hook that grants XP to the caller, alive only when the server is
+  started with `GAUNTLET_DEBUG=1` — it lives under `/api/heroes` (rather than the imagined
+  `/api/debug/xp`) purely so the single additive router line in `server/index.js` still routes it
+  to `server/heroes.js` without adding a second mount point.
+
+### Integration contract
+
+The Hero Builder is fully playable as a *character sheet* today (design, save, publish, clone) but
+is **not yet wired into the sim, room, or lobby hero picker**. Whoever does that wiring needs:
+
+1. **`join`/`hero` messages accept `cls: 'custom:<heroId>'`.** The server (`server/index.js`'s
+   WebSocket handler, or `server/game/room.js`) should recognize this prefix, load the hero row via
+   `server/heroes.js`'s exported `classDefForHeroId(heroId)`, and **re-validate it against the
+   owner's current rank/achievements** (same reasoning as the publish-time re-check) before
+   trusting it — never pass a stored `classDef` straight to the sim without that recheck, since the
+   owner's rank could have changed (or a hero could belong to someone who isn't the joining player
+   at all — always confirm `hero.owner_id === user.id` first, and reject/ fall back to Warrior
+   otherwise, exactly like an unknown `cls` does today).
+2. **`sim.addPlayer` accepts and prefers a `classDef` object over looking up `CLASSES[cls]`.** Once
+   validated, pass `toClassDef(hero)`'s result straight through as `classDef` — it's already shaped
+   like a `CLASSES` entry (`name`, `hero`, `color`, `speed`, `shotDamage`, `shotCooldown`, `armor`,
+   `magic`, `weapon`, `shotKey: 'c'`, `custom: true`) plus builder-only extras the sim needs to
+   apply: `maxHealthBonus` (add to `START_HEALTH`), `weaponDef` (apply `shotSpeedMul` /
+   `damageMul` / `cooldownMul` / `range` / `homing` / `splash` on top of the notch-derived shot
+   stats), and `traitDef` (apply whichever of `foodHealMul`, `lootScoreMul`, `damageTakenMul`,
+   `doorRangeAdd`, `speedMul`, `potionRadiusMul` it carries — see `shared/hero-builder.js`
+   `TRAITS`). `shotKey: 'c'` is reserved (never used by a `CLASSES` entry) precisely so a custom
+   hero's shots never collide with a classic class's shot sprite lookup.
+3. **The client hero picker gets a "Custom" tab** listing `GET /api/heroes/mine`, rendering each
+   with `spriteFromPixels` (below) instead of `sprite('hero', tint)`, and sending
+   `cls: 'custom:' + hero.id` in the `join`/`hero` message when selected.
+4. **Sprites**: `client/pixelsprite.js` exports `spriteFromPixels(pixels, palette, scale)` — a tiny
+   standalone module (no other Hero Builder UI code, so `client/game.js` can import just this) that
+   renders a hero's `pixels` onto a canvas the same way `client/sprites.js`' `sprite()` renders a
+   built-in sprite. `client/game.js` would call it once per distinct custom hero (cache the
+   returned canvas, same pattern as `sprite()`'s internal cache) and draw that canvas wherever it
+   currently draws `sprite('hero', tint)` for that player.
+
 ## Architecture
 
 ```

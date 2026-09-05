@@ -96,4 +96,27 @@ const runsCols = db.prepare('PRAGMA table_info(runs)').all().map((r) => r.name);
 if (!runsCols.includes('mode')) db.exec("ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'campaign'");
 db.exec('CREATE INDEX IF NOT EXISTS runs_mode_score ON runs(mode, score DESC);');
 
+// Hero Builder (server/heroes.js, shared/hero-builder.js): player-authored custom heroes.
+// `stats` is a JSON object of notches (see shared/hero-builder.js STATS), `pixels` a JSON array
+// of 8 row-strings. `trait` is '' when none is chosen.
+db.exec(`
+CREATE TABLE IF NOT EXISTS heroes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  motto TEXT NOT NULL DEFAULT '',
+  stats TEXT NOT NULL,
+  weapon TEXT NOT NULL,
+  trait TEXT NOT NULL DEFAULT '',
+  pixels TEXT NOT NULL,
+  published INTEGER NOT NULL DEFAULT 0,
+  clones INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS heroes_owner ON heroes(owner_id);
+CREATE INDEX IF NOT EXISTS heroes_pub ON heroes(published, clones DESC);
+`);
+
 export const now = () => Math.floor(Date.now() / 1000);

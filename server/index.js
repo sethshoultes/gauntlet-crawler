@@ -19,6 +19,7 @@ import * as account from './account.js';
 import * as telemetry from './telemetry.js';
 import * as log from './log.js';
 import { heartbeat } from './ws-heartbeat.js';
+import * as heroes from './heroes.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
@@ -84,6 +85,7 @@ function serveStatic(req, res, urlPath) {
 // ---------- REST API ----------
 async function api(req, res, url) {
   const user = auth.userFromToken(auth.bearer(req));
+  if (url.pathname.startsWith('/api/heroes')) return heroes.handle(req, res, url, user);
   const seg = url.pathname.split('/').filter(Boolean); // ['api', ...]
   const m = req.method;
   const need = () => { if (!user) throw Object.assign(new Error('Login required'), { status: 401 }); return user; };

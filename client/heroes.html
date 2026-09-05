@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hero Builder · Gauntlet Crawler</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23a05cff%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%233b7dff%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  .hb { display: grid; grid-template-columns: 280px 1fr 300px; gap: 18px; align-items: start; }
+  @media (max-width: 1100px) { .hb { grid-template-columns: 1fr; } }
+
+  /* ---- pixel editor ---- */
+  #pcv { background: #000; border: 3px solid var(--line); width: 256px; height: 256px; cursor: crosshair; touch-action: none; image-rendering: pixelated; }
+  .swatches { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 10px 0; }
+  .swatch-btn { width: 100%; aspect-ratio: 1; padding: 0; border: 2px solid var(--line); cursor: pointer; }
+  .swatch-btn.on { border-color: var(--yellow); box-shadow: 0 0 0 2px #000, 0 0 0 4px var(--yellow); }
+  .swatch-btn.eraser { background: repeating-conic-gradient(#333 0% 25%, #111 0% 50%) 50% / 8px 8px; }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+  .preview-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+  #preview { image-rendering: pixelated; background: #000; border: 2px solid var(--line); }
+  #preview.flip { transform: scaleX(-1); }
+  .scale-btns button.on { border-color: var(--yellow); color: var(--yellow); }
+
+  /* ---- stats ---- */
+  .budget-bar { height: 10px; background: #000; border: 1px solid var(--line); margin: 4px 0 2px; overflow: hidden; }
+  .budget-bar > div { height: 100%; background: var(--yellow); }
+  .budget-bar.over > div { background: var(--red); }
+  .stat-row { margin: 12px 0; }
+  .stat-row .head { display: flex; justify-content: space-between; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 4px; }
+  .stat-row input[type=range] { width: 100%; }
+  .compare { display: flex; align-items: center; gap: 8px; margin-top: 6px; height: 12px; }
+  .compare .track { position: relative; flex: 1; height: 4px; background: var(--line); }
+  .compare .mark { position: absolute; top: -3px; width: 2px; height: 10px; background: var(--muted); }
+  .compare .mine { position: absolute; top: -4px; width: 4px; height: 12px; background: var(--yellow); }
+  .compare .lbl { font-size: 10px; color: var(--muted); white-space: nowrap; flex: none; }
+
+  .pick-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 8px 0 16px; }
+  .pick { border: 2px solid var(--line); padding: 8px; cursor: pointer; background: #000; text-align: left; font-family: inherit; color: var(--text); }
+  .pick canvas { width: 24px; height: 24px; vertical-align: middle; margin-right: 6px; image-rendering: pixelated; }
+  .pick .n { font-weight: bold; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
+  .pick .d { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .pick.sel { border-color: var(--yellow); }
+  .pick.locked { opacity: .5; cursor: not-allowed; }
+  .pick .req { font-size: 10px; color: var(--red); margin-top: 4px; text-transform: uppercase; }
+
+  /* ---- lists ---- */
+  .hero-list .h { display: flex; align-items: center; gap: 10px; padding: 8px; border-bottom: 1px solid var(--line); }
+  .hero-list .h canvas { width: 32px; height: 32px; image-rendering: pixelated; flex: none; background: #000; border: 1px solid var(--line); }
+  .hero-list .h .who { flex: 1; min-width: 0; }
+  .hero-list .h .n { font-weight: bold; font-size: 13px; }
+  .hero-list .h .s { font-size: 11px; color: var(--muted); }
+  .hero-list .h .btns { display: flex; gap: 4px; flex-wrap: wrap; }
+  .hero-list .h .btns button { padding: 4px 8px; font-size: 11px; }
+  .locked-msg { text-align: center; padding: 40px 20px; }
+  .locked-msg .big { font-size: 20px; color: var(--yellow); text-transform: uppercase; letter-spacing: 2px; margin-bottom: 10px; }
+  #builder[hidden], #locked[hidden], #guest[hidden] { display: none; }
+  .field { margin: 8px 0; } .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 3px; }
+  .field input[type=text], .field input:not([type]), .field textarea, .field select { width: 100%; }
+</style>
+</head>
+<body>
+<nav class="top"></nav>
+<main>
+
+  <div id="guest" class="panel locked-msg">
+    <div class="big">Hero Builder</div>
+    <p class="muted">Log in to design your own hero — custom stats, weapon, trait and pixel art.</p>
+    <button class="primary" id="guest-login">Log in / Register</button>
+  </div>
+
+  <div id="locked" class="panel locked-msg">
+    <div class="big">🔒 Hero Builder</div>
+    <p class="muted">Reach rank 3 to unlock the Hero Builder.</p>
+    <p class="muted" id="locked-rank" style="font-size:12px"></p>
+  </div>
+
+  <div id="builder" class="hb">
+    <!-- left: pixel editor -->
+    <div class="panel">
+      <h2>Pixel Art</h2>
+      <canvas id="pcv" width="256" height="256"></canvas>
+      <div class="swatches" id="swatches"></div>
+      <div class="tools">
+        <button id="eraser-btn">Eraser</button>
+        <button id="mirror-btn">Mirror: Off</button>
+        <button id="clear-btn">Clear</button>
+      </div>
+      <div class="field"><label>Start from a template</label>
+        <select id="preset"><option value="">— choose —</option></select>
+      </div>
+      <div class="preview-row">
+        <canvas id="preview" width="64" height="64"></canvas>
+        <div>
+          <div class="row scale-btns">
+            <button data-scale="1">1x</button><button data-scale="2" class="on">2x</button><button data-scale="4">4x</button>
+          </div>
+          <button id="flip-btn" style="margin-top:6px">Flip facing</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- middle: stats, weapon, trait, identity -->
+    <div>
+      <div class="panel">
+        <h2>Stats <span id="budget-label" class="tag"></span></h2>
+        <div class="budget-bar" id="budget-bar"><div style="width:0%"></div></div>
+        <div id="stats"></div>
+      </div>
+      <div class="panel" style="margin-top:18px">
+        <h2>Weapon</h2>
+        <div class="pick-grid" id="weapons"></div>
+        <h2>Trait</h2>
+        <div class="pick-grid" id="traits"></div>
+      </div>
+      <div class="panel" style="margin-top:18px">
+        <h2>Identity</h2>
+        <div class="field"><label>Name</label><input id="hname" maxlength="12" placeholder="2-12 letters, digits, spaces" /></div>
+        <div class="field"><label>Title <span class="muted">(shown in-game)</span></label><input id="htitle" maxlength="16" placeholder="e.g. The Bruiser" /></div>
+        <div class="field"><label>Motto</label><input id="hmotto" maxlength="60" placeholder="A line of flavor text" /></div>
+        <div id="save-status" class="muted" style="font-size:12px;min-height:16px;margin:6px 0"></div>
+        <button class="primary" id="save-btn" style="width:100%">Save Hero</button>
+      </div>
+    </div>
+
+    <!-- right: my heroes + gallery -->
+    <div>
+      <div class="panel">
+        <h2>My Heroes <span class="tag" id="mine-count"></span></h2>
+        <div class="hero-list" id="mine-list"><span class="muted">No heroes yet — build one!</span></div>
+        <button id="new-btn" style="width:100%;margin-top:8px">+ New Hero</button>
+      </div>
+      <div class="panel" style="margin-top:18px">
+        <h2>Gallery</h2>
+        <div class="hero-list" id="gallery-list"><span class="muted">Loading…</span></div>
+      </div>
+    </div>
+  </div>
+</main>
+<script type="module" src="/heroes.js"></script>
+</body>
+</html>
