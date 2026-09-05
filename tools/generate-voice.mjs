@@ -5,7 +5,9 @@
 // ElevenLabs REST API to synthesize each line, optionally bit-crushing the result (a crude
 // sample-rate reduction, for that cheap-arcade-narrator feel) if `ffmpeg` is on PATH, then writes
 // client/audio/voice/<id>.ogg and an updated client/audio/voice/manifest.json listing every clip
-// that exists on disk.
+// that exists on disk. Without `ffmpeg` the raw ElevenLabs output is kept as <id>.mp3 and those
+// lines are NOT added to the manifest, so the game keeps using speechSynthesis for them until
+// ffmpeg is installed and the script is re-run.
 //
 // If ELEVENLABS_API_KEY is not set, this prints setup instructions and exits 0 (not an error —
 // the game already falls back to speechSynthesis for any line with no pre-rendered clip, so a

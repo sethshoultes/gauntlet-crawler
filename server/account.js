@@ -1,4 +1,5 @@
-// Settings-page account operations: password change (with session rotation), account deletion
+// Settings-page account operations: password change (keeps the current session, revokes all
+// others), account deletion
 // (with cascading cleanup), and a small JSON preferences blob. Kept in its own module so
 // server/index.js only needs to add a handful of route lines that call into here.
 import crypto from 'node:crypto';
