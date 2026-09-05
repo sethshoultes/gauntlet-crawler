@@ -17,7 +17,7 @@ function loadSentry() {
   if (!sentryPromise) {
     sentryPromise = import('@sentry/node').then((Sentry) => {
       Sentry.init({
-        dsn: process.env.SENTRY_DSN,
+        dsn: dsn(),
         environment: process.env.SENTRY_ENVIRONMENT || 'production',
         tracesSampleRate: 0,
         defaultIntegrations: false,
@@ -33,7 +33,14 @@ function loadSentry() {
 /** True when SENTRY_DSN is set. Callers (server/log.js, server/index.js) use this to decide
  *  whether to mention Sentry at all -- it's also what GET /api/health reports as `sentry`. */
 export function enabled() {
-  return Boolean(process.env.SENTRY_DSN);
+  return dsn() !== null;
+}
+
+/** The configured DSN, or null when unset or blank (a whitespace-only value is not a DSN and must
+ *  not report Sentry as enabled or trigger an init attempt). */
+function dsn() {
+  const v = (process.env.SENTRY_DSN || '').trim();
+  return v.length ? v : null;
 }
 
 // Any key matching this, at any depth, is dropped before an event leaves the process: auth

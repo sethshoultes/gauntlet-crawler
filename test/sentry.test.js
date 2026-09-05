@@ -183,3 +183,14 @@ test('isSensitiveKey() catches IP-bearing header names but leaves words that mer
   assert.deepEqual(out.request.headers, { 'User-Agent': 'ua' });
   assert.equal(out.shipping, 'kept');
 });
+
+test('a whitespace-only SENTRY_DSN counts as unset', () => {
+  const prev = process.env.SENTRY_DSN;
+  process.env.SENTRY_DSN = '   ';
+  try {
+    assert.equal(sentry.enabled(), false);
+    assert.doesNotThrow(() => sentry.captureError('ignored', { stack: 'Error: x' }));
+  } finally {
+    if (prev === undefined) delete process.env.SENTRY_DSN; else process.env.SENTRY_DSN = prev;
+  }
+});

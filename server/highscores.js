@@ -19,6 +19,12 @@ const INITIALS_WINDOW_SECONDS = 5 * 60;
 
 function fail(status, message) { throw Object.assign(new Error(message), { status }); }
 
+/** `Math.floor(n)` when `n` is a finite number, else `fallback`; never below `min`. */
+function finiteInt(n, fallback, min) {
+  const v = Number(n);
+  return Math.max(min, Number.isFinite(v) ? Math.floor(v) : fallback);
+}
+
 // Claim tokens are always 16 random bytes as 32 lowercase hex chars (see recordHighScore below).
 const CLAIM_TOKEN_SHAPE = /^[0-9a-f]{32}$/;
 
@@ -55,10 +61,15 @@ export function qualifiesForHighScore(score, topScores, limit = 10) {
  *  run's claim token is handed back; the caller (server/game/room.js) must relay it only to the
  *  client that owns this run. */
 export function recordHighScore({ userId = null, guestId = null, username = null, cls, score, level, mode = 'campaign', endedAt }) {
+  // Coerce to finite integers up front: NaN/Infinity (a malformed debug call, an unexpected sim
+  // state) would otherwise reach sqlite as-is and either throw or break the claim-window maths.
+  const safeScore = finiteInt(score, 0, 0);
+  const safeLevel = finiteInt(level, 1, 1);
+  const safeEndedAt = finiteInt(endedAt, now(), 0);
   const topScores = topScoreValuesStmt.all(10).map((r) => r.score);
-  const qualifies = qualifiesForHighScore(score, topScores, 10);
+  const qualifies = qualifiesForHighScore(safeScore, topScores, 10);
   const token = crypto.randomBytes(16).toString('hex');
-  const { lastInsertRowid } = insertStmt.run(userId, guestId, username, cls, Math.max(0, Math.floor(score) || 0), Math.max(1, Math.floor(level) || 1), mode, endedAt ?? now(), token);
+  const { lastInsertRowid } = insertStmt.run(userId, guestId, username, cls, safeScore, safeLevel, mode, safeEndedAt, token);
   return { id: Number(lastInsertRowid), qualifies, token };
 }
 

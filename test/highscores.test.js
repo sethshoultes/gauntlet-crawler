@@ -183,3 +183,12 @@ test('HTTP: GET /api/highscores shape/order, POST /api/runs/:id/initials validat
 });
 
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });
+
+test('recordHighScore coerces non-finite score/level/endedAt to safe integers instead of storing NaN', () => {
+  const { id } = recordHighScore({ guestId: 'guest-nan', cls: 'wizard', score: NaN, level: Infinity, endedAt: 'soon' });
+  const row = topHighScores(100).find((r) => r.class === 'wizard' && r.score === 0);
+  assert.ok(row, 'a NaN score is stored as 0');
+  assert.equal(row.level_reached, 1, 'an infinite level is stored as the minimum, 1');
+  assert.ok(Number.isFinite(row.ended_at) && row.ended_at > 0, 'a bad endedAt falls back to now()');
+  assert.ok(id > 0);
+});
