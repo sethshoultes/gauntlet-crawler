@@ -1,0 +1,12 @@
+# Caddy reverse proxy for Gauntlet Crawler.
+#
+# {$DOMAIN} defaults to "localhost" (self-signed / local cert) when the
+# DOMAIN environment variable is unset. Point DOMAIN at a real hostname
+# (with DNS already pointed at this server) to get automatic HTTPS via
+# Let's Encrypt.
+#
+# Caddy proxies WebSocket upgrade requests transparently, so no special
+# config is needed for the game's /ws connection.
+{$DOMAIN:localhost} {
+	reverse_proxy app:3000
+}

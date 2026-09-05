@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Level Builder · Gauntlet Crawler</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  .ed { display: grid; grid-template-columns: 260px 1fr; gap: 18px; }
+  @media (max-width: 900px) { .ed { grid-template-columns: 1fr; } }
+  .pal { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .pal button { padding: 4px; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 9px; text-transform: none; letter-spacing: 0; }
+  .pal button canvas { width: 24px; height: 24px; }
+  .pal button.on { border-color: var(--yellow); }
+  #ecv { background: #000; border: 3px solid var(--line); max-width: 100%; cursor: crosshair; }
+  .field { margin: 8px 0; } .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 3px; }
+  .field input[type=text], .field textarea, .field select { width: 100%; }
+  .problems { color: var(--red); font-size: 12px; } .ok { color: var(--green); font-size: 12px; }
+  .levels .l { display: flex; justify-content: space-between; align-items: center; padding: 8px; border-bottom: 1px solid var(--line); gap: 8px; }
+  .ai { border-color: var(--purple); } .ai h2 { color: var(--purple); }
+  .badge { font-size: 10px; padding: 2px 6px; border: 1px solid var(--purple); color: var(--purple); text-transform: uppercase; }
+  #status { font-size: 12px; min-height: 18px; }
+</style>
+</head>
+<body>
+<nav class="top"></nav>
+<main>
+  <div class="ed">
+    <div>
+      <div class="panel ai">
+        <h2>🤖 AI Level Builder</h2>
+        <div class="field"><label>Describe your dungeon</label><textarea id="prompt" rows="4" placeholder="A haunted crypt full of ghosts with a treasure vault behind two locked doors, and a demon guarding the exit"></textarea></div>
+        <div class="row">
+          <div class="field" style="flex:1"><label>Difficulty <span id="diffv">4</span>/10</label><input type="range" id="diff" min="1" max="10" value="4" style="width:100%" /></div>
+          <div class="field"><label>Size</label><select id="size"><option value="small">Small</option><option value="medium" selected>Medium</option><option value="large">Large</option></select></div>
+        </div>
+        <button class="primary" id="gen" style="width:100%">Generate with AI</button>
+        <div id="ai-note" class="muted" style="font-size:11px;margin-top:6px"></div>
+        <hr style="border-color:var(--line);margin:12px 0" />
+        <div class="row"><input id="seed" placeholder="seed" style="width:90px" /><input id="plevel" type="number" min="1" max="60" value="3" style="width:64px" title="difficulty level" /><button id="procgen">Procedural</button></div>
+      </div>
+      <div class="panel" style="margin-top:18px">
+        <h2>Palette</h2>
+        <div class="pal" id="pal"></div>
+        <p class="muted" style="font-size:11px;margin:10px 0 0">Click or drag to paint. Right-click paints floor. Shift-click floods a region.</p>
+      </div>
+    </div>
+    <div>
+      <div class="panel">
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <div class="field" style="margin:0"><label>Name</label><input type="text" id="name" maxlength="40" style="width:220px" /></div>
+            <div class="field" style="margin:0"><label>Size</label><span class="row"><input type="number" id="w" min="12" max="64" value="32" style="width:64px" /> × <input type="number" id="h" min="12" max="64" value="24" style="width:64px" /><button id="resize" style="padding:6px 8px;font-size:11px">Resize</button></span></div>
+          </div>
+          <span id="source"></span>
+        </div>
+        <div class="field"><label>Description</label><input type="text" id="desc" maxlength="200" /></div>
+        <canvas id="ecv" class="pixel"></canvas>
+        <div id="status" style="margin-top:6px"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="test">▶ Test play</button>
+          <button id="save">Save</button>
+          <button id="publish">Publish</button>
+          <button id="new">New</button>
+          <button id="clear">Clear</button>
+          <button id="delete" class="danger">Delete</button>
+          <button id="export">Export text</button>
+        </div>
+        <textarea id="io" rows="6" style="display:none;width:100%;margin-top:8px;font-size:11px" spellcheck="false"></textarea>
+      </div>
+      <div class="grid2" style="margin-top:18px">
+        <div class="panel"><h2>My levels</h2><div class="levels" id="mine"><span class="muted">Log in to save levels.</span></div></div>
+        <div class="panel" id="browse"><h2>Community levels</h2><div class="levels" id="pub"><span class="muted">Loading…</span></div></div>
+      </div>
+    </div>
+  </div>
+</main>
+<footer>Gauntlet Crawler</footer>
+<script type="module" src="/editor.js"></script>
+</body>
+</html>
