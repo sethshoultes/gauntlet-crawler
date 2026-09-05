@@ -102,8 +102,13 @@ async function main() {
       if (canCrush) {
         const tmpPath = path.join(OUT_DIR, `${id}.raw.mp3`);
         await fs.writeFile(tmpPath, mp3);
-        await crushToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`));
-        await fs.rm(tmpPath, { force: true });
+        // Always remove the temp file, even when the crush step itself fails (bad codec, corrupt
+        // input): otherwise a partial failure leaves stray `.raw.mp3` artifacts in OUT_DIR.
+        try {
+          await crushToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`));
+        } finally {
+          await fs.rm(tmpPath, { force: true });
+        }
         console.log('ok (.ogg, bit-crushed)');
       } else {
         await fs.writeFile(path.join(OUT_DIR, `${id}.mp3`), mp3);
