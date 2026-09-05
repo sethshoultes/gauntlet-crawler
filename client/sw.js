@@ -7,29 +7,15 @@
 // navigations, and — per shouldHandle()/isNetworkOnly() in ./sw-rules.js — the REST API, the
 // WebSocket upgrade and this file itself are never intercepted at all. POST/PUT/DELETE responses
 // are never written to the cache even for an otherwise-cacheable path.
-import { shouldHandle } from './sw-rules.js';
+import { shouldHandle, PRECACHE_URLS } from './sw-rules.js';
 
 // Bump this whenever the precached shell changes, so activate() drops the previous cache instead
 // of serving stale assets forever. Plain string constant — there's no build step to stamp one in.
-const SW_VERSION = 'v1';
+const SW_VERSION = 'v2';
 const CACHE_NAME = `gauntlet-shell-${SW_VERSION}`;
 
-// The static app shell: every asset a fresh visit needs before the game can work offline. Kept as
-// an explicit list (rather than a runtime crawl) so precaching is deterministic and testable.
-const PRECACHE_URLS = [
-  '/', '/index.html', '/admin.html', '/attract.html', '/cutscenes-demo.html', '/dashboard.html',
-  '/editor.html', '/heroes.html', '/settings.html', '/trailer.html',
-  '/style.css', '/manifest.webmanifest',
-  '/pwa.js', '/sw-rules.js',
-  '/admin.js', '/attract-idle.js', '/attract.js', '/audio.js', '/common.js', '/cutscenes.js',
-  '/dashboard.js', '/editor.js', '/font.js', '/game.js', '/heroes.js', '/highscore.js', '/input.js',
-  '/pixelsprite.js', '/settings.js', '/sprites.js', '/voice.js',
-  '/shared/achievements.js', '/shared/chests.js', '/shared/constants.js', '/shared/hero-builder.js',
-  '/shared/level.js', '/shared/procgen.js', '/shared/progression.js', '/shared/rng.js', '/shared/unlocks.js',
-  '/audio/voice/manifest.json',
-  '/media/title-backdrop.webp', '/media/title-card.webp',
-  '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-512-maskable.png', '/icons/apple-touch-icon.png',
-];
+// PRECACHE_URLS (the static app shell) is defined in ./sw-rules.js so the unit tests can pin it
+// to the real file set; see the comment there.
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
@@ -73,8 +59,10 @@ self.addEventListener('fetch', (event) => {
     if (cached) return cached;
     const response = await fetch(request);
     if (response.ok) {
+      // Awaited on purpose: a fire-and-forget put() races an immediate offline reload, which
+      // could then miss a module cached "a moment later" and fail to import it.
       const cache = await caches.open(CACHE_NAME);
-      cache.put(request, response.clone());
+      await cache.put(request, response.clone());
     }
     return response;
   })());

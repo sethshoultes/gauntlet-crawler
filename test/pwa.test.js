@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startServer } from './helpers/server.mjs';
-import { isNetworkOnly, shouldHandle } from '../client/sw-rules.js';
+import { isNetworkOnly, shouldHandle, PRECACHE_URLS } from '../client/sw-rules.js';
 import { ICON_SPECS, ICONS_DIR, generateAll } from '../tools/generate-icons.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -138,5 +138,23 @@ test('sw-rules: isNetworkOnly/shouldHandle never let /api, /ws or /sw.js be cach
   // POST/PUT/DELETE responses are never cached, even on an otherwise-cacheable path.
   for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
     assert.equal(shouldHandle(get('/', { method })), false, `${method} / must not be cached`);
+  }
+});
+
+test('PRECACHE_URLS covers every client and shared module, so an offline reload can never miss an import', () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const clientJs = fs.readdirSync(path.join(root, 'client')).filter((f) => f.endsWith('.js') && f !== 'sw.js').map((f) => `/${f}`);
+  const sharedJs = fs.readdirSync(path.join(root, 'shared')).filter((f) => f.endsWith('.js')).map((f) => `/shared/${f}`);
+  const html = fs.readdirSync(path.join(root, 'client')).filter((f) => f.endsWith('.html')).map((f) => `/${f}`);
+  const set = new Set(PRECACHE_URLS);
+  for (const url of [...clientJs, ...sharedJs, ...html]) assert.ok(set.has(url), `${url} is missing from PRECACHE_URLS`);
+  assert.equal(set.has('/sw.js'), false, 'the worker script itself must never be precached');
+  // And nothing listed points at a file that does not exist (a typo would make cache.addAll()
+  // reject and the install fail wholesale).
+  for (const url of PRECACHE_URLS) {
+    if (url === '/') continue;
+    // /shared/* is served from the repo's shared/ directory, everything else from client/.
+    const file = url.startsWith('/shared/') ? path.join(root, url.slice(1)) : path.join(root, 'client', url.slice(1));
+    assert.ok(fs.existsSync(file), `${url} is precached but does not exist on disk`);
   }
 });

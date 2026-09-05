@@ -39,3 +39,24 @@ export function shouldHandle(request) {
   if (method !== 'GET') return false;
   return !isNetworkOnly(request);
 }
+
+/** The static app shell precached at install. Lives here (not in sw.js, which needs a
+ * ServiceWorkerGlobalScope) so test/pwa.test.js can pin it to the real file set: every client
+ * module under client/ except the worker itself, every shared module, and the static assets the
+ * pages need. A module missing from this list is fetched and cached at runtime while online, but
+ * an offline reload before that happens would then fail to import it — which is exactly how the
+ * lobby broke in CI after layout.js and paint-path.js landed. */
+export const PRECACHE_URLS = [
+  '/', '/index.html', '/admin.html', '/attract.html', '/cutscenes-demo.html', '/dashboard.html',
+  '/editor.html', '/heroes.html', '/settings.html', '/trailer.html',
+  '/style.css', '/manifest.webmanifest',
+  '/pwa.js', '/sw-rules.js',
+  '/admin.js', '/attract-idle.js', '/attract.js', '/audio.js', '/common.js', '/cutscenes.js',
+  '/dashboard.js', '/editor.js', '/font.js', '/game.js', '/heroes.js', '/highscore.js', '/input.js',
+  '/layout.js', '/paint-path.js', '/pixelsprite.js', '/settings.js', '/sprites.js', '/voice.js',
+  '/shared/achievements.js', '/shared/chests.js', '/shared/constants.js', '/shared/hero-builder.js',
+  '/shared/level.js', '/shared/procgen.js', '/shared/progression.js', '/shared/rng.js', '/shared/unlocks.js',
+  '/audio/voice/manifest.json',
+  '/media/title-backdrop.webp', '/media/title-card.webp',
+  '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-512-maskable.png', '/icons/apple-touch-icon.png',
+];
