@@ -11,7 +11,7 @@ import { shouldHandle, PRECACHE_URLS } from './sw-rules.js';
 
 // Bump this whenever the precached shell changes, so activate() drops the previous cache instead
 // of serving stale assets forever. Plain string constant — there's no build step to stamp one in.
-const SW_VERSION = 'v2';
+const SW_VERSION = 'v3';
 const CACHE_NAME = `gauntlet-shell-${SW_VERSION}`;
 
 // PRECACHE_URLS (the static app shell) is defined in ./sw-rules.js so the unit tests can pin it
