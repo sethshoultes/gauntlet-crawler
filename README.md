@@ -82,6 +82,12 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   test-play instantly, save, publish to the community list, and play other people's levels.
 - **AI generator**: describe a dungeon, pick difficulty and size. With an Anthropic key the server asks Claude for a level
   as structured JSON, validates and auto-repairs it, and falls back to the procedural generator if anything is off.
+  `POST /api/levels/generate` validates input and rate-limits as normal, then starts generation in the background and
+  replies `202 {jobId, status:'pending'}` immediately; the client polls `GET /api/levels/generate/:jobId` every couple
+  of seconds until it reports `{status:'done', level, source, problems, note, unlocked}` (or `{status:'error', error}`) —
+  jobs are scoped to the caller who started them and expire 10 minutes after finishing. Pass `?wait=1` on the POST to
+  get the old synchronous response back instead, for tests and scripts. This exists because production sits behind
+  Cloudflare, which kills any proxied request running past 100 seconds, and Claude generation can take close to that long.
 - **Chest intermission** (`shared/chests.js`): after clearing a level, a 15s pick window opens where every player is
   offered three hidden chests rolled from a seeded RNG (potions, keys, health, temporary next-level-only boosts like
   speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
@@ -224,7 +230,8 @@ and in-room hero pickers both list `GET /api/heroes/mine` under a "Custom" tab, 
 
 See the Features list above — `/editor.html` (paint/flood-fill/resize/import-export/validate/publish)
 and the "Generate with AI" prompt (Claude with a procedural fallback) are covered there. The AI side
-lives in `server/ai/levelgen.js`; the shared validate/repair logic both sides rely on lives in
+lives in `server/ai/levelgen.js`; the async job queue backing the `/api/levels/generate*` endpoints
+lives in `server/ai/jobs.js`; the shared validate/repair logic both sides rely on lives in
 `shared/level.js`.
 
 ### Cutscenes and attract mode
@@ -458,6 +465,7 @@ server/            Node HTTP + WebSocket server
   game/room.js     a running dungeon: tick loop, level progression, stats and achievement hooks
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
+  ai/jobs.js       in-memory job store backing the async /api/levels/generate* endpoints
   db.js            node:sqlite connection + schema migrations
   auth.js          registration, login/logout, bearer-token sessions
   stats.js         per-user stat counters + achievement unlocking

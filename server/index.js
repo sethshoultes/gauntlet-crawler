@@ -11,6 +11,7 @@ import * as auth from './auth.js';
 import * as stats from './stats.js';
 import { Lobby } from './game/lobby.js';
 import { generateFromPrompt, aiAvailable } from './ai/levelgen.js';
+import * as jobs from './ai/jobs.js';
 import { validateLevel, parseLevel } from '../shared/level.js';
 import { CLASSES } from '../shared/constants.js';
 import { generateLevel } from '../shared/procgen.js';
@@ -194,12 +195,33 @@ async function api(req, res, url) {
   }
   if (m === 'POST' && url.pathname === '/api/levels/generate') {
     const ip = req.socket.remoteAddress || 'x';
-    if (!rateLimit('gen:' + (user ? 'u' + user.id : ip), 6, 60_000)) return json(res, 429, { error: 'Slow down: 6 generations per minute' });
+    const owner = user ? 'u' + user.id : ip; // same identity used for the rate-limit bucket below; scopes job polling too
+    if (!rateLimit('gen:' + owner, 6, 60_000)) return json(res, 429, { error: 'Slow down: 6 generations per minute' });
     const b = await readBody(req);
-    const out = await generateFromPrompt({ prompt: b.prompt, difficulty: Math.max(1, Math.min(10, Number(b.difficulty) || 3)), size: ['small', 'medium', 'large'].includes(b.size) ? b.size : 'medium' });
-    let unlocked = [];
-    if (user && out.source === 'ai') unlocked = stats.bump(user.id, 'ai_levels');
-    return json(res, 200, { ...out, unlocked });
+    const genArgs = { prompt: b.prompt, difficulty: Math.max(1, Math.min(10, Number(b.difficulty) || 3)), size: ['small', 'medium', 'large'].includes(b.size) ? b.size : 'medium' };
+    const runGenerate = async () => {
+      const out = await generateFromPrompt(genArgs);
+      let unlocked = [];
+      if (user && out.source === 'ai') unlocked = stats.bump(user.id, 'ai_levels');
+      return { ...out, unlocked };
+    };
+    // Claude generation can take up to ~100s; Cloudflare (in front of production) kills any
+    // proxied request past 100s, so by default we start the work in the background and hand
+    // back a job id to poll instead of holding the connection open. `?wait=1` keeps the old
+    // synchronous shape for tests and scripts that don't go through the proxy.
+    if (url.searchParams.get('wait') === '1') return json(res, 200, await runGenerate());
+    const jobId = jobs.startJob(owner, runGenerate);
+    return json(res, 202, { jobId, status: 'pending' });
+  }
+  if (m === 'GET' && /^\/api\/levels\/generate\/[^/]+$/.test(url.pathname)) {
+    const ip = req.socket.remoteAddress || 'x';
+    const owner = user ? 'u' + user.id : ip;
+    const jobId = url.pathname.slice('/api/levels/generate/'.length);
+    const job = jobs.getJob(jobId, owner);
+    if (!job) return json(res, 404, { error: 'No such job' });
+    if (job.status === 'pending') return json(res, 200, { status: 'pending' });
+    if (job.status === 'error') return json(res, 200, { status: 'error', error: job.error });
+    return json(res, 200, { status: 'done', ...job.result });
   }
   if (m === 'POST' && url.pathname === '/api/levels') {
     const u = need();
