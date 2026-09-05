@@ -215,7 +215,7 @@ test('POST /api/levels/ai/explain: 200 with a non-empty explanation, then 429 on
 test('remix and explain share the same per-user AI rate-limit bucket as /api/levels/generate', async () => {
   await withServer(async ({ baseUrl }) => {
     const { headers } = await registerUser(baseUrl, 'sharedbucket1');
-    const gen = await fetch(`${baseUrl}/api/levels/generate`, { method: 'POST', headers, body: JSON.stringify({ prompt: 'a small crypt' }) });
+    const gen = await fetch(`${baseUrl}/api/levels/generate?wait=1`, { method: 'POST', headers, body: JSON.stringify({ prompt: 'a small crypt' }) });
     assert.equal(gen.status, 200);
     const level = generateLevel({ seed: 'ep-shared', level: 4 });
     const remix = await fetch(`${baseUrl}/api/levels/ai/remix`, { method: 'POST', headers, body: JSON.stringify({ level, mode: 'remix' }) });

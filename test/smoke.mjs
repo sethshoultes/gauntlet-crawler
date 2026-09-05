@@ -128,13 +128,13 @@ async function main() {
     if (failedRequests.length) throw new Error(`failed requests:\n${failedRequests.join('\n')}`);
     log('browser session clean: no page errors, console errors, or failed requests');
 
-    log('checking POST /api/levels/generate (procedural fallback, no ANTHROPIC_API_KEY)');
-    const genRes = await fetch(baseUrl + '/api/levels/generate', {
+    log('checking POST /api/levels/generate?wait=1 (procedural fallback, no ANTHROPIC_API_KEY)');
+    const genRes = await fetch(baseUrl + '/api/levels/generate?wait=1', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ prompt: 'a small crypt guarded by ghosts', difficulty: 3, size: 'small' }),
     });
-    if (!genRes.ok) throw new Error(`POST /api/levels/generate -> HTTP ${genRes.status}`);
+    if (!genRes.ok) throw new Error(`POST /api/levels/generate?wait=1 -> HTTP ${genRes.status}`);
     const gen = await genRes.json();
     if (gen.source !== 'procedural') throw new Error(`expected source 'procedural', got '${gen.source}'`);
     if (!Array.isArray(gen.problems) || gen.problems.length !== 0) {

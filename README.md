@@ -108,6 +108,12 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   levels also get an AI-written name and one-sentence description when a key is configured, fetched ahead of time for
   the *next* level so the tick/level-load path itself never waits on the network — see "Level Builder and AI generator"
   below.
+  `POST /api/levels/generate` validates input and rate-limits as normal, then starts generation in the background and
+  replies `202 {"jobId": "<id>", "status": "pending"}` immediately; the client polls `GET /api/levels/generate/:jobId` every couple
+  of seconds until it reports `{"status": "done", "level": {...}, "source": "ai"|"procedural", "problems": [], "note": "...", "unlocked": []}` (or `{"status": "error", "error": "..."}`) —
+  jobs are scoped to the caller who started them and expire 10 minutes after finishing. Pass `?wait=1` on the POST to
+  get the old synchronous response back instead, for tests and scripts. This exists because production sits behind
+  Cloudflare, which kills any proxied request running past 100 seconds, and Claude generation can take close to that long.
 - **Chest intermission** (`shared/chests.js`): after clearing a level, a 15s pick window opens where every player is
   offered three hidden chests rolled from a seeded RNG (potions, keys, health, temporary next-level-only boosts like
   speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
@@ -334,7 +340,8 @@ and in-room hero pickers both list `GET /api/heroes/mine` under a "Custom" tab, 
 
 See the Features list above — `/editor.html` (paint/flood-fill/resize/import-export/validate/publish)
 and the "Generate with AI" prompt (Claude with a procedural fallback) are covered there. The AI side
-lives in `server/ai/levelgen.js`; the shared validate/repair logic both sides rely on lives in
+lives in `server/ai/levelgen.js`; the async job queue backing the `/api/levels/generate*` endpoints
+lives in `server/ai/jobs.js`; the shared validate/repair logic both sides rely on lives in
 `shared/level.js`.
 
 **AI remix and tune (#17)** — same file, same structured-JSON pattern, three more exports:
@@ -727,6 +734,7 @@ server/            Node HTTP + WebSocket server
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
   ai/herogen.js    Claude-backed Hero Builder AI Assist (build + sprite from a prompt), preset fallback
+  ai/jobs.js       in-memory job store backing the async /api/levels/generate* endpoints
   db.js            node:sqlite connection + schema migrations
   auth.js          registration, login/logout, bearer-token sessions
   stats.js         per-user stat counters + achievement unlocking
@@ -786,6 +794,7 @@ Optional environment variables:
 | `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
 | `ANTHROPIC_API_KEY` | Enables the AI level builder, the Hero Builder's AI Assist, and the opt-in [AI Narrator](#ai-narrator-18). Without it: "Generate with AI" falls back to the procedural generator, AI Assist suggests a preset hero (both still steered by your prompt), and AI Narrator silently produces no lines (the toggle is disabled client-side too) |
 | `GAUNTLET_AI_MODEL` | Claude model id for level generation, Hero Builder AI Assist, and AI Narrator commentary (default `claude-opus-5`) |
+| `TRUST_PROXY` | Set to `1` when running behind Cloudflare/nginx so rate limits and per-caller job scoping use `cf-connecting-ip` / `x-forwarded-for` instead of the proxy's address. Leave unset when clients connect directly (headers could be spoofed) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
 | `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Takes precedence over any previously-persisted salt when set; auto-generated and persisted if unset — see [Privacy](#privacy) |
 | `SENTRY_DSN` | Enables forwarding server and client errors to Sentry (or a compatible DSN endpoint). Unset means Sentry is never imported and the first-party `errors` table is the only sink — see [Error reporting](#error-reporting) |
