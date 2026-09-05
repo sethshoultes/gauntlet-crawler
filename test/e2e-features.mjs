@@ -66,7 +66,9 @@ async function sendDebug(page, msg) { await page.evaluate((m) => window.__gc.sen
 async function clearLog(page) {
   await page.evaluate(() => { const el = document.querySelector('#log'); if (el) el.innerHTML = ''; });
 }
-async function logIncludes(page, text, timeoutMs = 6000) {
+// Default generous enough for a slow CI runner: these are positive waits, so a longer timeout only
+// delays a genuine failure, it never masks one.
+async function logIncludes(page, text, timeoutMs = 10_000) {
   await page.waitForFunction((t) => (document.querySelector('#log')?.textContent || '').includes(t), text, { timeout: timeoutMs });
 }
 async function resolvePid(spy, name, timeoutMs = 5000) {
@@ -283,7 +285,9 @@ async function main() {
       const before = Number((await readSelfHud(pageD)).level.match(/\d+/)[0]);
       await loadFixture({ '5,1': '8' }); // skip exit
       await pressFor(pageD, 'd', 700);
-      await logIncludes(pageD, 'Choose a chest');
+      // The level-clear flow plays its banner/cutscene beat before the chest offer arrives, which
+      // took ~5s locally and longer on CI, so this wait gets the same headroom as the level check.
+      await logIncludes(pageD, 'Choose a chest', 20_000);
       await pageD.keyboard.press('1');
       await pageD.waitForFunction((n) => {
         const t = document.querySelector('#hud-lvl')?.textContent || '';
