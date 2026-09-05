@@ -2,15 +2,27 @@
 // protocol handshake, canvas rendering of the 20 Hz snapshot, HUD, chat, and the narrator/cutscene
 // trigger points (see client/audio.js, client/voice.js, client/cutscenes.js).
 import { api, me, token, toast, renderNav, esc, cssToken, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
-import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
+import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT, PLATE_TINT } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
-import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER } from '/shared/constants.js';
+import {
+  T, CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER,
+  AMULET_TILES, BOOST_TILES, AMULET_NAMES, BOOST_NAMES,
+} from '/shared/constants.js';
 import { PALETTES, requirementText } from '/shared/unlocks.js';
 import { BOOST_ICONS } from '/shared/chests.js';
+// HUD icon for each run-boost stat (permanent) and each amulet kind (temporary) — cosmetic only,
+// the actual glyph on the map comes from client/sprites.js's amulet_*/boost_* sprites.
+const RUN_BOOST_ICON = { speed: '💨', armor: '🛡️', shotPower: '⚔️', shotSpeed: '🔫', magic: '🔮' };
+const AMULET_ICON = { invis: '👻', reflect: '🪞', repulse: '🌀', super: '⭐' };
+// BOOST_TILES/AMULET_TILES (shared/constants.js) already map the snapshot's single-char tile
+// code (see sim.js snapshot()'s encodeBoosts/encodeAmulets) back to the internal kind/stat key.
 import { STATS as HERO_STATS, PALETTE as HERO_PALETTE } from '/shared/hero-builder.js';
 import { initAudio, sfx, setMuted } from './audio.js';
 import { say as voiceSay } from './voice.js';
 import { playCutscene, hasSeen, markSeen, getScene } from './cutscenes.js';
+import * as Input from './input.js'; // touch d-pad, auto-fire and gamepad/local-multiplayer input (#15)
+import { showInitialsModal } from './highscore.js';
+import { startIdleAttract } from './attract-idle.js';
 const RESUME_KEY = 'gc_resume';
 const GUEST_KEY = 'gc_guest_id';
 // Durable guest identity (#7): minted by the server on our first join and echoed back in every
@@ -220,7 +232,9 @@ setInterval(() => { if (!G.ws) loadRooms(); }, 5000);
 const G = {
   ws: null, pid: null, room: null, level: null, grid: null, players: new Map(), // id -> {name, cls}
   prev: null, cur: null, prevAt: 0, curAt: 0, tiles: {}, fx: [], notices: [],
+  tileChangedAt: new Map(), // "x,y" -> performance.now() of its last 'tile' event, for the brief dissolve flash (#11)
   input: { dx: 0, dy: 0, fire: false }, lastSent: '', camX: 0, camY: 0, overlay: null, muted: localStorage.getItem('gc_mute') === '1', narrate: localStorage.getItem('gc_narrate') !== '0',
+  aiNarrator: localStorage.getItem('gc_ai_narrator') === '1', // opt-in AI narrator commentary (#18); off unless explicitly turned on
   followId: null, lastFood: 0, shake: 0,
   inRoom: false, reconnecting: false, reconnectAttempts: 0, reconnectTimer: null,
   intermission: null, // { seconds, startedAt, totalMs, chests, picks:Map<pid,chest>, myPick, rects[] }
@@ -228,6 +242,7 @@ const G = {
   bonus: null, // { total, startedAt } — treasure-room countdown (see 'bonus' message)
   keyCount: 0, foodShotCount: 0, // per-level narrator counters
   lastMagicNag: 0, lastDying: 0, // narrator rate-limit timestamps
+  hsTokens: new Map(), // runId -> claim token (private 'hstoken' message, #14 ownership check)
 };
 // exposed for manual/E2E debugging only — not used by the game itself
 window.__gc = {
@@ -248,7 +263,7 @@ function joinGame(opts) {
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
   ws.onopen = () => {
-    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, guestId, ...opts }));
+    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, guestId, aiNarrator: G.aiNarrator, ...opts }));
   };
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
@@ -271,7 +286,7 @@ function attemptReconnect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null, guestId }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null, guestId, aiNarrator: G.aiNarrator }));
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
   ws.onerror = () => {};
@@ -282,6 +297,7 @@ function leaveGame(reason) {
   G.reconnecting = false; G.reconnectAttempts = 0; G.inRoom = false;
   if (G.ws) { try { G.ws.close(); } catch {} }
   G.ws = null; G.level = null; G.cur = G.prev = null; G.players.clear(); G.overlay = null; G.room = null;
+  Input.resetLocalPlayers();
   clearResume();
   $('#game').classList.remove('on'); $('#roomscreen').classList.remove('on'); $('#session').classList.remove('on');
   $('#lobby').style.display = ''; $('#touch').classList.remove('on');
@@ -293,6 +309,9 @@ $('#leave').onclick = () => { if (G.ws) G.ws.send(JSON.stringify({ t: 'leave' })
 
 function onMessage(m) {
   switch (m.t) {
+    // Arcade high scores (#14): private per-connection claim token for our own just-ended run,
+    // sent ahead of the room-wide 'gameover' broadcast — see server/game/room.js endRun().
+    case 'hstoken': G.hsTokens.set(m.runId, m.token); break;
     case 'welcome':
       G.pid = m.pid; G.room = m.room; G.inRoom = true; G.reconnecting = false; G.reconnectAttempts = 0;
       if (m.guestId && m.guestId !== guestId) { guestId = m.guestId; try { localStorage.setItem(GUEST_KEY, guestId); } catch {} }
@@ -322,6 +341,7 @@ function onMessage(m) {
     case 'level':
       G.level = m; G.grid = m.rows.map((r) => r.split(''));
       G.prev = G.cur = null; G.fx = []; G.sealed = !!m.sealed; G.bonus = null;
+      G.tileChangedAt.clear();
       G.keyCount = 0; G.foodShotCount = 0;
       G.overlay = { kind: 'level', title: `LEVEL ${m.index}`, sub: m.name, until: performance.now() + 2500 };
       log(`<span class="n">Level ${m.index}: ${esc(m.name)}</span> <span class="muted">${esc(m.description || '')}</span>`);
@@ -331,8 +351,12 @@ function onMessage(m) {
       break;
     case 'bonus':
       G.bonus = { total: m.seconds, startedAt: performance.now() };
-      G.overlay = { kind: 'bonus', title: 'BONUS ROUND!', sub: 'Grab treasure — any exit will do', until: performance.now() + 2500 };
-      log('<span class="n">Bonus treasure room! Grab everything before time runs out.</span>');
+      G.overlay = m.mystery
+        ? { kind: 'bonus', title: 'MYSTERY ROOM!', sub: 'The exit is hidden — find it or the switch', until: performance.now() + 2500 }
+        : { kind: 'bonus', title: 'BONUS ROUND!', sub: 'Grab treasure — any exit will do', until: performance.now() + 2500 };
+      log(m.mystery
+        ? '<span class="n">Mystery treasure room! The exit is hidden — find the switch or clear every treasure tile.</span>'
+        : '<span class="n">Bonus treasure room! Grab everything before time runs out.</span>');
       sfx('level');
       playScene('treasure_room');
       break;
@@ -356,6 +380,14 @@ function onMessage(m) {
       log(`<span class="n">${title} — reached level ${m.level}. ${lines}</span>`);
       sfx(m.reason === 'cap' ? 'victory' : 'gameover');
       playScene(m.reason === 'cap' ? 'victory' : 'game_over');
+      // Arcade high scores (#14): the server tells us via the matching scores[] entry whether our
+      // own run just cracked the all-time top 10 (server/game/room.js endRun()).
+      const mine = m.scores.find((s) => s.pid === G.pid);
+      if (mine?.hs && mine.runId != null) {
+        const hsToken = G.hsTokens.get(mine.runId);
+        G.hsTokens.delete(mine.runId);
+        showInitialsModal({ runId: mine.runId, score: mine.score, token: hsToken });
+      }
       setTimeout(() => {
         $('#game').classList.remove('on'); $('#roomscreen').classList.add('on'); $('#touch').classList.remove('on');
         if (G.room) renderRoomScreen(G.room);
@@ -371,6 +403,14 @@ function onMessage(m) {
       if (m.e) for (const e of m.e) onEvent(e);
       break;
     case 'notice': log(`<span class="n">${esc(m.text)}</span>`); break;
+    // AI narrator commentary (#18): free-text line from server/ai/narrator.js, delivered through
+    // the same say() gate (narrator on/off, mute, volume — see client/voice.js) as the fixed
+    // arcade lines below, plus this preference: never spoken unless the player opted in. The id
+    // passed to say() is deliberately unique per line (never a fixed string literal, so it's
+    // exempt from test/voice.test.js's voice-lines.json coverage check, and — more importantly —
+    // can never collide with a pre-rendered clip): this text is generated fresh per event and
+    // must always fall through to speechSynthesis, never get silently replaced by a stale clip.
+    case 'say': if (G.aiNarrator) { log(`<span class="n">${esc(m.text)}</span>`); say(`ai_${Date.now()}`, m.text); } break;
     case 'chat': log(`<span class="c"><b>${esc(m.from)}:</b> ${esc(m.text)}</span>`); break;
     case 'ach': toast(`${m.ach.icon} Achievement: ${m.ach.name}`, m.ach.desc); sfx('ach'); break;
     case 'rankup': toast(`⭐ Rank Up!`, `You are now Rank ${m.rank}: ${m.title}`); sfx('ach'); break;
@@ -404,6 +444,7 @@ function onMessage(m) {
       break;
     case 'kicked': leaveGame(m.reason); break;
     case 'left': leaveGame(); break;
+    case 'welcome_local': Input.onWelcomeLocal(m); break; // ack for an extra local gamepad hero (#15)
   }
 }
 
@@ -413,15 +454,57 @@ function onEvent(e) {
   const name = info?.name || '';
   const hLabel = heroLabel(info);
   switch (e.type) {
-    case 'tile': if (G.grid) G.grid[e.y][e.x] = e.c; if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); break;
-    case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
-    case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
-    case 'pickup':
+    case 'tile':
+      if (G.grid) G.grid[e.y][e.x] = e.c;
+      if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 });
+      // A hidden exit revealed (#13) turns into a real exit tile in place — same glow a timed exit
+      // wall gets when its own countdown fires (see the 'timedWall' case below).
+      else if (e.c === 'E') G.fx.push({ kind: 'magic', x: e.x + 0.5, y: e.y + 0.5, t: 0, r: 1.4 });
+      G.tileChangedAt.set(e.x + ',' + e.y, performance.now()); // brief dissolve/appear flash, see render()
+      break;
+    case 'plate':
+      sfx('door');
+      log(name ? `<span class="n">${esc(name)} triggered a pressure plate — walls crumble!</span>` : '<span class="n">A pressure plate triggers — walls crumble!</span>');
+      break;
+    case 'timedWall':
+      G.fx.push({ kind: e.becomes === 'E' ? 'magic' : 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0, r: 1.4 });
+      sfx(e.becomes === 'E' ? 'level' : 'door');
+      break;
+    case 'reveal':
+      log('<span class="n">The hidden exits are revealed!</span>');
+      sfx('level');
+      break;
+    case 'it':
       if (mine) {
-        sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : (e.item === 'F' || e.item === 'C') ? 'eat' : 'pick');
-        if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('save_keys', 'Save keys for later levels'); }
+        G.overlay = { kind: 'it', title: "YOU'RE IT!", sub: 'Monsters are coming for you', until: performance.now() + 2500 };
+        sfx('level');
+        say('you_are_it', 'You are It!');
+      } else {
+        log(`<span class="n">${esc(name || 'Someone')} is now It!</span>`);
       }
       break;
+    case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
+    case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
+    case 'pickup': {
+      const amuletKind = AMULET_TILES[e.item];
+      const boostStat = BOOST_TILES[e.item];
+      if (mine) {
+        if (amuletKind) {
+          sfx('amulet');
+          // Each branch passes say() a literal id (see test/voice.test.js's simple id scan) rather
+          // than a computed one, so every amulet line is verified against voice-lines.json.
+          if (amuletKind === 'invis') say('amulet_invis', 'Invisibility!');
+          else if (amuletKind === 'reflect') say('amulet_reflect', 'Reflective shots!');
+          else if (amuletKind === 'repulse') say('amulet_repulse', 'Repulsion!');
+          else if (amuletKind === 'super') say('amulet_super', 'Super shots!');
+        } else if (boostStat) { sfx('boost'); say('boost_pickup', 'Permanent power up!'); }
+        else sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : (e.item === 'F' || e.item === 'C') ? 'eat' : 'pick');
+        if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('save_keys', 'Save keys for later levels'); }
+      }
+      if (amuletKind) log(`<span class="n">${esc(name)} picked up ${esc(AMULET_NAMES[amuletKind])}!</span>`);
+      else if (boostStat) log(`<span class="n">${esc(name)} found a permanent ${esc(BOOST_NAMES[boostStat])} boost!</span>`);
+      break;
+    }
     case 'food': if (mine && e.lowHealth) say('saved_by_food', `${hLabel} was about to die… saved by food`); break;
     case 'poison': log(`<span class="n">${esc(name)} ate poisoned food!</span>`); if (mine) { sfx('poison'); say('poisoned', 'That was poisoned!'); } break;
     case 'steal': log(`<span class="n">A thief stole ${e.item === 'potion' ? 'a potion' : 'a key'} from ${esc(name)}!</span>`); if (mine) sfx('bad'); break;
@@ -440,6 +523,8 @@ function onEvent(e) {
     case 'death': log(`<span class="n">${esc(name)} the ${esc(hLabel)} has died</span>`); if (mine) { sfx('death'); say('died', `${hLabel} has died. Insert coin to continue.`); } break;
     case 'coin': if (mine) sfx('coin'); break;
     case 'exit': break;
+    case 'stun': log(`<span class="n">${esc(name)} got stunned!</span>`); if (mine) sfx('stun'); break;
+    case 'spark': G.fx.push({ kind: 'spark', x: e.x, y: e.y, t: 0 }); if (Math.random() < 0.5) sfx('spark'); break;
     case 'sound':
       if (!mine && Math.random() < 0.7) break;
       if (e.name.startsWith('shoot_')) sfx(e.name);
@@ -517,6 +602,9 @@ $('#rs-customlevel').onchange = () => {
 $('#rs-private').onchange = () => {
   if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'settings', isPublic: !$('#rs-private').checked }));
 };
+$('#rs-itmode').onchange = () => {
+  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'settings', itMode: $('#rs-itmode').checked }));
+};
 let customLevelsLoaded = false;
 async function ensureCustomLevels() {
   if (customLevelsLoaded) return;
@@ -545,6 +633,7 @@ function renderRoomScreen(room) {
     $('#rs-death-help').style.display = room.mode === 'death' ? '' : 'none';
     if (room.mode === 'custom' && room.customLevel) $('#rs-customlevel').value = String(room.customLevel.id || '');
     $('#rs-private').checked = !room.public;
+    $('#rs-itmode').checked = !!room.itMode;
   }
   $('#rs-cap').textContent = room.mode === 'death' ? `· cap ${room.deathCap != null ? room.deathCap : '∞'}` : '';
   $('#rs-roster').innerHTML = room.roster.map((p) => `
@@ -587,27 +676,19 @@ window.addEventListener('keydown', (e) => {
 });
 window.addEventListener('keyup', (e) => keys.delete(e.key.toLowerCase()));
 window.addEventListener('blur', () => keys.clear());
-const touchHeld = { up: false, down: false, left: false, right: false, fire: false };
-(function buildDpad() {
-  const pad = $('#dpad');
-  const cells = [['', ''], ['up', '▲'], ['', ''], ['left', '◀'], ['', ''], ['right', '▶'], ['', ''], ['down', '▼'], ['', '']];
-  for (const [act, label] of cells) {
-    const b = document.createElement('button'); b.textContent = label; if (!act) b.style.visibility = 'hidden';
-    const on = (v) => (ev) => { ev.preventDefault(); touchHeld[act] = v; };
-    b.addEventListener('touchstart', on(true)); b.addEventListener('touchend', on(false)); b.addEventListener('touchcancel', on(false));
-    pad.appendChild(b);
-  }
-  document.querySelectorAll('#touch [data-act]').forEach((b) => {
-    const act = b.dataset.act;
-    if (act === 'potion') b.addEventListener('touchstart', (ev) => { ev.preventDefault(); sendInput({ potion: true }); });
-    else { b.addEventListener('touchstart', (ev) => { ev.preventDefault(); touchHeld.fire = true; }); b.addEventListener('touchend', (ev) => { ev.preventDefault(); touchHeld.fire = false; }); }
-  });
-})();
+// Touch d-pad/auto-fire UI and Gamepad API handling (mobile layout + local multiplayer, #15) live
+// in client/input.js; it owns the #touch layout end-to-end (replacing the old inline touch dpad).
+Input.initInput({
+  getWs: () => G.ws, isInRoom: () => G.inRoom, log, say,
+  sendInput: (extra) => sendInput(extra),
+});
 function sendInput(extra = {}) {
   if (!G.ws || G.ws.readyState !== 1) return;
-  const dx = (keys.has('d') || keys.has('arrowright') || touchHeld.right ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') || touchHeld.left ? 1 : 0);
-  const dy = (keys.has('s') || keys.has('arrowdown') || touchHeld.down ? 1 : 0) - (keys.has('w') || keys.has('arrowup') || touchHeld.up ? 1 : 0);
-  const fire = keys.has(' ') || keys.has('control') || touchHeld.fire;
+  const ext = Input.getPrimaryState(); // touch + gamepad-0 + auto-fire, merged with the keyboard below
+  const kx = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
+  const ky = (keys.has('s') || keys.has('arrowdown') ? 1 : 0) - (keys.has('w') || keys.has('arrowup') ? 1 : 0);
+  const dx = kx || ext.dx, dy = ky || ext.dy;
+  const fire = keys.has(' ') || keys.has('control') || ext.fire;
   const msg = { t: 'input', dx, dy, fire, ...extra };
   const s = JSON.stringify(msg);
   if (s !== G.lastSent || extra.potion || extra.respawn) { G.ws.send(s); G.lastSent = JSON.stringify({ t: 'input', dx, dy, fire }); }
@@ -637,7 +718,13 @@ cv.addEventListener('click', (ev) => {
 
 function lerpSnap(now) {
   if (!G.cur) return null;
-  if (!G.prev) return { p: G.cur.p, m: G.cur.m, b: G.cur.b, g: G.cur.g };
+  // tw (#11 timed walls) is never interpolated -- like g (generators) and it (It mode's tagged
+  // monster id, #13), its entries don't move/aren't positional, so this always passes the latest
+  // snapshot's value straight through. Omitting it here used to mean snap.tw was always undefined
+  // (only p/m/b/g were ever copied onto the returned object), so the timed-wall pulse below always
+  // fell back to its "no data yet" default instead of ever reading the real remaining-seconds
+  // countdown the server actually sends every tick.
+  if (!G.prev) return { p: G.cur.p, m: G.cur.m, b: G.cur.b, g: G.cur.g, it: G.cur.it, tw: G.cur.tw };
   const span = Math.max(1, G.curAt - G.prevAt);
   const t = Math.min(1.2, Math.max(0, (now - G.curAt) / span)); // extrapolate slightly past the latest snapshot
   const lerpList = (prevL, curL, idIdx, xi, yi) => {
@@ -649,12 +736,13 @@ function lerpSnap(now) {
       return out;
     });
   };
-  return { p: lerpList(G.prev.p, G.cur.p, 0, 1, 2), m: lerpList(G.prev.m, G.cur.m, 0, 2, 3), b: lerpList(G.prev.b, G.cur.b, 0, 1, 2), g: G.cur.g };
+  return { p: lerpList(G.prev.p, G.cur.p, 0, 1, 2), m: lerpList(G.prev.m, G.cur.m, 0, 2, 3), b: lerpList(G.prev.b, G.cur.b, 0, 1, 2), g: G.cur.g, it: G.cur.it, tw: G.cur.tw };
 }
 
 let lastFrame = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
+  Input.poll(); // gamepad state, ~60 Hz (#15)
   const dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   if (!G.level || !G.grid) return;
@@ -681,6 +769,18 @@ function frame(now) {
     let name = TILE_SPRITE[c];
     if (!name) name = 'floor';
     if (name !== 'wall' && name !== 'floor' && name !== 'trap') ctx.drawImage(sprite('floor'), x * TS, y * TS, TS, TS);
+    if (c === T.ACID) {
+      // Cheap 2-frame boil animation (#12) — no per-tile state needed, just alternate on the clock.
+      ctx.drawImage(sprite(Math.floor(now / 280) % 2 === 0 ? 'acid' : 'acid2'), x * TS, y * TS, TS, TS);
+      continue;
+    }
+    if (c === T.FORCE_FIELD) {
+      // Translucent energy bars (#12) with a slow shimmer; never blocks movement, only shots.
+      ctx.globalAlpha = 0.5 + 0.18 * Math.sin(now / 240 + x + y);
+      ctx.drawImage(sprite('forcefield'), x * TS, y * TS, TS, TS);
+      ctx.globalAlpha = 1;
+      continue;
+    }
     if (c === 'g' || c === 'h' || c === 'm' || c === 'l' || c === 's') {
       const g = snap.g.find((gg) => gg[0] === x && gg[1] === y);
       const hp = g ? g[2] : 3;
@@ -694,7 +794,24 @@ function frame(now) {
       ctx.drawImage(sprite(name), cx - (TS * pulse) / 2, cy - (TS * pulse) / 2, TS * pulse, TS * pulse);
       continue;
     }
-    ctx.drawImage(sprite(name), x * TS, y * TS, TS, TS);
+    if (PLATE_TINT[c]) { ctx.drawImage(sprite(name, PLATE_TINT[c]), x * TS, y * TS, TS, TS); }
+    else ctx.drawImage(sprite(name), x * TS, y * TS, TS, TS);
+    if (name === 'timedwall') {
+      // pulse faster the less time is left (#11) — falls back to a slow default pulse if the
+      // snapshot hasn't reported this tile's remaining seconds yet (e.g. mid-transition).
+      const tw = snap.tw && snap.tw.find((t) => t[0] === x && t[1] === y);
+      const left = tw ? tw[2] : 30;
+      const speed = 260 - Math.min(220, (30 - Math.min(30, left)) * 7);
+      ctx.fillStyle = `rgba(255,220,120,${0.18 + 0.18 * Math.sin(now / speed)})`;
+      ctx.fillRect(x * TS, y * TS, TS, TS);
+    }
+    // brief dissolve/appear flash (#11): a fading white highlight right after a tile changes.
+    const changedAt = G.tileChangedAt.get(x + ',' + y);
+    if (changedAt != null) {
+      const age = now - changedAt;
+      if (age < 260) { ctx.globalAlpha = Math.max(0, 1 - age / 260) * 0.55; ctx.fillStyle = '#fff'; ctx.fillRect(x * TS, y * TS, TS, TS); ctx.globalAlpha = 1; }
+      else G.tileChangedAt.delete(x + ',' + y);
+    }
   }
   // Death mode: pulse the exit red while it's sealed behind uncleared waves
   if (G.sealed) {
@@ -729,6 +846,7 @@ function frame(now) {
     if (invisible) ctx.globalAlpha = 0.2;
     drawEntity(sprite(name), m[2], m[3], m[4], bob);
     if (invisible) ctx.globalAlpha = 1;
+    if (m[6] > 0) drawStunStars(m[2] * TS, m[3] * TS, now); // stun tile (#12): frozen — see snapshot()
   }
   // players
   for (const p of snap.p) {
@@ -739,6 +857,16 @@ function frame(now) {
     const heroImg = (info?.custom && spriteFromPixels(info.custom.pixels, HERO_PALETTE, 4)) || sprite('hero', color);
     drawEntity(heroImg, p[1], p[2], p[3], p[8] ? 0 : bob, true);
     ctx.globalAlpha = 1;
+    if (p[11] > 0 && !p[8]) drawStunStars(p[1] * TS, p[2] * TS, now); // stun tile (#12): frozen hero
+    // It tag mode (#13): a pulsing gold ring plus a small crown glyph over whoever's currently It.
+    if (snap.it === p[0] && !p[8]) {
+      const px = p[1] * TS, py = p[2] * TS;
+      const pulse = 1 + Math.sin(now / 180) * 0.12;
+      ctx.strokeStyle = '#f2c400'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, TS * 0.62 * pulse, 0, Math.PI * 2); ctx.stroke();
+      ctx.font = '12px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = '#f2c400';
+      ctx.fillText('👑', px, py - TS / 2 - 12);
+    }
     // name tag
     ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = color;
     ctx.fillText((info?.name || '').toUpperCase(), p[1] * TS, p[2] * TS - TS / 2 - 3);
@@ -750,10 +878,11 @@ function frame(now) {
     if (f.kind === 'magic') {
       const r = Math.min(f.r, f.t * 20) * TS; ctx.strokeStyle = `rgba(92,214,255,${Math.max(0, 1 - f.t * 1.5)})`; ctx.lineWidth = 4;
       ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.stroke();
-    } else if (f.kind === 'boom' || f.kind === 'die' || f.kind === 'puff') {
-      const n = f.kind === 'boom' ? 10 : 6; const col = f.kind === 'boom' ? '#ff8c1a' : f.kind === 'die' ? '#f4f4f4' : '#9a9aa8';
-      ctx.fillStyle = col; ctx.globalAlpha = Math.max(0, 1 - f.t * 2);
-      for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; const d = f.t * 60 * (f.kind === 'boom' ? 1.6 : 1); ctx.fillRect(px + Math.cos(a) * d - 2, py + Math.sin(a) * d - 2, 4, 4); }
+    } else if (f.kind === 'boom' || f.kind === 'die' || f.kind === 'puff' || f.kind === 'spark') {
+      const n = f.kind === 'boom' ? 10 : f.kind === 'spark' ? 5 : 6;
+      const col = f.kind === 'boom' ? '#ff8c1a' : f.kind === 'die' ? '#f4f4f4' : f.kind === 'spark' ? '#5cd6ff' : '#9a9aa8';
+      ctx.fillStyle = col; ctx.globalAlpha = Math.max(0, 1 - f.t * (f.kind === 'spark' ? 4 : 2));
+      for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; const d = f.t * 60 * (f.kind === 'boom' ? 1.6 : f.kind === 'spark' ? 0.8 : 1); ctx.fillRect(px + Math.cos(a) * d - 2, py + Math.sin(a) * d - 2, 4, 4); }
       ctx.globalAlpha = 1;
     }
   }
@@ -783,6 +912,20 @@ function frame(now) {
     const remain = Math.max(0, G.bonus.total * 1000 - (now - G.bonus.startedAt));
     ctx.fillStyle = '#f2c400'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center';
     ctx.fillText(`BONUS: ${Math.ceil(remain / 1000)}s`, VIEW_W / 2, 20);
+  }
+  // Mystery treasure rooms (#13): keep the "find the exit" reminder up for as long as any hidden
+  // exit tile is still on the grid — once revealHiddenExits() flips them to real exits (via the
+  // usual 'tile' events), G.grid no longer contains 'H' and this just stops drawing on its own.
+  if (G.level?.mysteryRoom && G.grid?.some((row) => row.includes('H'))) {
+    ctx.fillStyle = '#5cd6ff'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('MYSTERY ROOM: find the exit', VIEW_W / 2, G.bonus ? 38 : 20);
+  }
+  // It tag mode (#13): a persistent reminder for whoever's currently tagged, on top of the
+  // one-shot overlay/crown — pulses slowly so it reads at a glance without being distracting.
+  if (mine && !mine[8] && snap.it === G.pid) {
+    ctx.fillStyle = Math.floor(now / 400) % 2 ? '#f2c400' : '#ffe27a';
+    ctx.font = 'bold 16px monospace'; ctx.textAlign = 'center';
+    ctx.fillText("YOU'RE IT!", VIEW_W / 2, VIEW_H - 14);
   }
   if (G.intermission) drawIntermission(now);
   updateHudValues(G.cur);
@@ -864,6 +1007,17 @@ function drawIntermission(now) {
   }
 }
 
+/** Stun tile (#12): a small ring of orbiting yellow stars over a frozen hero/monster — purely
+ *  cosmetic, driven off the snapshot's per-entity remaining-stun-ticks field (see sim.js snapshot()). */
+function drawStunStars(cx, cy, now) {
+  ctx.fillStyle = '#f2c400';
+  for (let i = 0; i < 3; i++) {
+    const a = now / 180 + i * (Math.PI * 2 / 3);
+    const sx = cx + Math.cos(a) * TS * 0.4, sy = cy - TS * 0.6 + Math.sin(a) * TS * 0.15;
+    ctx.fillRect(sx - 2, sy - 2, 4, 4);
+  }
+}
+
 function drawEntity(img, x, y, dir, bob = 0, isHero = false) {
   const px = x * TS, py = y * TS + bob;
   ctx.save(); ctx.translate(px, py);
@@ -889,6 +1043,8 @@ function renderHud() {
       <div>SCORE <span class="sc">0</span></div>
       <div class="muted" style="font-size:12px">🔑 <span class="k">0</span> &nbsp; 🧪 <span class="po">0</span></div>
       ${p.boosts?.length ? `<div class="boosts" title="Active chest boosts this level">${p.boosts.map((b) => BOOST_ICONS[b] || '✨').join(' ')}</div>` : ''}
+      <div class="runboosts" title="Permanent run boosts"></div>
+      <div class="amulets" title="Active amulets"></div>
     </div>`).join('') + `<div class="muted" style="font-size:11px;text-align:center;margin-top:auto" id="hud-time"></div>`;
 }
 function updateHudValues(s) {
@@ -902,6 +1058,27 @@ function updateHudValues(s) {
     const el = document.querySelector(`.pp[data-pid="${p[0]}"]`); if (!el) continue;
     el.querySelector('.hp').textContent = p[4]; el.querySelector('.sc').textContent = p[7]; el.querySelector('.k').textContent = p[5]; el.querySelector('.po').textContent = p[6];
     el.classList.toggle('low', p[4] < LOW_HEALTH && !p[8]); el.classList.toggle('dead', !!p[8]);
+    el.classList.toggle('it', s.it === p[0] && !p[8]); // It tag mode (#13)
+    // Acid puddle (#12): tint the HUD card while standing on one — read straight off the tile grid
+    // rather than a snapshot flag, since the client already tracks it for rendering.
+    const onAcid = !p[8] && G.grid?.[Math.floor(p[2])]?.[Math.floor(p[1])] === 'a';
+    el.classList.toggle('acid', onAcid);
+    el.classList.toggle('stunned', p[11] > 0 && !p[8]);
+    // 10th element: run-boost pip string (one letter per stack, see sim.js's encodeBoosts).
+    const rb = el.querySelector('.runboosts');
+    if (rb) rb.innerHTML = [...(p[9] || '')].map((ch) => RUN_BOOST_ICON[BOOST_TILES[ch]] || '✨').join(' ');
+    // 11th element: active-amulet string, pairs of (letter, 2-digit seconds remaining) — see
+    // sim.js's encodeAmulets — rendered as an icon plus a live countdown.
+    const am = el.querySelector('.amulets');
+    if (am) {
+      const parts = [];
+      const re = /([A-Z])(\d{2})/g; let mm;
+      while ((mm = re.exec(p[10] || ''))) {
+        const kind = AMULET_TILES[mm[1]];
+        parts.push(`${AMULET_ICON[kind] || '✨'} ${Number(mm[2])}s`);
+      }
+      am.innerHTML = parts.join(' &nbsp; ');
+    }
   }
   const t = $('#hud-time'); if (t) t.textContent = `Time ${Math.floor(s.lt / 60)}:${String(s.lt % 60).padStart(2, '0')}`;
 }
@@ -926,3 +1103,6 @@ if (savedResume && (!params.get('room') || params.get('room') === savedResume.ro
 } else if (params.get('room')) {
   joinGame({ roomId: params.get('room') });
 }
+
+// Lobby idle -> attract mode (#14): only while nobody's joined a room yet.
+startIdleAttract(() => !G.inRoom);

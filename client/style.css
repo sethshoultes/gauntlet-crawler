@@ -47,3 +47,11 @@ th { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spa
 .cls-paladin { color: #e8a33d; } .cls-ranger { color: #0fb8a5; } .cls-necromancer { color: #8b3fd1; }
 .pixel { image-rendering: pixelated; image-rendering: crisp-edges; }
 footer { text-align: center; color: var(--muted); font-size: 11px; padding: 12px; }
+
+/* Arcade high scores (#14): lobby table + three-initial entry modal (client/highscore.js) */
+.hs-table th:first-child, .hs-table td:first-child { width: 32px; }
+.hs-table .hs-name { color: var(--yellow); font-weight: bold; letter-spacing: 2px; }
+.hs-modal .hs-slots { display: flex; gap: 10px; justify-content: center; margin: 12px 0; }
+.hs-modal .hs-slot { width: 48px; height: 56px; font-size: 28px; font-weight: bold; text-align: center; padding: 0;
+  background: #000; color: var(--muted); border: 2px solid var(--line); text-transform: none; letter-spacing: 0; }
+.hs-modal .hs-slot.active { color: var(--yellow); border-color: var(--yellow); box-shadow: 0 0 0 3px #000, 0 0 0 5px var(--yellow); }

@@ -130,6 +130,10 @@ export function sfx(name) {
     case 'ach': chord([1047, 1319, 1568], 0.25, 'triangle', 0.08, 90); break;
     case 'rankup': chord([659, 784, 988, 1319], 0.22, 'square', 0.08, 100); break;
     case 'chest': tone(988, 0.1, 'square', 0.06); setTimeout(() => tone(1568, 0.2, 'triangle', 0.06), 100); break;
+    case 'amulet': tone(1200, 0.14, 'sine', 0.07, 500); setTimeout(() => tone(1600, 0.16, 'sine', 0.05, 300), 90); break; // temporary amulet
+    case 'boost': chord([784, 988, 1319], 0.18, 'square', 0.07, 90); break; // permanent run boost — brighter, brief fanfare
+    case 'stun': noise(0.1, 0.08, { filter: 'highpass', filterFreq: 1500 }); tone(900, 0.12, 'square', 0.06, -700, { vibrato: 30, vibratoDepth: 60 }); break; // stun tile zap
+    case 'spark': tone(1800, 0.04, 'square', 0.05, -1200); noise(0.03, 0.04, { filter: 'highpass', filterFreq: 3000 }); break; // force-field shot impact
     case 'victory': chord([523, 659, 784, 1047, 1319, 1568], 0.24, 'square', 0.08, 130); break;
     case 'gameover': chord([440, 349, 293, 220], 0.4, 'sawtooth', 0.08, 220); break;
 

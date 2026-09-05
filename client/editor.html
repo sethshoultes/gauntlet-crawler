@@ -40,6 +40,20 @@
         <hr style="border-color:var(--line);margin:12px 0" />
         <div class="row"><input id="seed" placeholder="seed" style="width:90px" /><input id="plevel" type="number" min="1" max="60" value="3" style="width:64px" title="difficulty level" /><button id="procgen">Procedural</button></div>
       </div>
+      <!-- #17 AI assist: remix/tune/explain the level currently in the editor grid. -->
+      <div class="panel ai" style="margin-top:18px">
+        <h2>🎲 Remix &amp; tune</h2>
+        <p class="muted" style="font-size:11px;margin:0 0 8px">Asks the AI to vary, harden or soften the level currently on the canvas. Start and exit stay put. One undo is kept.</p>
+        <div class="row" style="flex-wrap:wrap">
+          <button id="remix" title="Vary the layout, monsters and loot">Remix</button>
+          <button id="harder" title="More/nastier generators and monsters, less food">Make harder</button>
+          <button id="easier" title="Fewer/weaker generators and monsters, more food">Make easier</button>
+          <button id="undoRemix" style="display:none">Undo</button>
+        </div>
+        <button id="explain" style="width:100%;margin-top:8px" title="Ask the AI for strategy advice on this level">Explain this level</button>
+        <div id="remix-note" class="muted" style="font-size:11px;margin-top:6px"></div>
+        <div id="explain-panel" style="display:none;margin-top:8px;padding:8px;border:1px solid var(--line);font-size:12px;line-height:1.5"></div>
+      </div>
       <div class="panel" style="margin-top:18px">
         <h2>Palette</h2>
         <div class="pal" id="pal"></div>

@@ -639,4 +639,130 @@ test('chat trims/caps text, drops empty messages, and throttles a flooding clien
   } finally { room.close(); }
 });
 
+test('collecting all four amulet kinds in one run unlocks the Amulet Collector achievement', () => {
+  const room = makeRoom({ id: 'amulets-1' });
+  try {
+    const ws = fakeWs();
+    const user = makeUser();
+    room.join(ws, { pid: 'a', user, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    ws.sent.length = 0;
+
+    for (const item of ['I', 'R']) room.onEvent({ type: 'pickup', pid: 'a', item, x: 1, y: 1 });
+    assert.equal(ws.sent.some((m) => m.t === 'ach'), false, 'not unlocked with only two of the four kinds');
+
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'O', x: 1, y: 1 });
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'U', x: 1, y: 1 });
+    const ach = ws.sent.find((m) => m.t === 'ach');
+    assert.ok(ach, 'the achievement unlocked once the fourth distinct kind was collected');
+    assert.equal(ach.ach.id, 'amulet_collector');
+    assert.ok(stats.getAchievementIds(user.id).has('amulet_collector'));
+
+    // Re-collecting the same kind again doesn't re-fire it.
+    ws.sent.length = 0;
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'I', x: 1, y: 1 });
+    assert.equal(ws.sent.some((m) => m.t === 'ach'), false);
+  } finally { room.close(); }
+});
+
+// ---------- local co-op (#15): joinLocal binds a second/third/fourth player to one connection ----------
+test('joinLocal adds another player bound to the same ws, ready by default, capped by MAX_PLAYERS', () => {
+  const room = makeRoom({ id: 'local-1' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    const local = room.joinLocal(ws, { pid: 'aL1', name: 'Ann P2', cls: 'elf', palette: null });
+    assert.equal(local.ready, true, 'a local player never blocks the room ready-up gate');
+    assert.equal(local.ws, ws, 'a local player shares the primary connection\'s socket');
+    assert.equal(room.clients.size, 2);
+
+    room.joinLocal(ws, { pid: 'aL2', name: 'Ann P3', cls: 'wizard', palette: null });
+    room.joinLocal(ws, { pid: 'aL3', name: 'Ann P4', cls: 'valkyrie', palette: null });
+    assert.equal(room.clients.size, 4, 'room now full at MAX_PLAYERS');
+    assert.throws(() => room.joinLocal(ws, { pid: 'aL4', name: 'Ann P5', cls: 'warrior' }), /full/i);
+  } finally { room.close(); }
+});
+
+test('joinLocal mid-game spawns the local player straight into the sim, and leave() removes it cleanly', () => {
+  const room = makeRoom({ id: 'local-2' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.joinLocal(ws, { pid: 'aL1', name: 'Ann P2', cls: 'elf', palette: null });
+    assert.ok(room.sim.players.has('aL1'), 'a local player joining mid-game gets a sim entity immediately, like a late joiner');
+
+    room.leave('aL1');
+    assert.equal(room.clients.has('aL1'), false);
+    assert.equal(room.sim.players.has('aL1'), false);
+    assert.equal(room.clients.has('a'), true, 'the primary player is unaffected by a local player leaving');
+  } finally { room.close(); }
+});
+
+// ---------- It tag mode (#13) ----------
+
+test('itMode is off by default and only the host can turn it on, via setSettings', () => {
+  const room = makeRoom({ id: 'it-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    assert.equal(room.itMode, false);
+    assert.throws(() => room.setSettings('b', { itMode: true }), /host/i);
+    room.setSettings('a', { itMode: true });
+    assert.equal(room.itMode, true);
+    assert.equal(room.info().itMode, true, 'reflected in the room info sent to clients');
+    room.setSettings('a', { itMode: false });
+    assert.equal(room.itMode, false);
+  } finally { room.close(); }
+});
+
+test('starting a room with itMode on and 2+ players tags one of them It', () => {
+  const room = makeRoom({ id: 'it-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setSettings('a', { itMode: true });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    assert.ok(room.sim.itPid === 'a' || room.sim.itPid === 'b', 'one of the two players is tagged It at level start');
+  } finally { room.close(); }
+});
+
+test('itMode has no effect solo — nobody is It with just one player, even with the option on', () => {
+  const room = makeRoom({ id: 'it-3' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.setSettings('a', { itMode: true });
+    room.start('a'); // a lone host may start unready
+    assert.equal(room.sim.itPid, null);
+  } finally { room.close(); }
+});
+
+test('itMode off never tags anyone, even with 2+ players', () => {
+  const room = makeRoom({ id: 'it-4' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    assert.equal(room.sim.itPid, null, 'itMode defaults to off');
+  } finally { room.close(); }
+});
+
+test('a fresh level start re-tags It, via advanceLevel', () => {
+  const room = makeRoom({ id: 'it-5' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setSettings('a', { itMode: true });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    clearTimeout(room.levelChangeTimer); room.levelChangeTimer = null;
+    room.advanceLevel();
+    assert.equal(room.levelIndex, 2);
+    assert.ok(room.sim.itPid === 'a' || room.sim.itPid === 'b', 'the new level assigned a fresh It tag');
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });

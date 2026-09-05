@@ -12,8 +12,37 @@ function setMsg(text, kind = '') {
   const el = $('#msg'); el.textContent = text || ''; el.className = kind;
 }
 
+// AI Narrator (#18) toggle: shown regardless of login state (guests store it in localStorage the
+// same way client/game.js already reads gc_narrate — see client/common.js loadPrefs()), disabled
+// with an explanatory note when the server has no AI credentials configured at all.
+async function setupAiNarratorToggle(user, prefs) {
+  const status = await api('/api/ai/status').catch(() => ({ narrator: false }));
+  $('#ai-narrator-panel').style.display = '';
+  const box = $('#p-ai-narrator'), note = $('#ai-narrator-note');
+  if (!status.narrator) {
+    box.checked = false; box.disabled = true;
+    note.textContent = 'Unavailable: this server has no AI narrator credentials configured.';
+    return;
+  }
+  box.disabled = false; note.textContent = '';
+  box.checked = user ? prefs.aiNarrator === true : localStorage.getItem('gc_ai_narrator') === '1';
+  box.onchange = async () => {
+    try { localStorage.setItem('gc_ai_narrator', box.checked ? '1' : '0'); } catch {}
+    if (!user) return;
+    try {
+      // Merge onto the full saved prefs rather than sending {aiNarrator} alone: setPrefs() below
+      // replaces the whole stored blob with whatever keys are present in the body, so a partial
+      // body here would silently drop every other saved preference (volumes, key bindings, ...).
+      await api('/api/me/prefs', { method: 'PUT', body: { ...prefs, aiNarrator: box.checked } });
+      prefs.aiNarrator = box.checked;
+    } catch (e) { note.textContent = e.message; }
+  };
+}
+
 async function main() {
   const m = await me();
+  const prefs = m.user ? await api('/api/me/prefs').then((r) => r.prefs || {}).catch(() => ({})) : {};
+  await setupAiNarratorToggle(m.user, prefs);
   if (!m.user) {
     $('#guest').style.display = '';
     $('#login').onclick = () => authModal().then((ok) => ok && location.reload());
@@ -22,7 +51,6 @@ async function main() {
   $('#mine').style.display = '';
   $('#uname').textContent = m.user.username;
 
-  const prefs = await api('/api/me/prefs').then((r) => r.prefs || {}).catch(() => ({}));
   const initRange = (id, valId, prefKey) => {
     const v = Number.isFinite(prefs[prefKey]) ? prefs[prefKey] : 100;
     $(id).value = v; $(valId).textContent = `${v}%`;
@@ -46,6 +74,7 @@ async function main() {
       sfxVolume: Number($('#p-sfx-volume').value),
       voiceVolume: Number($('#p-voice-volume').value),
       narrator: $('#p-narrator').checked,
+      aiNarrator: $('#p-ai-narrator').checked,
       cutscenes: $('#p-cutscenes').checked,
       colorBlindPalette: $('#p-colorblind').checked,
       reducedMotion: $('#p-reduced-motion').checked,
@@ -53,6 +82,9 @@ async function main() {
     };
     try {
       await api('/api/me/prefs', { method: 'PUT', body });
+      // Keep the in-memory copy current: the AI narrator toggle above merges onto `prefs` when it
+      // saves, so a stale copy here would let a later toggle re-save the values from page load.
+      Object.assign(prefs, body);
       // Apply immediately in this tab, same keys client/audio.js, client/voice.js and
       // client/game.js read directly — no reload needed to feel the change.
       try {
@@ -61,6 +93,7 @@ async function main() {
         localStorage.setItem('gc_vol_sfx', String(body.sfxVolume));
         localStorage.setItem('gc_vol_voice', String(body.voiceVolume));
         localStorage.setItem('gc_narrate', body.narrator ? '1' : '0');
+        localStorage.setItem('gc_ai_narrator', body.aiNarrator ? '1' : '0');
         localStorage.setItem('gc_cutscenes', body.cutscenes ? '1' : '0');
       } catch {}
       $('#prefs-msg').textContent = 'Saved.'; $('#prefs-msg').style.color = 'var(--green)';

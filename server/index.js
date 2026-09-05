@@ -10,11 +10,12 @@ import { db, now } from './db.js';
 import * as auth from './auth.js';
 import * as stats from './stats.js';
 import { Lobby } from './game/lobby.js';
-import { generateFromPrompt, aiAvailable } from './ai/levelgen.js';
+import { generateFromPrompt, aiAvailable, remixLevel, explainLevel } from './ai/levelgen.js';
+import { aiAvailable as aiNarratorAvailable } from './ai/narrator.js';
 import * as jobs from './ai/jobs.js';
 import { clientIp } from './client-ip.js';
 import { validateLevel, parseLevel } from '../shared/level.js';
-import { CLASSES } from '../shared/constants.js';
+import { CLASSES, MAX_PLAYERS } from '../shared/constants.js';
 import { generateLevel } from '../shared/procgen.js';
 import { rankForXp } from '../shared/progression.js';
 import { unlockedFor, catalogueFor } from '../shared/unlocks.js';
@@ -22,8 +23,10 @@ import * as admin from './admin.js';
 import * as account from './account.js';
 import * as telemetry from './telemetry.js';
 import * as log from './log.js';
+import { enabled as sentryEnabled } from './sentry.js';
 import { heartbeat } from './ws-heartbeat.js';
 import * as heroes from './heroes.js';
+import * as highscores from './highscores.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
@@ -114,6 +117,9 @@ async function api(req, res, url) {
     return json(res, 200, {
       ok: true, uptime: process.uptime(), rooms: rooms.length,
       players: rooms.reduce((n, r) => n + r.playerCount, 0), version: PKG.version,
+      // Informational only -- the client keeps using the same POST /api/client-errors beacon
+      // either way (see client/common.js); this just lets an operator confirm SENTRY_DSN took.
+      sentry: sentryEnabled(),
     });
   }
 
@@ -173,7 +179,30 @@ async function api(req, res, url) {
   }
   if (m === 'GET' && url.pathname === '/api/leaderboard') return json(res, 200, stats.leaderboard(20));
   if (m === 'GET' && url.pathname === '/api/rooms') return json(res, 200, { rooms: lobby.list() });
-  if (m === 'GET' && url.pathname === '/api/ai/status') return json(res, 200, { available: aiAvailable() });
+  if (m === 'GET' && url.pathname === '/api/ai/status') return json(res, 200, { available: aiAvailable(), narrator: aiNarratorAvailable() });
+
+  // ----- arcade high scores (#14) -----
+  if (m === 'GET' && url.pathname === '/api/highscores') return json(res, 200, { scores: highscores.topHighScores(10) });
+  if (m === 'POST' && seg[0] === 'api' && seg[1] === 'runs' && seg[2] && seg[3] === 'initials' && seg.length === 4) {
+    const ip = clientIp(req);
+    // Unauthenticated (guests can claim their own runs too), so keyed by IP rather than by user;
+    // the claim token check below is the real ownership guard, this just bounds brute-force
+    // guessing of a run's token from one source.
+    if (!rateLimit('initials:' + ip, 20, 60_000)) return json(res, 429, { error: 'Slow down: too many attempts' });
+    const b = await readBody(req);
+    return json(res, 200, highscores.setInitials(seg[2], b.initials, b.token));
+  }
+  // Test-only: lets test/highscores.test.js seed board rows (and control `endedAt`, to exercise
+  // the 5-minute claim window) without simulating a whole Death mode run through the WebSocket
+  // protocol. Gated exactly like the other two debug hooks documented in README.md.
+  if (m === 'POST' && url.pathname === '/api/debug/highscore' && process.env.GAUNTLET_DEBUG === '1') {
+    const b = await readBody(req);
+    return json(res, 200, highscores.recordHighScore({
+      userId: b.userId ?? null, guestId: b.guestId ?? null, username: b.username ?? null,
+      cls: b.cls || 'warrior', score: Number(b.score) || 0, level: Number(b.level) || 1,
+      mode: b.mode || 'campaign', endedAt: b.endedAt != null ? Number(b.endedAt) : undefined,
+    }));
+  }
 
   // ----- levels -----
   if (m === 'GET' && url.pathname === '/api/levels') {
@@ -223,6 +252,27 @@ async function api(req, res, url) {
     if (job.status === 'pending') return json(res, 200, { status: 'pending' });
     if (job.status === 'error') return json(res, 200, { status: 'error', error: job.error });
     return json(res, 200, { ...job.result, status: 'done' }); // status last so the result can never override it
+  }
+  // #17 AI assist: remix/harden/soften an existing level, or explain how to play it. Logged-in
+  // only, and keyed under the same 'gen:u<id>' bucket as /api/levels/generate above so a user
+  // can't dodge the overall AI-usage limit by switching actions -- 1 per 10s here, tighter than
+  // generate's 6/min, since these operate on a full level (bigger prompt) rather than a one-liner.
+  if (m === 'POST' && url.pathname === '/api/levels/ai/remix') {
+    const u = need();
+    if (!rateLimit('gen:u' + u.id, 1, 10_000)) return json(res, 429, { error: 'Slow down: 1 AI action per 10 seconds' });
+    const b = await readBody(req);
+    const problems = validateLevel(b.level);
+    if (problems.length) return json(res, 400, { error: problems[0], problems });
+    const mode = ['remix', 'harder', 'easier'].includes(b.mode) ? b.mode : 'remix';
+    return json(res, 200, await remixLevel({ level: b.level, mode }));
+  }
+  if (m === 'POST' && url.pathname === '/api/levels/ai/explain') {
+    const u = need();
+    if (!rateLimit('gen:u' + u.id, 1, 10_000)) return json(res, 429, { error: 'Slow down: 1 AI action per 10 seconds' });
+    const b = await readBody(req);
+    const problems = validateLevel(b.level);
+    if (problems.length) return json(res, 400, { error: problems[0], problems });
+    return json(res, 200, await explainLevel({ level: b.level }));
   }
   if (m === 'POST' && url.pathname === '/api/levels') {
     const u = need();
@@ -316,14 +366,42 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ---------- WebSocket game protocol ----------
-// Every legitimate message on this protocol (input/chat/join/hero/settings/pick/...) is tiny
+// Every legitimate message on this protocol (input/chat/join/hero/settings/prefs/pick/...) is tiny
 // (chat text alone is capped at 200 chars server-side); `ws`'s default maxPayload is 100MiB, so
 // without an explicit cap a single client could force a huge allocation per message.
+/** Normalize a client-supplied local-coop slot (see 'join_local' below) — used by both 'input'
+ *  (to route to the right local pid) and 'join_local' (to validate the slot being claimed) so
+ *  they can't disagree about what counts as a valid slot. A raw string like "1" used to miss
+ *  join_local's Number()-keyed localPids map when 'input' looked it up unconverted, silently
+ *  falling through to the primary connection's own pid (#27 review). Returns:
+ *    - null  -- no slot was given (undefined/null/''/0/"0"): this targets the primary pid.
+ *    - an integer in [1, MAX_PLAYERS-1] -- names a local player slot.
+ *    - NaN   -- a slot WAS given but doesn't parse to a valid one: callers must reject/ignore it
+ *               outright rather than falling back to the primary pid. */
+function normalizeSlot(rawSlot) {
+  if (rawSlot === undefined || rawSlot === null || rawSlot === '' || rawSlot === 0 || rawSlot === '0') return null;
+  const slot = Number(rawSlot);
+  return (Number.isInteger(slot) && slot >= 1 && slot <= MAX_PLAYERS - 1) ? slot : NaN;
+}
+
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
 wss.on('connection', (ws, req) => {
   let pid = crypto.randomBytes(4).toString('hex');
   let room = null;
   const ip = clientIp(req);
+  // Local co-op (#15): extra gamepads on this same connection each get their own player bound to
+  // this socket via {t:'join_local', slot} rather than a second WebSocket — slot (1-3; slot 0 is
+  // this connection's own `pid`) -> the local pid Room#joinLocal assigned it.
+  const localPids = new Map();
+  /** Drop every local co-op player this connection minted (see 'join_local' below) from `room`
+   *  before it changes rooms, or the socket closes, so they don't linger as orphaned entities.
+   *  The map is cleared unconditionally, even with no room, so stale slots never survive. */
+  const leaveLocals = () => {
+    if (room) {
+      for (const lpid of localPids.values()) room.leave(lpid);
+    }
+    localPids.clear();
+  };
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   const send = (m) => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };
@@ -332,7 +410,7 @@ wss.on('connection', (ws, req) => {
     try {
       switch (msg.t) {
         case 'join': {
-          if (room) { room.leave(pid); room = null; }
+          if (room) { leaveLocals(); room.leave(pid); room = null; }
           const user = auth.userFromToken(msg.token);
           // A Hero Builder custom hero (`custom:<id>`) isn't a CLASSES entry — Room#pickHero does
           // the real ownership/rank check and falls back to warrior itself; this pre-filter only
@@ -356,7 +434,7 @@ wss.on('connection', (ws, req) => {
           // join() may reject the requested guestId (already kicked, malformed, etc.) and mint a
           // fresh one instead -- record the final id it actually assigned (null for logged-in
           // users), not the one the client asked for, so telemetry stays attributable.
-          const joined = target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null });
+          const joined = target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null, aiNarrator: !!msg.aiNarrator });
           room = target;
           telemetry.recordEvent({ kind: 'join', userId: user?.id || null, guestId: joined?.guestId || null, ip, data: { roomId: target.id } });
           // Analytics boundary: wrap this room's broadcast (once) purely to observe a 'gameover'
@@ -371,7 +449,39 @@ wss.on('connection', (ws, req) => {
           }
           break;
         }
-        case 'input': if (room) room.handleInput(pid, msg); break;
+        case 'input': {
+          if (!room) break;
+          // slot 0 (or no slot) is this connection's own player; slots 1-3 name a local co-op
+          // player joined via 'join_local' below, routed to the pid that join minted for it. An
+          // out-of-range or unparsable slot (e.g. 7, "abc") is rejected outright rather than
+          // silently falling back to the primary hero (#27 review).
+          const slot = normalizeSlot(msg.slot);
+          if (Number.isNaN(slot)) break; // out-of-range/unparsable: reject, don't touch the primary
+          // A slot-tagged message only ever drives the local player registered for that slot: a
+          // valid-looking slot that was never joined is dropped, never routed to the primary hero.
+          let targetPid = pid;
+          if (slot !== null) { targetPid = localPids.get(slot); if (!targetPid) break; }
+          room.handleInput(targetPid, msg);
+          break;
+        }
+        case 'join_local': {
+          // Local co-op (#15): add another player to this same room, bound to this socket, for a
+          // second/third/fourth gamepad on one machine. Minimal protocol extension — see
+          // Room#joinLocal — since the client/server 'join' handshake otherwise assumes one player
+          // per WebSocket connection.
+          if (!room) throw new Error('Join a room first');
+          const slot = normalizeSlot(msg.slot);
+          if (slot === null || Number.isNaN(slot)) throw new Error('Invalid local player slot');
+          if (localPids.has(slot)) break; // already joined this slot on this connection
+          const isCustomCls = typeof msg.cls === 'string' && /^custom:\d+$/.test(msg.cls);
+          const cls = (CLASSES[msg.cls] || isCustomCls) ? msg.cls : 'warrior';
+          const name = String(msg.name || `P${slot + 1}`).replace(/[^\w ]/g, '').slice(0, 12) || `P${slot + 1}`;
+          const lpid = `${pid}L${slot}`;
+          room.joinLocal(ws, { pid: lpid, name, cls, palette: msg.palette || null });
+          localPids.set(slot, lpid);
+          send({ t: 'welcome_local', slot, pid: lpid });
+          break;
+        }
         case 'chat': if (room) room.chat(pid, msg.text); break;
         case 'pick': if (room) room.pick(pid, msg.id); break;
         case 'debug':
@@ -382,6 +492,7 @@ wss.on('connection', (ws, req) => {
         case 'ready': if (room) room.setReady(pid, !!msg.ready); break;
         case 'hero': if (room) room.setHero(pid, msg.cls, msg.palette || null); break;
         case 'settings': if (room) room.setSettings(pid, msg); break;
+        case 'prefs': if (room) room.setPrefs(pid, msg); break;
         case 'start':
           if (room) {
             const uid = room.clients.get(pid)?.user?.id || null;
@@ -394,6 +505,7 @@ wss.on('connection', (ws, req) => {
           if (room) {
             const uid = room.clients.get(pid)?.user?.id || null;
             const roomId = room.id;
+            leaveLocals();
             room.leave(pid); room = null; send({ t: 'left' });
             telemetry.recordEvent({ kind: 'leave', userId: uid, ip, data: { roomId } });
           }
@@ -401,7 +513,12 @@ wss.on('connection', (ws, req) => {
       }
     } catch (e) { send({ t: 'error', error: e.message }); }
   });
-  ws.on('close', () => { if (room) room.disconnect(pid); });
+  // Local co-op players (#15) are bound to this socket and can't resume independently of it, so
+  // once the socket is gone they're gone for good — leave them immediately (the same path
+  // 'leave' uses below) rather than parking them in the away-grace window like the primary. Left
+  // in that window, a local player kept the room looking (and counting as) full until
+  // AWAY_GRACE_MS elapsed even though nothing could ever reconnect them (#27 review).
+  ws.on('close', () => { if (room) { leaveLocals(); room.disconnect(pid); } });
 });
 setInterval(() => heartbeat(wss.clients), 30000);
 

@@ -32,6 +32,13 @@
     <button class="primary" id="login">Log in / Register</button>
   </div>
 
+  <div id="ai-narrator-panel" class="panel" style="margin-top:18px;display:none">
+    <h2>AI Narrator</h2>
+    <p class="muted" style="font-size:12px;margin:0 0 10px">Occasional AI-generated narrator lines for big moments — a fresh party's arrival, a near-death save, a kill streak, a treasure vault. Off by default. Only coarse event details (hero classes, streak thresholds) are ever sent to the API — never your name, chat, or anything else about you.</p>
+    <div class="switch-row"><input type="checkbox" id="p-ai-narrator" /><label for="p-ai-narrator" style="margin:0;text-transform:none;font-size:14px">Enable AI Narrator</label></div>
+    <p class="muted" id="ai-narrator-note" style="font-size:11px;margin:6px 0 0"></p>
+  </div>
+
   <div id="mine" style="display:none">
     <div class="panel"><h2>Settings</h2><p class="muted" style="margin:0">Signed in as <b id="uname"></b>.</p></div>
 

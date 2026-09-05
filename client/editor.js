@@ -2,7 +2,7 @@
 // test-play, save/publish, and the AI-generator prompt UI (falls back to the procedural generator
 // without an Anthropic key).
 import { api, me, renderNav, authModal, toast, esc } from './common.js';
-import { sprite, TILE_SPRITE, GEN_TINT } from './sprites.js';
+import { sprite, TILE_SPRITE, GEN_TINT, PLATE_TINT } from './sprites.js';
 import { T } from '/shared/constants.js';
 import { validateLevel, LEGEND } from '/shared/level.js';
 
@@ -45,6 +45,7 @@ function draw() {
     if (GEN_TILES.has(c)) ctx.drawImage(sprite('gen3', GEN_TINT[c]), x * CELL, y * CELL, CELL, CELL);
     else if (MON_SPRITE[c]) ctx.drawImage(sprite(MON_SPRITE[c]), x * CELL, y * CELL, CELL, CELL);
     else if (c === T.START) { ctx.drawImage(sprite('hero', '#e03c31'), x * CELL, y * CELL, CELL, CELL); }
+    else if (PLATE_TINT[c]) ctx.drawImage(sprite(TILE_SPRITE[c], PLATE_TINT[c]), x * CELL, y * CELL, CELL, CELL);
     else if (c !== T.FLOOR) ctx.drawImage(sprite(TILE_SPRITE[c] || 'floor'), x * CELL, y * CELL, CELL, CELL);
   }
   ctx.strokeStyle = 'rgba(255,255,255,0.05)';
@@ -75,6 +76,7 @@ for (const [c, label] of LEGEND) {
   if (GEN_TILES.has(c)) g.drawImage(sprite('gen3', GEN_TINT[c]), 0, 0);
   else if (MON_SPRITE[c]) g.drawImage(sprite(MON_SPRITE[c]), 0, 0);
   else if (c === T.START) g.drawImage(sprite('hero', '#e03c31'), 0, 0);
+  else if (PLATE_TINT[c]) g.drawImage(sprite(TILE_SPRITE[c], PLATE_TINT[c]), 0, 0);
   else g.drawImage(sprite(TILE_SPRITE[c] || 'floor'), 0, 0);
   b.appendChild(cc); b.appendChild(document.createTextNode(label.split(' (')[0]));
   b.onclick = () => { ED.brush = c; pal.querySelectorAll('button').forEach((x) => x.classList.remove('on')); b.classList.add('on'); };
@@ -234,12 +236,89 @@ async function openLevel(id, readOnly = false) {
   } catch (e) { toast('Could not open level', e.message, 'err'); }
 }
 
+
+// ============================================================================================
+// #17 AI assist: remix / harden / soften the level currently on the canvas, and explain it.
+// Kept in its own section at the end of the file to stay out of the way of concurrent edits
+// to the palette/buttons above.
+// ============================================================================================
+let aiAvailableFlag = true; // set from GET /api/ai/status in the IIFE above; only affects button labels
+let remixUndo = null;       // one-level undo snapshot: {grid, w, h, name, desc, source}
+
+const REMIX_BTN_IDS = ['remix', 'harder', 'easier', 'explain'];
+const REMIX_BTN_BASE_TITLE = Object.fromEntries(REMIX_BTN_IDS.map((id) => [id, $('#' + id).title]));
+
+/** Guests can't call the AI-assist endpoints (they're logged-in only server-side), so disable the
+ *  buttons with an explanatory tooltip rather than letting them click through to a 401. Once we
+ *  know whether the server has an AI key, append a note so a signed-in user isn't surprised that
+ *  "Remix" quietly gave them a procedural variation instead of a Claude one. */
+function refreshRemixButtons() {
+  const guest = !ED.user;
+  for (const id of REMIX_BTN_IDS) {
+    const b = $('#' + id);
+    b.disabled = guest;
+    b.title = guest
+      ? 'Log in to use AI level assist'
+      : aiAvailableFlag ? REMIX_BTN_BASE_TITLE[id]
+      : `${REMIX_BTN_BASE_TITLE[id]} (no AI key configured on this server — uses the procedural generator instead of Claude)`;
+  }
+}
+
+function snapshotRemixUndo() {
+  remixUndo = { grid: ED.grid.map((r) => r.slice()), w: ED.w, h: ED.h, name: ED.name, desc: ED.desc, source: ED.source };
+  $('#undoRemix').style.display = '';
+}
+$('#undoRemix').onclick = () => {
+  if (!remixUndo) return;
+  ED.grid = remixUndo.grid; ED.w = remixUndo.w; ED.h = remixUndo.h; ED.name = remixUndo.name; ED.desc = remixUndo.desc; ED.source = remixUndo.source;
+  $('#name').value = ED.name; $('#desc').value = ED.desc; $('#w').value = ED.w; $('#h').value = ED.h;
+  draw(); refreshMeta();
+  remixUndo = null; $('#undoRemix').style.display = 'none';
+  $('#remix-note').textContent = 'Reverted to the level before the last remix/tune.';
+};
+
+async function runRemix(mode, btn) {
+  if (!(await requireLogin())) return;
+  refreshRemixButtons();
+  const problems = validate(); if (problems.length) return toast('Fix the level first', problems[0], 'err');
+  const label = btn.textContent; btn.disabled = true; btn.textContent = 'Thinking…';
+  try {
+    const r = await api('/api/levels/ai/remix', { method: 'POST', body: { level: current(), mode } });
+    snapshotRemixUndo();
+    load(r.level, { id: ED.id, source: r.source, prompt: ED.prompt, published: ED.published });
+    $('#remix-note').textContent = r.source === 'ai' ? `Remixed by Claude (${mode}).` : `Procedural ${mode} applied (AI unavailable or declined the request).`;
+    toast(r.source === 'ai' ? 'Level remixed' : 'Procedural variation ready', r.level.name);
+  } catch (e) { toast('Could not remix level', e.message, 'err'); }
+  btn.disabled = false; btn.textContent = label;
+}
+$('#remix').onclick = () => runRemix('remix', $('#remix'));
+$('#harder').onclick = () => runRemix('harder', $('#harder'));
+$('#easier').onclick = () => runRemix('easier', $('#easier'));
+
+$('#explain').onclick = async () => {
+  if (!(await requireLogin())) return;
+  refreshRemixButtons();
+  const problems = validate(); if (problems.length) return toast('Fix the level first', problems[0], 'err');
+  const btn = $('#explain'); const label = btn.textContent; btn.disabled = true; btn.textContent = 'Thinking…';
+  try {
+    const r = await api('/api/levels/ai/explain', { method: 'POST', body: { level: current() } });
+    const panel = $('#explain-panel'); panel.textContent = r.explanation; panel.style.display = '';
+  } catch (e) { toast('Could not explain level', e.message, 'err'); }
+  btn.disabled = false; btn.textContent = label;
+};
+
+// Boot. Lives at the very end of the module so every `let`/`const` above (including the #17
+// remix state) is initialised before any of this runs -- no reliance on the awaits to dodge the
+// temporal dead zone.
 (async () => {
   ED.user = (await me()).user;
   load({ name: 'My Dungeon', description: '', rows: blank(32, 24).map((r) => r.join('')) });
   loadMine(); loadPublished();
+  refreshRemixButtons();
   const m = location.hash.match(/edit=(\d+)/); if (m) openLevel(m[1]);
   if (location.hash === '#browse') $('#browse').scrollIntoView();
   const st = await api('/api/ai/status').catch(() => ({ available: false }));
   if (!st.available) $('#ai-note').textContent = 'No AI key configured on this server: "Generate" will use the procedural generator, steered by your prompt.';
+  aiAvailableFlag = !!st.available;
+  refreshRemixButtons();
 })();

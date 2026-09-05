@@ -7,8 +7,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from './helpers/server.mjs';
 
-async function withServer(fn) {
-  const server = await startServer();
+async function withServer(fn, opts) {
+  const server = await startServer(opts);
   try {
     await fn(server.baseUrl);
   } finally {
@@ -19,6 +19,10 @@ async function withServer(fn) {
 function authed(token) { return { Authorization: `Bearer ${token}` }; }
 
 test('GET /api/health has the documented shape and needs no auth', async () => {
+  // Explicitly clear SENTRY_DSN in the child's env (server/sentry.js's enabled() treats '' the
+  // same as unset — Boolean('') is false) rather than relying on the shell this test happens to
+  // run under not having one set, so this assertion can't flake depending on the ambient
+  // environment (#27 review).
   await withServer(async (baseUrl) => {
     const res = await fetch(`${baseUrl}/api/health`);
     assert.equal(res.status, 200);
@@ -28,7 +32,8 @@ test('GET /api/health has the documented shape and needs no auth', async () => {
     assert.equal(typeof body.rooms, 'number');
     assert.equal(typeof body.players, 'number');
     assert.equal(typeof body.version, 'string');
-  });
+    assert.equal(body.sentry, false, 'SENTRY_DSN is explicitly cleared for this test, so this must report disabled');
+  }, { env: { SENTRY_DSN: '' } });
 });
 
 test('telemetry beacons are stored and reflected in admin analytics', async () => {

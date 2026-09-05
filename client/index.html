@@ -65,6 +65,13 @@
   #hud .pp.low .hp { color: var(--red); animation: blink 1s steps(2) infinite; }
   #hud .pp.dead { opacity: .5; }
   #hud .pp.away { opacity: .4; filter: grayscale(60%); }
+  #hud .pp.acid { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+  #hud .pp.acid .hp { color: var(--green); }
+  #hud .pp.acid::after { content: 'ACID'; display: block; font-size: 10px; font-weight: bold; letter-spacing: 2px; color: var(--green); animation: blink .5s steps(2) infinite; }
+  #hud .pp.stunned .nm { color: var(--yellow); }
+  #hud .pp.it { border-color: var(--yellow); box-shadow: 0 0 0 1px var(--yellow); animation: itpulse 1s ease-in-out infinite; }
+  #hud .pp.it .nm::after { content: ' 👑 IT'; color: var(--yellow); font-size: 10px; }
+  @keyframes itpulse { 0%, 100% { box-shadow: 0 0 0 1px var(--yellow); } 50% { box-shadow: 0 0 4px 2px var(--yellow); } }
   #hud .pp .boosts { font-size: 14px; margin-top: 2px; letter-spacing: 2px; }
   @keyframes blink { 50% { opacity: .3; } }
   #hud .lvl { color: var(--yellow); text-align: center; text-transform: uppercase; letter-spacing: 1px; }
@@ -74,10 +81,24 @@
   .bar input { flex: 1; }
   .help { font-size: 12px; color: var(--muted); }
   .help kbd { background: var(--panel2); border: 1px solid var(--line); padding: 1px 5px; }
-  .touch { display: none; position: fixed; bottom: 12px; left: 12px; right: 12px; justify-content: space-between; pointer-events: none; }
-  .touch > div { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); gap: 4px; pointer-events: auto; }
-  .touch button { padding: 0; font-size: 18px; opacity: .8; }
+  /* Touch d-pad/auto-fire layout (#15) — built by client/input.js into this #touch container.
+     Fixed to the bottom band of the viewport so it never overlaps #hud (which sits beside the
+     canvas, not at the bottom); shown only on a coarse (touch) pointer, or forced via ?touch=1
+     (input.js toggles .touch-force) so tests/e2e can exercise it on a desktop browser. */
+  .touch { display: none; position: fixed; bottom: 10px; left: 10px; right: 10px; z-index: 30;
+    justify-content: space-between; align-items: flex-end; gap: 8px; pointer-events: none; }
+  .touch.on.touch-force { display: flex; }
   @media (pointer: coarse) { .touch.on { display: flex; } }
+  .input-dpad { display: grid; grid-template-columns: repeat(3, clamp(56px, 25vw, 84px)); grid-template-rows: repeat(3, clamp(56px, 25vw, 84px));
+    gap: 6px; pointer-events: auto; }
+  .input-dpad, .input-actions { touch-action: none; }
+  .input-dir { padding: 0; font-size: clamp(18px, 8vw, 30px); line-height: 1; opacity: .85; border-radius: 8px; }
+  .input-dir-mid { visibility: hidden; pointer-events: none; }
+  .input-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; pointer-events: auto; }
+  .input-fire, .input-potion { width: 22vw; height: 22vw; max-width: 84px; max-height: 84px; border-radius: 50%;
+    font-size: clamp(18px, 7vw, 28px); padding: 0; align-self: flex-end; }
+  .input-autofire { font-size: 11px; padding: 8px 10px; white-space: nowrap; }
+  .input-autofire.on { background: var(--green); color: #000; border-color: var(--green); font-weight: bold; }
 </style>
 </head>
 <body>
@@ -109,6 +130,8 @@
           <label class="muted" style="font-size:12px"><input type="checkbox" id="private" /> private</label>
         </div>
         <p class="help">Move <kbd>WASD</kbd>/<kbd>arrows</kbd> &middot; Fire <kbd>Space</kbd> (hold and steer to aim) &middot; Potion <kbd>Q</kbd>/<kbd>Shift</kbd> &middot; Continue <kbd>Enter</kbd> &middot; Chat <kbd>T</kbd> &middot; Sound <kbd>M</kbd> &middot; Narrator <kbd>N</kbd></p>
+        <p class="help">On a phone or tablet, an oversized touch d-pad and fire/auto-fire/potion buttons appear automatically. Standard USB/Bluetooth
+          gamepads (Xbox, PlayStation, generic) work too — up to 3 extra controllers open extra local heroes in the same room.</p>
         <p class="help">Your health ticks down every second. Eat food. Shoot generators before they flood the room. Keys open doors. Potions clear the screen. Find the exit. It never ends.</p>
       </div>
       <div class="panel">
@@ -116,6 +139,10 @@
         <div class="rooms" id="rooms"><span class="muted">Loading…</span></div>
         <p class="help" style="margin-top:12px">Want a hand-made or AI-generated dungeon? Browse <a href="/editor.html#browse">community levels</a> or build your own in the <a href="/editor.html">Level Builder</a>.</p>
       </div>
+    </div>
+    <div class="panel" style="margin-top:18px">
+      <h2>High Scores</h2>
+      <div id="lobby-highscores"><span class="muted">Loading…</span></div>
     </div>
   </section>
 
@@ -155,6 +182,7 @@
             <p class="help" id="rs-death-help" style="display:none">Endless arena waves against the clock. Every level seals the exit until you clear all its
               waves; the level cap depends on the highest rank in the room.</p>
             <label><input type="checkbox" id="rs-private" /> Private room (hidden from the public list)</label>
+            <label><input type="checkbox" id="rs-itmode" /> It tag mode (2+ players: one hero draws all monster aggro)</label>
           </div>
         </div>
       </div>
@@ -176,11 +204,10 @@
     <div class="help">Move <kbd>WASD</kbd> · Fire <kbd>Space</kbd> · Potion <kbd>Q</kbd> · Continue <kbd>Enter</kbd> · Chat <kbd>T</kbd> · Sound <kbd>M</kbd> · Narrator <kbd>N</kbd></div>
   </section>
 </main>
-<div class="touch" id="touch">
-  <div id="dpad"></div>
-  <div style="grid-template-columns: repeat(2, 64px); grid-template-rows: 64px;"><button data-act="fire">🔥</button><button data-act="potion">🧪</button></div>
-</div>
+<!-- Touch d-pad, fire, auto-fire toggle and potion button (#15) are built entirely by client/input.js. -->
+<div class="touch" id="touch"></div>
 <footer>Gauntlet Crawler &mdash; a love letter to 1985. Not affiliated with Atari.</footer>
+<script type="module" src="/highscore.js"></script>
 <script type="module" src="/game.js"></script>
 </body>
 </html>
