@@ -14,11 +14,18 @@ import { CLASSES } from '../shared/constants.js';
 import { generateLevel } from '../shared/procgen.js';
 import { rankForXp } from '../shared/progression.js';
 import { unlockedFor, catalogueFor } from '../shared/unlocks.js';
+import * as admin from './admin.js';
+import * as account from './account.js';
+import * as telemetry from './telemetry.js';
+import * as log from './log.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
 const PORT = Number(process.env.PORT || 3000);
+const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
 const lobby = new Lobby();
+admin.init(lobby);
+telemetry.startRetentionJob(90);
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 
@@ -80,19 +87,55 @@ async function api(req, res, url) {
   const m = req.method;
   const need = () => { if (!user) throw Object.assign(new Error('Login required'), { status: 401 }); return user; };
 
+  // Admin dashboard lives entirely in server/admin.js; this is its only wiring into the API.
+  if (url.pathname.startsWith('/api/admin/')) return admin.handle(req, res, url, user);
+
+  if (m === 'GET' && url.pathname === '/api/health') {
+    const rooms = [...lobby.rooms.values()];
+    return json(res, 200, {
+      ok: true, uptime: process.uptime(), rooms: rooms.length,
+      players: rooms.reduce((n, r) => n + r.playerCount, 0), version: PKG.version,
+    });
+  }
+
   if (m === 'POST' && url.pathname === '/api/register') { const b = await readBody(req); return json(res, 200, auth.register(b.username, b.password)); }
   if (m === 'POST' && url.pathname === '/api/login') { const b = await readBody(req); return json(res, 200, auth.login(b.username, b.password)); }
   if (m === 'POST' && url.pathname === '/api/logout') { auth.logout(auth.bearer(req)); return json(res, 200, { ok: true }); }
   if (m === 'GET' && url.pathname === '/api/me') {
-    if (!user) return json(res, 200, { user: null, unlocks: { classes: [...unlockedFor(null).classes], palettes: [] }, catalogue: catalogueFor(null) });
+    if (!user) return json(res, 200, { user: null, unlocks: { classes: [...unlockedFor(null).classes], palettes: [] }, catalogue: catalogueFor(null), isAdmin: false });
     const s = stats.getStats(user.id);
     const profile = { stats: s, achievements: stats.getAchievementIds(user.id), rank: rankForXp(s.xp || 0) };
     const unlocked = unlockedFor(profile);
     return json(res, 200, {
       user, stats: s, achievements: stats.getAchievements(user.id), runs: stats.recentRuns(user.id),
       unlocks: { classes: [...unlocked.classes], palettes: [...unlocked.palettes] },
-      catalogue: catalogueFor(profile),
+      catalogue: catalogueFor(profile), isAdmin: admin.isAdmin(user),
     });
+  }
+  if (m === 'POST' && url.pathname === '/api/me/password') {
+    const u = need(); const b = await readBody(req);
+    return json(res, 200, account.changePassword(u.id, auth.bearer(req), b.current, b.next));
+  }
+  if (m === 'DELETE' && url.pathname === '/api/me') {
+    const u = need(); const b = await readBody(req).catch(() => ({}));
+    return json(res, 200, account.deleteAccount(u.id, b.password));
+  }
+  if (m === 'GET' && url.pathname === '/api/me/prefs') { const u = need(); return json(res, 200, { prefs: account.getPrefs(u.id) }); }
+  if (m === 'PUT' && url.pathname === '/api/me/prefs') { const u = need(); const b = await readBody(req); return json(res, 200, { prefs: account.setPrefs(u.id, b) }); }
+  if (m === 'GET' && url.pathname === '/api/me/export') { const u = need(); return json(res, 200, account.exportData(u.id)); }
+  if (m === 'POST' && url.pathname === '/api/telemetry') {
+    const ip = req.socket.remoteAddress || 'x';
+    if (!rateLimit('telemetry:' + ip, 60, 60_000)) return json(res, 429, { error: 'Slow down' });
+    const b = await readBody(req, 8 * 1024);
+    telemetry.recordClient(b, { user, ip });
+    return json(res, 200, { ok: true });
+  }
+  if (m === 'POST' && url.pathname === '/api/client-errors') {
+    const ip = req.socket.remoteAddress || 'x';
+    if (!rateLimit('clienterr:' + ip, 20, 60_000)) return json(res, 429, { error: 'Slow down' });
+    const b = await readBody(req, 32 * 1024); // generous cap; the stack itself is truncated to 4KB below
+    log.recordClientError({ message: b.message, stack: b.stack, url: b.url, ua: req.headers['user-agent'] }, user?.id);
+    return json(res, 200, { ok: true });
   }
   if (m === 'GET' && url.pathname === '/api/leaderboard') return json(res, 200, stats.leaderboard(20));
   if (m === 'GET' && url.pathname === '/api/rooms') return json(res, 200, { rooms: lobby.list() });
@@ -200,7 +243,7 @@ const server = http.createServer(async (req, res) => {
     }
     serveStatic(req, res, url.pathname);
   } catch (e) {
-    console.error('[http] request failed:', req.url, e);
+    log.error('http request failed', { url: req.url, stack: e.stack });
     if (!res.headersSent) { try { res.writeHead(500); } catch {} }
     try { res.end(); } catch {}
   }
@@ -211,6 +254,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 wss.on('connection', (ws, req) => {
   let pid = crypto.randomBytes(4).toString('hex');
   let room = null;
+  const ip = req.socket.remoteAddress || 'x';
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
   const send = (m) => { if (ws.readyState === 1) ws.send(JSON.stringify(m)); };
@@ -232,6 +276,17 @@ wss.on('connection', (ws, req) => {
           if (!target) target = msg.create ? lobby.create({ name: msg.roomName, isPublic: msg.public !== false }) : lobby.quick();
           target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null });
           room = target;
+          telemetry.recordEvent({ kind: 'join', userId: user?.id || null, guestId: msg.guestId || null, ip, data: { roomId: target.id } });
+          // Analytics boundary: wrap this room's broadcast (once) purely to observe a 'gameover'
+          // message going out, without server/game/room.js ever knowing telemetry exists.
+          if (!target._telemetryHooked) {
+            target._telemetryHooked = true;
+            const origBroadcast = target.broadcast.bind(target);
+            target.broadcast = (out) => {
+              if (out && out.t === 'gameover') telemetry.recordEvent({ kind: 'run_end', data: { roomId: target.id, level: out.level, reason: out.reason } });
+              return origBroadcast(out);
+            };
+          }
           break;
         }
         case 'input': if (room) room.handleInput(pid, msg); break;
@@ -245,9 +300,22 @@ wss.on('connection', (ws, req) => {
         case 'ready': if (room) room.setReady(pid, !!msg.ready); break;
         case 'hero': if (room) room.setHero(pid, msg.cls, msg.palette || null); break;
         case 'settings': if (room) room.setSettings(pid, msg); break;
-        case 'start': if (room) room.start(pid); break;
+        case 'start':
+          if (room) {
+            const uid = room.clients.get(pid)?.user?.id || null;
+            room.start(pid);
+            telemetry.recordEvent({ kind: 'start', userId: uid, ip, data: { roomId: room.id } });
+          }
+          break;
         case 'kick': if (room) room.kick(pid, msg.pid); break;
-        case 'leave': if (room) { room.leave(pid); room = null; send({ t: 'left' }); } break;
+        case 'leave':
+          if (room) {
+            const uid = room.clients.get(pid)?.user?.id || null;
+            const roomId = room.id;
+            room.leave(pid); room = null; send({ t: 'left' });
+            telemetry.recordEvent({ kind: 'leave', userId: uid, ip, data: { roomId } });
+          }
+          break;
         case 'rooms': send({ t: 'rooms', rooms: lobby.list() }); break;
         case 'ping': send({ t: 'pong', ts: msg.ts }); break;
       }

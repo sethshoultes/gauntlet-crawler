@@ -34,6 +34,8 @@ Optional environment variables:
 | `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
 | `ANTHROPIC_API_KEY` | Enables the AI level builder. Without it, "Generate with AI" falls back to the procedural generator steered by your prompt |
 | `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
+| `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
+| `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Auto-generated and persisted if unset — see [Analytics and privacy](#analytics-and-privacy) |
 
 ## How to play
 
@@ -115,6 +117,65 @@ Optional environment variables:
   on the dashboard, separate from campaign high scores, with two Death-specific achievements (*Wave Rider*, *Staring
   Down Death*).
 
+## Settings
+
+`/settings.html` (linked from the nav once you're logged in): change your password (rotates every
+other session's token so a stolen token elsewhere stops working, while keeping you signed in),
+adjust preferences — sound volume, narrator on/off, colour-blind palette, reduced motion, and key
+bindings — saved server-side to a `prefs` table and synced to any device you log into, download a
+JSON export of everything the server knows about your account, or permanently delete your account
+(password-confirmed; cascades to your sessions, stats, achievements, run history and levels,
+unpublishing anything you'd shared). Sound/narrator preferences are merged into the same
+`localStorage` keys the game already reads (`gc_mute`, `gc_narrate`) the moment you log in, so the
+game picks them up with no changes to `client/game.js`.
+
+## Admin dashboard
+
+`/admin.html` (linked from the nav for admins only) gives a live overview of the server: user,
+run and level counts; every room currently open (public and private) with player counts and a
+one-click **Close** action; a searchable user list (rank/XP, last run); a searchable level list
+with **Unpublish**/**Delete** moderation actions; a feed of recent server- and client-side errors;
+and an analytics tab with simple inline-SVG bar charts (no external chart library) for daily
+active users, runs per day, average run length, a deepest-level histogram, hero pick rates and the
+most-played custom levels.
+
+**Who's an admin**: set `GAUNTLET_ADMINS` to a comma-separated list of usernames on the server
+(e.g. `GAUNTLET_ADMINS=alice,bob`). If it's unset, the very first account ever registered (user id
+1) is the admin — so a fresh install always has exactly one admin with zero configuration. Every
+`/api/admin/*` endpoint (mounted from `server/admin.js`) checks this on every request; a logged-in
+non-admin gets a 403 and `/admin.html` shows an access-denied message instead of the dashboard.
+
+## Analytics and privacy
+
+A first-party `events` table (`server/telemetry.js`) records a small set of interactions: server
+side, a room's `join`/`leave`/`start`/game-over the moment they cross the WebSocket boundary in
+`server/index.js` (nothing in `server/game/*` knows telemetry exists); client side, small beacons
+the browser posts to `POST /api/telemetry` for page views, session starts, level-reached, run-end
+and client error events (fired from `client/common.js`, rate-limited per IP). Guests are counted
+by a random per-browser id that resets if they clear site data — never anything more identifying.
+
+**What's stored**: an event's timestamp, kind, optional user id or guest id, a small JSON payload
+(e.g. which room), and a hashed IP. **Raw IP addresses are never written to the database** — each
+is SHA-256 hashed together with a server-side salt (`GAUNTLET_SALT`, or one generated once and
+kept in a `meta` table) before it's stored, so the same visitor hashes consistently without the
+address itself ever being recoverable. Events older than **90 days** are deleted automatically by
+a daily background job. The admin analytics tab only ever sees aggregates (counts per day, per
+class, per level) — never a list of raw events.
+
+## Error logging
+
+`server/log.js` is a small structured JSON logger; `server/index.js`'s one bare `console.error`
+now goes through it, and every `level: 'error'` line is also written to an `errors` table so
+failures survive past whatever log viewer you have. Browser errors reach the same table: `client/
+common.js` installs `window.onerror` and `unhandledrejection` handlers that `POST` to
+`/api/client-errors` (rate-limited, body size capped, stack traces truncated to 4 KB, identical
+messages deduped per page load). Admins can browse both server and client errors on the **Errors**
+tab of `/admin.html`.
+
+`GET /api/health` (no auth required) returns `{ ok, uptime, rooms, players, version }` for uptime
+monitoring and container health checks — `deploy/deploy.sh` and the `Dockerfile`'s `HEALTHCHECK`
+both poll it instead of the old `/api/ai/status`.
+
 ## Level format
 
 Levels are arrays of equal-length strings. Border must be walls; a start `S` and exit `E` are required.
@@ -135,6 +196,10 @@ server/            Node HTTP + WebSocket server
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
   db.js / auth.js / stats.js   node:sqlite persistence, sessions, counters + achievement unlocks
+  account.js       settings-page ops: password change + session rotation, prefs, account deletion, data export
+  admin.js         admin dashboard API (mounted under /api/admin/*), admin designation
+  telemetry.js     first-party analytics: events table, IP hashing, aggregations, 90-day retention
+  log.js           structured JSON logger + persisted `errors` table
 shared/            code used by both server and browser
   constants.js     tiles, classes, monsters, tuning
   level.js         parse / validate / repair
@@ -144,7 +209,7 @@ shared/            code used by both server and browser
   progression.js   XP curve, rank titles/thresholds, perk caps — shared by server and dashboard/HUD
   chests.js        intermission chest pool, seeded rolling, and applying picked chests to a player
   unlocks.js       palette + hero-archetype unlock catalogue, requirement evaluation, dashboard catalogue
-client/            static browser app (no build step): game, dashboard, editor, sprites, audio
+client/            static browser app (no build step): game, dashboard, editor, sprites, audio, settings, admin
 test/              node:test suites
 ```
 

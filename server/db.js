@@ -58,6 +58,37 @@ CREATE TABLE IF NOT EXISTS levels (
 );
 CREATE INDEX IF NOT EXISTS runs_score ON runs(score DESC);
 CREATE INDEX IF NOT EXISTS levels_pub ON levels(published, plays DESC);
+CREATE TABLE IF NOT EXISTS prefs (
+  user_id INTEGER PRIMARY KEY,
+  json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  user_id INTEGER,
+  guest_id TEXT,
+  kind TEXT NOT NULL,
+  data TEXT,
+  ip_hash TEXT
+);
+CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
+CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, ts);
+CREATE TABLE IF NOT EXISTS errors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  message TEXT NOT NULL,
+  stack TEXT,
+  url TEXT,
+  user_id INTEGER,
+  ua TEXT
+);
+CREATE INDEX IF NOT EXISTS errors_ts ON errors(ts DESC);
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 
 // Idempotent migration: older databases predate the Death mode leaderboard split.
