@@ -1,39 +1,122 @@
-// Shared bits for Playwright-driven end-to-end scripts (test/e2e.mjs, test/e2e-features.mjs).
-// Deliberately NOT imported by test/e2e.mjs itself — that file predates this one and several
-// agents touch it concurrently, so its own copies of this logic (server/browser spawn, console/
-// request error capture, the scenario runner, ...) are left alone; this module exists so a
-// *second* Playwright script (test/e2e-features.mjs, #35) doesn't have to re-invent them. A later
-// cleanup pass can point test/e2e.mjs at this file too once nobody else is mid-edit on it.
+// Shared plumbing for the Playwright-driven end-to-end suites written after test/e2e.mjs
+// (test/e2e-features.mjs, #35; test/e2e-mobile.mjs, #34; and any future sibling): server-boot
+// helpers, the scenario runner + failure reporting, browser-error capture, a REST-registered
+// login identity, and a WebSocket "snap spy" for reading the authoritative snapshot stream
+// without a browser. Deliberately NOT imported by test/e2e.mjs itself — that file predates this
+// one and several agents touch it concurrently (see AGENT_RULES.md), so its own inline copies of
+// this logic are left alone.
 //
-// The server-spawning half of that duplicated logic already had its own shared home
-// (test/helpers/server.mjs's startServer()), used by several node:test files — this module reuses
-// that directly rather than copying it a third time. What's left here is everything Playwright-
-// specific that startServer() has no reason to know about.
+// The server-spawning helpers below overlap with test/helpers/server.mjs's startServer() (used by
+// node:test files and by test/e2e-features.mjs directly); they're kept here too, alongside
+// spawnGameServer()/stopGameServer(), because test/e2e-mobile.mjs was written independently
+// against this shape. A later cleanup pass could consolidate on one or the other.
+import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import crypto from 'node:crypto';
+import net from 'node:net';
 import WebSocket from 'ws';
 
-/** Attach page/console/request error capture to a Playwright page, tagged for the summary log —
- *  same shape as test/e2e.mjs's own `attach()`. Push targets are shared arrays so every page in
- *  a run reports into one place. */
-export function attachPageErrors(page, tag, { pageErrors, consoleErrors, failedRequests }) {
-  page.on('pageerror', (err) => pageErrors.push(`[${tag}] ${String((err && err.stack) || err)}`));
-  page.on('console', (msg) => { if (msg.type() === 'error') consoleErrors.push(`[${tag}] ${msg.text()}`); });
-  page.on('requestfailed', (req) => {
-    const errorText = req.failure()?.errorText || 'failed';
-    if (errorText === 'net::ERR_ABORTED') return; // navigations aborting in-flight requests is normal
-    failedRequests.push(`[${tag}] ${req.method()} ${req.url()} -> ${errorText}`);
-  });
-  page.on('response', (res) => {
-    if (res.status() >= 500) failedRequests.push(`[${tag}] ${res.request().method()} ${res.url()} -> HTTP ${res.status()}`);
+export function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.unref();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
   });
 }
 
-/** A tiny scenario runner: each named scenario runs independently, failures are recorded (not
- *  thrown) so the rest of the suite keeps going, and a final summary prints PASS/FAIL for every
- *  one plus any explicitly-flagged product bugs. Mirrors test/e2e.mjs's own scenario()/knownBug(). */
-export function makeRunner(log) {
+export function waitForServer(url, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const attempt = () => {
+      fetch(url).then((res) => resolve(res)).catch((err) => {
+        if (Date.now() > deadline) return reject(err);
+        setTimeout(attempt, 200);
+      });
+    };
+    attempt();
+  });
+}
+
+/** Random hex suffix for unique usernames/room names across a run. */
+export function rnd() {
+  return crypto.randomBytes(3).toString('hex');
+}
+
+/** Spawn server/index.js on a free port against `dataDir`, merging `env` over process.env. Returns
+ *  once it starts listening (or throws if it exits first). `root` is the repo root (the caller's
+ *  `..` from wherever it lives under test/). */
+export async function spawnGameServer({ root, dataDir, port, env = {} }) {
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
+    cwd: root,
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, GAUNTLET_DEBUG: '1', ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let serverOutput = '';
+  server.stdout.on('data', (d) => { serverOutput += d.toString(); });
+  server.stderr.on('data', (d) => { serverOutput += d.toString(); });
+  const serverExit = once(server, 'exit');
+
+  await Promise.race([
+    waitForServer(baseUrl),
+    serverExit.then(([code]) => { throw new Error(`server exited early (code ${code}):\n${serverOutput}`); }),
+  ]);
+
+  return { server, serverExit, baseUrl, output: () => serverOutput };
+}
+
+/** Reuses the pre-created `serverExit` promise (see test/helpers/server.mjs's header note for why
+ *  a fresh once(child,'exit') would hang if the child already exited) to shut the server down. */
+export async function stopGameServer({ server, serverExit }) {
+  if (server.exitCode === null && server.pid) {
+    try { process.kill(server.pid, 'SIGTERM'); } catch { /* already gone */ }
+  }
+  await serverExit.catch(() => {});
+}
+
+/** Wires a page's pageerror/console-error/failed-request/5xx-response events into the shared bags
+ *  every suite fails its overall run on, tagging each entry with `tag` for a multi-context suite.
+ *  `isExpectedFailure(req)` (optional) lets a scenario that deliberately breaks the network — the
+ *  PWA offline-reload check, say — mark a specific in-flight request's failure as expected rather
+ *  than a bug. The browser also logs its own "Failed to load resource: ..." line to the console for
+ *  the same failed request, so `isExpectedConsoleError(text)` (optional) suppresses that echo too;
+ *  neither turns off failure tracking for anything else the page does. */
+export function attach(page, tag, bags, isExpectedFailure, isExpectedConsoleError) {
+  page.on('pageerror', (err) => bags.pageErrors.push(`[${tag}] ${String((err && err.stack) || err)}`));
+  page.on('console', (msg) => {
+    if (msg.type() !== 'error') return;
+    if (isExpectedConsoleError?.(msg.text())) return;
+    bags.consoleErrors.push(`[${tag}] ${msg.text()}`);
+  });
+  page.on('requestfailed', (req) => {
+    const errorText = req.failure()?.errorText || 'failed';
+    if (errorText === 'net::ERR_ABORTED') return; // navigations aborting in-flight requests is normal
+    if (isExpectedFailure?.(req)) return;
+    bags.failedRequests.push(`[${tag}] ${req.method()} ${req.url()} -> ${errorText}`);
+  });
+  page.on('response', (res) => {
+    if (res.status() >= 500) bags.failedRequests.push(`[${tag}] ${res.request().method()} ${res.url()} -> HTTP ${res.status()}`);
+  });
+}
+
+/** Same as attach() with no expected-failure filters — matches test/e2e-features.mjs's original
+ *  call shape (page, tag, {pageErrors, consoleErrors, failedRequests}). */
+export function attachPageErrors(page, tag, bags) {
+  attach(page, tag, bags);
+}
+
+/** Builds a `scenario(name, fn)` runner + `knownBug(name, detail)` marker sharing one log prefix
+ *  and one `results`/`knownBugs` array pair, same shape as test/e2e.mjs's top-level ones. Accepts
+ *  either a log *function* (test/e2e-features.mjs's own `log(msg)`) or a plain string *prefix* to
+ *  build one from (test/e2e-mobile.mjs's `makeRunner('e2e-mobile')`). */
+export function makeRunner(logOrPrefix) {
   const results = [];
   const knownBugs = [];
+  const log = typeof logOrPrefix === 'function' ? logOrPrefix : (msg) => console.log(`[${logOrPrefix}] ${msg}`);
   async function scenario(name, fn) {
     const start = Date.now();
     try {
@@ -46,12 +129,13 @@ export function makeRunner(log) {
     }
   }
   /** Call from inside a scenario when the failing assertion reflects a genuine product bug rather
-   *  than a test-harness issue. The assertion itself must still have been left to fail above. */
+   *  than a test-harness issue. Prints a loud, unmissable marker; the assertion itself must still
+   *  have been left to fail above (never weaken it to make this quieter). */
   function knownBug(name, detail) {
     knownBugs.push({ name, detail });
     log(`KNOWN BUG in "${name}": ${detail}`);
   }
-  return { scenario, knownBug, results, knownBugs };
+  return { log, scenario, knownBug, results, knownBugs };
 }
 
 /** Register (or log in, if the name is already taken) a guest-free account over the REST API and
@@ -135,8 +219,11 @@ export async function snapSpy(port, roomId, name, cap = 300) {
 }
 
 /** Read the local player's own HUD row (name, HP, current level text) as one atomic in-page
- *  evaluation, retrying until it resolves — copied from test/e2e.mjs's readSelfHud() (see there
- *  for why this must be one page.evaluate() rather than several locator round trips). */
+ *  evaluation, retrying until it resolves. #hud is fully replaced (briefly emptying #hud-lvl and
+ *  every .pp row) each time a `players` packet arrives, then repainted on the next animation frame
+ *  — reading name/hp/level as separate round trips (locator calls) can straddle that reset and see
+ *  an inconsistent snapshot, so this grabs all three in a single page.evaluate() and retries as a
+ *  whole until it sees a complete, non-empty reading. (Copied from test/e2e.mjs.) */
 export async function readSelfHud(page, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -166,4 +253,24 @@ export async function pressFor(page, key, ms) {
   await page.keyboard.down(key);
   await page.waitForTimeout(ms);
   await page.keyboard.up(key);
+}
+
+/** A Playwright device descriptor (viewport, deviceScaleFactor, isMobile, hasTouch) suitable for
+ *  `browser.newContext({...chromiumDevice(name), ...})`, run entirely on Chromium. Playwright's
+ *  `devices['iPhone SE']`/`devices['iPad (gen 7)']` entries carry a WebKit user-agent string and
+ *  `defaultBrowserType: 'webkit'` (they're meant to pair with a WebKit browser); Chromium can still
+ *  emulate their touch/viewport/DPR characteristics, but presenting a Safari UA string from a
+ *  Chromium engine would be actively misleading rather than realistic, so both are dropped. */
+export function chromiumDevice(playwrightDevices, name) {
+  const d = playwrightDevices[name];
+  if (!d) throw new Error(`no Playwright device descriptor named "${name}"`);
+  const { userAgent, defaultBrowserType, ...rest } = d;
+  return rest;
+}
+
+/** Swaps a portrait device's width/height for its landscape orientation (Playwright's own
+ *  `"<name> landscape"` descriptors are WebKit-flavoured for the iPhone/iPad entries too — see
+ *  chromiumDevice() — so this just rotates the numbers ourselves instead of looking one up). */
+export function landscapeOf(device) {
+  return { ...device, viewport: { width: device.viewport.height, height: device.viewport.width } };
 }

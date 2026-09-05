@@ -500,6 +500,11 @@ export class Room {
     } else if (action === 'killall' && this.state === 'playing') {
       // Wipes every current monster — mainly useful to force a Death mode wave to advance instantly.
       for (const id of [...this.sim.monsters.keys()]) this.sim.monsters.delete(id);
+    } else if (action === 'endrun' && this.state === 'playing') {
+      // Forces a run to end right now instead of waiting out a real wipe (WIPE_GRACE_MS) or a
+      // rank-gated level cap — mainly so E2E/manual scripts can reach the arcade high-score
+      // initials modal (see endRun() below) without grinding out a full life-loss sequence.
+      this.endRun('wipe');
     } else if (action === 'loadLevel' && this.state === 'playing' && Array.isArray(msg.rows)) {
       // Swaps the live level for an arbitrary fixture grid (same levelIndex, no chest/intermission
       // side effects) so test/e2e-features.mjs can place the hero right next to one specific tile

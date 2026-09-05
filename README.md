@@ -880,7 +880,8 @@ client/            static browser app (no build step)
   common.js, sprites.js, font.js, pixelsprite.js, audio.js, voice.js, cutscenes.js   shared client modules
   input.js                touch d-pad/auto-fire + Gamepad API + local co-op input (#15)
   layout.js               pure canvas-fit math for the mobile game screen (#31)
-test/               node:test unit suites, plus smoke.mjs, e2e.mjs and e2e-features.mjs (Playwright)
+test/               node:test unit suites, plus smoke.mjs, e2e.mjs, e2e-features.mjs (#35) and
+                    e2e-mobile.mjs (device emulation, #34) — the latter two share helpers/e2e.mjs
 tools/              tools/generate-voice.mjs — narrator voice clip generation
 deploy/             Hetzner/Docker deployment scripts and Caddy config
 ```
@@ -894,11 +895,20 @@ CHROMIUM_PATH=/path/to/chromium npm run e2e           # multiplayer/editor/dashb
 CHROMIUM_PATH=/path/to/chromium npm run e2e:features  # full feature sweep (#35) — hazards/pickups,
                                                        # It mode, chests, Hero Builder, settings, admin,
                                                        # attract mode, ... — see test/e2e-features.mjs
+CHROMIUM_PATH=/path/to/chromium npm run e2e:mobile    # same server, but Playwright device emulation (#34)
 ```
 
-`npm run smoke`, `npm run e2e` and `npm run e2e:features` need `npx playwright install --with-deps
-chromium` once (or an existing Chromium binary pointed at by `CHROMIUM_PATH`). `.github/workflows/ci.yml`
-runs all four — `test`, `smoke`, `e2e`, `e2e-features` — on every push and pull request.
+`npm run smoke`, `npm run e2e`, `npm run e2e:features` and `npm run e2e:mobile` need `npx playwright
+install --with-deps chromium` once (or an existing Chromium binary pointed at by `CHROMIUM_PATH`).
+`test/e2e-mobile.mjs` drives the same server through Playwright's real device emulation (touch,
+mobile viewport, device scale factor) on an iPhone SE, a Pixel 7 and an iPad (gen 7) — lobby,
+registration/room creation/solo play by touch, canvas geometry and a mid-run rotate, a forced
+Death-mode run through the arcade high-score initials modal, the Hero Builder and Level Builder's
+touch-drag painting, Settings, and the installable PWA shell — plus a landscape rerun of the
+gameplay scenario on the two phones. `test/e2e-features.mjs` (#35) and `test/e2e-mobile.mjs` (#34)
+share `test/helpers/e2e.mjs`'s server-boot/scenario-runner/error-capture plumbing rather than
+touching `test/e2e.mjs` itself. `.github/workflows/ci.yml` runs all five — `test`, `smoke`, `e2e`,
+`e2e-features`, `e2e-mobile` — on every push and pull request.
 
 Optional environment variables:
 
@@ -928,7 +938,10 @@ the *only* debug surfaces in the app):
   next to one specific tile (an amulet, a pressure plate, a timed wall, ...) instead of hunting for
   one in a real generated level — `timers` shortens a timed wall's default 30s countdown for the
   test, and `treasureRoom: true` exercises the bonus-round entry exactly like a real treasure level.
-  Used by `test/e2e-features.mjs` (#35).
+  Used by `test/e2e-features.mjs` (#35). `action: 'endrun'` ends the run right now (same path as a
+  real wipe or level-cap finish — records stats/high scores and broadcasts `gameover`) so
+  `test/e2e-mobile.mjs` can reach the arcade high-score initials modal without grinding out a full
+  life-loss sequence.
 - `POST /api/heroes/debug/xp` (body `{amount}`), handled in `server/heroes.js`: grants XP to the
   caller so `test/heroes-api.test.js`, `test/e2e.mjs` and `test/e2e-features.mjs` can reach the Hero
   Builder's rank-3 unlock without a long grind.

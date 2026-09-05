@@ -135,6 +135,20 @@
   .input-autofire { font-size: 11px; padding: 8px 10px; white-space: nowrap; }
   .input-autofire.on { background: var(--green); color: #000; border-color: var(--green); font-weight: bold; }
 
+  /* Narrowest supported phones (iPhone SE and similar, ~320-360px wide, #34): `.touch`'s own box is
+     only viewport-width minus its 10px side margins, but the d-pad alone (3 * 25vw) plus the
+     action column (fire/potion at 22vw, widened further by the auto-fire label's `white-space:
+     nowrap`) add up to well more than that — pushing the whole action column, fire button
+     included, off the right edge of the screen entirely (unreachable by touch; caught by
+     test/e2e-mobile.mjs's gameplay scenario on an iPhone SE). Shrinking the vw factors and letting
+     the auto-fire label wrap onto two lines instead of forcing its own width is enough for the two
+     columns to actually fit side by side at this width. */
+  @media (max-width: 360px) {
+    .input-dpad { grid-template-columns: repeat(3, clamp(48px, 20vw, 84px)); grid-template-rows: repeat(3, clamp(48px, 20vw, 84px)); }
+    .input-fire, .input-potion { width: 20vw; height: 20vw; }
+    .input-autofire { font-size: 10px; padding: 6px 4px; white-space: normal; width: 20vw; max-width: 84px; text-align: center; }
+  }
+
   /* ---- lobby / hero-picker / room-settings mobile layout (#32) ---- */
   @media (max-width: 700px) {
     #lobby .heroes { grid-template-columns: repeat(2, 1fr); gap: 8px; }

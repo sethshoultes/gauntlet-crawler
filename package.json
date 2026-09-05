@@ -10,7 +10,8 @@
     "test": "node --no-warnings=ExperimentalWarning --test \"test/**/*.test.js\"",
     "smoke": "node test/smoke.mjs",
     "e2e": "node test/e2e.mjs",
-    "e2e:features": "node test/e2e-features.mjs"
+    "e2e:features": "node test/e2e-features.mjs",
+    "e2e:mobile": "node test/e2e-mobile.mjs"
   },
   "engines": {
     "node": ">=22.5"

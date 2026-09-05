@@ -779,10 +779,18 @@ function layoutGame() {
   const stageBox = stageEl.getBoundingClientRect();
   const hudH = hudEl ? hudEl.getBoundingClientRect().height : 0;
   const touchShown = !!touchEl && touchEl.classList.contains('on') && getComputedStyle(touchEl).display !== 'none';
-  // Portrait reserves a band below the canvas for the d-pad; landscape phones instead let it
-  // overlay the canvas edges (see the CSS "@media (orientation: landscape) and (max-height: 500px)"
-  // rule), so nothing needs to be subtracted from the fit there.
-  const controlsH = portrait && touchShown ? touchEl.getBoundingClientRect().height + 12 : 0;
+  // Portrait reserves a band below the canvas for the d-pad; landscape *phones* (short viewport)
+  // instead let it overlay the canvas edges, matching the CSS "@media (orientation: landscape) and
+  // (max-height: 500px)" rule that gives the pad a translucent backing specifically so it stays
+  // legible over whatever's rendered underneath — so nothing needs to be subtracted from the fit
+  // there. That rule (and this check) must stay in lock-step: a landscape *tablet* is tall enough
+  // to miss the 500px breakpoint (no translucent backing), so it needs the same reserved band
+  // portrait gets — treating every landscape viewport as "overlay" regardless of height used to
+  // leave a fully-opaque d-pad sitting on top of the canvas there with nothing subtracted from the
+  // fit, genuinely overlapping it (caught by test/e2e-mobile.mjs's #34 canvas-geometry scenario on
+  // a landscape iPad).
+  const overlayControls = !portrait && vh <= 500;
+  const controlsH = touchShown && !overlayControls ? touchEl.getBoundingClientRect().height + 12 : 0;
 
   const layout = computeCanvasLayout({
     vw: stageBox.width, vh: stageBox.height, hudH, controlsH,
