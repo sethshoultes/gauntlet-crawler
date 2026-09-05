@@ -548,6 +548,11 @@ manifest. Generated clips are not committed to the repo (see `.gitignore`) — o
 
 ## Deployment
 
+### CloudPanel host (no Docker)
+
+The production instance runs on a CloudPanel server as a Node.js site: `clpctl site:add:nodejs --domainName=<host> --nodejsVersion=22 --appPort=3000 --siteUser=gauntlet ...` creates the nginx vhost (with WebSocket upgrade headers) and a per-user Node via nvm. The app runs under pm2 with `PORT=3000 DATA_DIR=$HOME/data`, and `deploy/deploy-cloudpanel.sh` is installed as `$HOME/deploy.sh` for the site user. The GitHub deploy workflow runs that script when it exists on the target host and falls back to the Docker path otherwise.
+
+
 The app ships as a single Docker image (`Dockerfile`, `node:22-slim`, non-root user, `npm ci --omit=dev` so
 `playwright` never lands in production) fronted by [Caddy](https://caddyserver.com) for automatic HTTPS and
 WebSocket-aware reverse proxying (`docker-compose.yml`, `deploy/Caddyfile`). It's designed to run on a single
