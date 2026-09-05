@@ -19,12 +19,16 @@ const INITIALS_WINDOW_SECONDS = 5 * 60;
 
 function fail(status, message) { throw Object.assign(new Error(message), { status }); }
 
-/** Constant-time string compare, safe for tokens of unequal or attacker-controlled length (unlike
- *  crypto.timingSafeEqual, which throws on a length mismatch rather than just returning false). */
-function tokensMatch(a, b) {
-  const bufA = Buffer.from(String(a ?? ''));
-  const bufB = Buffer.from(String(b ?? ''));
-  return bufA.length === bufB.length && bufA.length > 0 && crypto.timingSafeEqual(bufA, bufB);
+// Claim tokens are always 16 random bytes as 32 lowercase hex chars (see recordHighScore below).
+const CLAIM_TOKEN_SHAPE = /^[0-9a-f]{32}$/;
+
+/** Constant-time compare of a caller-supplied token against the stored one. The shape check comes
+ *  first so an attacker-controlled body (up to the request body limit) is rejected before any
+ *  Buffer is allocated, and so crypto.timingSafeEqual never sees a length mismatch (it throws). */
+function tokensMatch(supplied, stored) {
+  if (typeof supplied !== 'string' || !CLAIM_TOKEN_SHAPE.test(supplied)) return false;
+  if (typeof stored !== 'string' || !CLAIM_TOKEN_SHAPE.test(stored)) return false;
+  return crypto.timingSafeEqual(Buffer.from(supplied, 'hex'), Buffer.from(stored, 'hex'));
 }
 
 const insertStmt = db.prepare(`INSERT INTO highscores (user_id, guest_id, username, class, score, level_reached, mode, ended_at, claim_token)

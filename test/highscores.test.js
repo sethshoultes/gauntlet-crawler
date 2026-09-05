@@ -54,6 +54,12 @@ test('setInitials: rejects a malformed pattern, then rejects a wrong token, then
   assert.throws(() => setInitials(id, 'ABCD', token), (err) => err.status === 400);
   assert.throws(() => setInitials(id, 'ABC'), (err) => err.status === 403, 'a missing token is rejected');
   assert.throws(() => setInitials(id, 'ABC', 'wrong-token'), (err) => err.status === 403, 'someone else\'s guessed/enumerated run id cannot claim it without the token');
+  // Shape is checked before any comparison: a huge body, a same-length non-hex string, a different
+  // case of the right token, and a non-string are all rejected without touching timingSafeEqual.
+  assert.throws(() => setInitials(id, 'ABC', 'x'.repeat(200000)), (err) => err.status === 403);
+  assert.throws(() => setInitials(id, 'ABC', 'g'.repeat(32)), (err) => err.status === 403);
+  assert.throws(() => setInitials(id, 'ABC', token.toUpperCase()), (err) => err.status === 403);
+  assert.throws(() => setInitials(id, 'ABC', { token }), (err) => err.status === 403);
   const ok = setInitials(id, 'ABC', token);
   assert.deepEqual(ok, { id, initials: 'ABC' });
   assert.throws(() => setInitials(id, 'XYZ', token), (err) => err.status === 409, 'a second attempt on the same run is rejected');
