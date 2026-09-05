@@ -334,13 +334,45 @@ async function main() {
     });
 
     // ---------------- 6. Editor ----------------
-    await scenario('6. Editor: generate (procedural fallback), save, publish, test play', async () => {
+    await scenario('6. Editor: generate (procedural fallback), remix/tune/explain (#17), save, publish, test play', async () => {
       await pageA.click('#leave').catch(() => {}); // leave the Death mode room first
       await pageA.goto(`${baseUrl}/editor.html`, { waitUntil: 'load' });
       await pageA.waitForSelector('#gen', { timeout: 10_000 });
       await pageA.fill('#prompt', 'A small crypt guarded by ghosts with a treasure vault behind a locked door');
       await pageA.click('#gen');
       await pageA.waitForFunction(() => (document.querySelector('#status')?.textContent || '').includes('Playable'), { timeout: 20_000 });
+
+      // #17 AI assist: "Make harder" + undo, all logged in as pageA. Remix/harder/easier/explain
+      // share one per-user rate-limit bucket with the "Generate with AI" call just above (1 AI
+      // action per 10s, see server/index.js), so give that bucket a moment to clear first rather
+      // than racing it and getting a 429 the UI would (correctly) just toast and stop on.
+      await pageA.waitForTimeout(10_500);
+
+      const genCountFromStatus = async () => {
+        const t = await pageA.locator('#status').textContent();
+        const m = t.match(/(\d+)\s+generators/);
+        if (!m) throw new Error(`could not read generator count from #status: "${t}"`);
+        return Number(m[1]);
+      };
+      const genBefore = await genCountFromStatus();
+      await pageA.click('#harder');
+      await pageA.waitForFunction(() => (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('harder'), { timeout: 20_000 });
+      const genAfterHarder = await genCountFromStatus();
+      if (!(genAfterHarder > genBefore)) throw new Error(`"Make harder" should increase the generator count (before ${genBefore}, after ${genAfterHarder})`);
+      if (!(await pageA.locator('#undoRemix').isVisible())) throw new Error('undo button should appear after a remix/tune action');
+
+      await pageA.click('#undoRemix');
+      await pageA.waitForFunction((n) => {
+        const t = document.querySelector('#status')?.textContent || '';
+        const m = t.match(/(\d+)\s+generators/);
+        return m && Number(m[1]) === n;
+      }, genBefore, { timeout: 10_000 });
+
+      // "Explain this level" on the (now reverted) level -- exercised on its own, well clear of
+      // the harder/undo calls' own 10s window.
+      await pageA.waitForTimeout(10_500);
+      await pageA.click('#explain');
+      await pageA.waitForFunction(() => (document.querySelector('#explain-panel')?.textContent || '').length > 10, { timeout: 20_000 });
 
       await pageA.click('#save');
       await pageA.waitForFunction(() => document.querySelector('#publish') && !document.querySelector('#publish').disabled, { timeout: 10_000 });

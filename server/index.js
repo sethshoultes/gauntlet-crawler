@@ -10,7 +10,7 @@ import { db, now } from './db.js';
 import * as auth from './auth.js';
 import * as stats from './stats.js';
 import { Lobby } from './game/lobby.js';
-import { generateFromPrompt, aiAvailable } from './ai/levelgen.js';
+import { generateFromPrompt, aiAvailable, remixLevel, explainLevel } from './ai/levelgen.js';
 import { aiAvailable as aiNarratorAvailable } from './ai/narrator.js';
 import { validateLevel, parseLevel } from '../shared/level.js';
 import { CLASSES } from '../shared/constants.js';
@@ -205,6 +205,27 @@ async function api(req, res, url) {
     let unlocked = [];
     if (user && out.source === 'ai') unlocked = stats.bump(user.id, 'ai_levels');
     return json(res, 200, { ...out, unlocked });
+  }
+  // #17 AI assist: remix/harden/soften an existing level, or explain how to play it. Logged-in
+  // only, and keyed under the same 'gen:u<id>' bucket as /api/levels/generate above so a user
+  // can't dodge the overall AI-usage limit by switching actions -- 1 per 10s here, tighter than
+  // generate's 6/min, since these operate on a full level (bigger prompt) rather than a one-liner.
+  if (m === 'POST' && url.pathname === '/api/levels/ai/remix') {
+    const u = need();
+    if (!rateLimit('gen:u' + u.id, 1, 10_000)) return json(res, 429, { error: 'Slow down: 1 AI action per 10 seconds' });
+    const b = await readBody(req);
+    const problems = validateLevel(b.level);
+    if (problems.length) return json(res, 400, { error: problems[0], problems });
+    const mode = ['remix', 'harder', 'easier'].includes(b.mode) ? b.mode : 'remix';
+    return json(res, 200, await remixLevel({ level: b.level, mode }));
+  }
+  if (m === 'POST' && url.pathname === '/api/levels/ai/explain') {
+    const u = need();
+    if (!rateLimit('gen:u' + u.id, 1, 10_000)) return json(res, 429, { error: 'Slow down: 1 AI action per 10 seconds' });
+    const b = await readBody(req);
+    const problems = validateLevel(b.level);
+    if (problems.length) return json(res, 400, { error: problems[0], problems });
+    return json(res, 200, await explainLevel({ level: b.level }));
   }
   if (m === 'POST' && url.pathname === '/api/levels') {
     const u = need();

@@ -210,8 +210,81 @@ async function openLevel(id, readOnly = false) {
   ED.user = (await me()).user;
   load({ name: 'My Dungeon', description: '', rows: blank(32, 24).map((r) => r.join('')) });
   loadMine(); loadPublished();
+  refreshRemixButtons();
   const m = location.hash.match(/edit=(\d+)/); if (m) openLevel(m[1]);
   if (location.hash === '#browse') $('#browse').scrollIntoView();
   const st = await api('/api/ai/status').catch(() => ({ available: false }));
   if (!st.available) $('#ai-note').textContent = 'No AI key configured on this server: "Generate" will use the procedural generator, steered by your prompt.';
+  aiAvailableFlag = !!st.available;
+  refreshRemixButtons();
 })();
+
+// ============================================================================================
+// #17 AI assist: remix / harden / soften the level currently on the canvas, and explain it.
+// Kept in its own section at the end of the file to stay out of the way of concurrent edits
+// to the palette/buttons above.
+// ============================================================================================
+let aiAvailableFlag = true; // set from GET /api/ai/status in the IIFE above; only affects button labels
+let remixUndo = null;       // one-level undo snapshot: {grid, w, h, name, desc, source}
+
+const REMIX_BTN_IDS = ['remix', 'harder', 'easier', 'explain'];
+const REMIX_BTN_BASE_TITLE = Object.fromEntries(REMIX_BTN_IDS.map((id) => [id, $('#' + id).title]));
+
+/** Guests can't call the AI-assist endpoints (they're logged-in only server-side), so disable the
+ *  buttons with an explanatory tooltip rather than letting them click through to a 401. Once we
+ *  know whether the server has an AI key, append a note so a signed-in user isn't surprised that
+ *  "Remix" quietly gave them a procedural variation instead of a Claude one. */
+function refreshRemixButtons() {
+  const guest = !ED.user;
+  for (const id of REMIX_BTN_IDS) {
+    const b = $('#' + id);
+    b.disabled = guest;
+    b.title = guest
+      ? 'Log in to use AI level assist'
+      : aiAvailableFlag ? REMIX_BTN_BASE_TITLE[id]
+      : `${REMIX_BTN_BASE_TITLE[id]} (no AI key configured on this server — uses the procedural generator instead of Claude)`;
+  }
+}
+
+function snapshotRemixUndo() {
+  remixUndo = { grid: ED.grid.map((r) => r.slice()), w: ED.w, h: ED.h, name: ED.name, desc: ED.desc, source: ED.source };
+  $('#undoRemix').style.display = '';
+}
+$('#undoRemix').onclick = () => {
+  if (!remixUndo) return;
+  ED.grid = remixUndo.grid; ED.w = remixUndo.w; ED.h = remixUndo.h; ED.name = remixUndo.name; ED.desc = remixUndo.desc; ED.source = remixUndo.source;
+  $('#name').value = ED.name; $('#desc').value = ED.desc; $('#w').value = ED.w; $('#h').value = ED.h;
+  draw(); refreshMeta();
+  remixUndo = null; $('#undoRemix').style.display = 'none';
+  $('#remix-note').textContent = 'Reverted to the level before the last remix/tune.';
+};
+
+async function runRemix(mode, btn) {
+  if (!(await requireLogin())) return;
+  refreshRemixButtons();
+  const problems = validate(); if (problems.length) return toast('Fix the level first', problems[0], 'err');
+  const label = btn.textContent; btn.disabled = true; btn.textContent = 'Thinking…';
+  try {
+    const r = await api('/api/levels/ai/remix', { method: 'POST', body: { level: current(), mode } });
+    snapshotRemixUndo();
+    load(r.level, { id: ED.id, source: r.source, prompt: ED.prompt, published: ED.published });
+    $('#remix-note').textContent = r.source === 'ai' ? `Remixed by Claude (${mode}).` : `Procedural ${mode} applied (AI unavailable or declined the request).`;
+    toast(r.source === 'ai' ? 'Level remixed' : 'Procedural variation ready', r.level.name);
+  } catch (e) { toast('Could not remix level', e.message, 'err'); }
+  btn.disabled = false; btn.textContent = label;
+}
+$('#remix').onclick = () => runRemix('remix', $('#remix'));
+$('#harder').onclick = () => runRemix('harder', $('#harder'));
+$('#easier').onclick = () => runRemix('easier', $('#easier'));
+
+$('#explain').onclick = async () => {
+  if (!(await requireLogin())) return;
+  refreshRemixButtons();
+  const problems = validate(); if (problems.length) return toast('Fix the level first', problems[0], 'err');
+  const btn = $('#explain'); const label = btn.textContent; btn.disabled = true; btn.textContent = 'Thinking…';
+  try {
+    const r = await api('/api/levels/ai/explain', { method: 'POST', body: { level: current() } });
+    const panel = $('#explain-panel'); panel.textContent = r.explanation; panel.style.display = '';
+  } catch (e) { toast('Could not explain level', e.message, 'err'); }
+  btn.disabled = false; btn.textContent = label;
+};

@@ -85,6 +85,17 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
 - **AI Narrator** (opt-in, off by default — see [AI Narrator](#ai-narrator-18) below): occasional Claude-generated
   commentary for party intros, near-death saves, kill streaks, and treasure vaults, cached per event and delivered
   through the same narrator voice channel as the fixed lines.
+- **AI remix and tune** (#17): four more buttons in the Level Builder work on whatever level is currently on the canvas —
+  **Remix** (vary the layout/monsters/loot), **Make harder** / **Make easier** (more or fewer generators and monsters,
+  food swapped for poison food or back), and **Explain this level** (3-5 sentences of strategy advice in a panel).
+  Remix/harder/easier always keep the start and exit tile(s) at their original coordinates and re-validate the result
+  (repairing it first if needed); one level of undo is kept. Without an Anthropic key (or if the AI call fails
+  validation) these fall back to a deterministic procedural variation instead of a real Claude rewrite — the status
+  line always says which (`source: 'ai'` or `'procedural'`), and the buttons are relabeled to say so up front. All
+  four AI-assist buttons are disabled with an explanatory tooltip for guests. Procedurally generated campaign/Death-mode
+  levels also get an AI-written name and one-sentence description when a key is configured, fetched ahead of time for
+  the *next* level so the tick/level-load path itself never waits on the network — see "Level Builder and AI generator"
+  below.
 - **Chest intermission** (`shared/chests.js`): after clearing a level, a 15s pick window opens where every player is
   offered three hidden chests rolled from a seeded RNG (potions, keys, health, temporary next-level-only boosts like
   speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
@@ -263,6 +274,40 @@ See the Features list above — `/editor.html` (paint/flood-fill/resize/import-e
 and the "Generate with AI" prompt (Claude with a procedural fallback) are covered there. The AI side
 lives in `server/ai/levelgen.js`; the shared validate/repair logic both sides rely on lives in
 `shared/level.js`.
+
+**AI remix and tune (#17)** — same file, same structured-JSON pattern, three more exports:
+
+- `remixLevel({ level, mode })`, `mode` one of `'remix' | 'harder' | 'easier'` — sends the level's full
+  current rows to Claude along with the exact coordinates its start/exit tile(s) must keep, then forces
+  those coordinates back to their original glyphs regardless of what came back, repairs and re-validates
+  the result. If it's still invalid (or there's no AI key, or the call fails) it falls back to a
+  deterministic procedural variation instead: `'remix'` regenerates a fresh dungeon of the same size from
+  a new seed via `shared/procgen.js`'s `generateLevel()` and overwrites start/exit back onto it; `'harder'`
+  / `'easier'` add or remove generators/monsters and swap food for poison food (or back) on the existing
+  rows, with no randomness involved, so the result is reproducible. Either way the response is
+  `{ level, source: 'ai' | 'procedural' }`.
+- `explainLevel({ level })` returns `{ explanation }` — 3-5 sentences of strategy advice from Claude, or
+  (no AI key) a templated summary computed straight from the level's own tile counts (generators, loose
+  monsters, keys/doors, treasure, poison food, a thief, Death).
+- `describeLevel({ level, seed })` returns `{ name, description }` for a procedurally generated level —
+  an AI-written name/blurb when a key is configured, or (falling back) a deterministic name derived from
+  `seed` via `shared/procgen.js`'s `nameForSeed()` (same "\<Adjective\> \<Theme\>" word lists
+  `generateLevel()` uses for its own default names).
+
+  `server/game/room.js` calls `describeLevel()` for the *next* campaign/Death-mode level right after
+  loading the current one (`Room#prefetchName`), caches whatever comes back, and never awaits it on the
+  tick/level-load path itself (`Room#levelFor`/`applyCachedName` just check the cache synchronously) — a
+  level loads with its plain procedural name if the AI name isn't back yet, and with the AI name if it
+  is.
+
+  Endpoints: `POST /api/levels/ai/remix` (body `{ level, mode }`) and `POST /api/levels/ai/explain` (body
+  `{ level }`) — both logged-in only, and rate-limited to 1 AI action per 10 seconds per account, sharing
+  that bucket with `POST /api/levels/generate` (so switching between "Generate", "Remix" and "Explain"
+  doesn't dodge the limit). The Level Builder's **Remix**, **Make harder**, **Make easier** and **Explain
+  this level** buttons call these; Remix/harder/easier replace the canvas with the result (keeping one
+  level of undo) and show the source in the status line, Explain shows the text in a panel below the
+  buttons, and all four are disabled with a tooltip for guests and relabeled when the server has no AI key
+  configured.
 
 ### Cutscenes and attract mode
 
@@ -748,7 +793,8 @@ Tracked as GitHub issues. Implemented already (see [Features](#features) above):
 (#4), the full pre-game lobby with ready-up/private rooms/reconnect (#5), durable guest kicks (#7),
 palette tint shown in the lobby roster and room list (#8), chests offered to players who join
 mid-intermission (#9), in-game cutscene triggers (#23), the Hero Builder's lobby/simulation
-integration (#24), and an AI-generated launch trailer and title backdrop (#21).
+integration (#24), an AI-generated launch trailer and title backdrop (#21), and AI remix/tune/explain
+for existing levels plus AI-written names for procedural levels (#17).
 
 Sound synthesis (#20), pre-rendered narrator voice lines (#19), and optional opt-in AI narrator
 commentary (#18) are also implemented (see [Sound](#sound), [Narrator voice](#narrator-voice), and
@@ -762,8 +808,7 @@ Open, not yet implemented:
   (#12), an "It" tag mode and mystery treasure rooms from Gauntlet II (#13).
 - **Presentation**: an original-style attract mode and high-score name entry (#14).
 - **Mobile**: a full touch layout and gamepad support (#15).
-- **AI assist**: describe a hero and get a build/sprite suggestion (#16), remix and tune an
-  existing level with AI (#17).
+- **AI assist**: describe a hero and get a build/sprite suggestion (#16).
 - **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.

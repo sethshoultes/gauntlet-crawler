@@ -185,6 +185,16 @@ export function biasFromPrompt(prompt = '') {
   };
 }
 
+/** Deterministic level name for a seed, independent of generateLevel()'s own internal rng use (that
+ *  rng is consumed room-by-room before it ever reaches the name pick, so re-deriving a name from
+ *  the same seed there would silently change with unrelated generator tweaks). Reused by
+ *  server/ai/levelgen.js's describeLevel() as the "no AI credentials" fallback name for both
+ *  procedural levels and AI remixes. */
+export function nameForSeed(seed, level = 1) {
+  const rng = makeRng(hashSeed(`name:${seed}:${level}`));
+  return `${rng.pick(ADJ)} ${rng.pick(THEMES)}`;
+}
+
 /** Bonus level (README's "Features" section, "Bonus treasure rooms"): an open room full of treasure, no monsters, several exits. See
  *  server/game/room.js — after every 5th campaign level, levelFor() returns this instead of a
  *  regular generated level; Sim.loadLevel({treasureRoom:true}) starts a 30s auto-complete timer. */

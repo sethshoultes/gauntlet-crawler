@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';
 import { generateLevel, generateTreasureRoom } from '../../shared/procgen.js';
+import { aiAvailable, describeLevel } from '../ai/levelgen.js';
 import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T, LOW_HEALTH, AMULET_TILES } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
@@ -59,10 +60,12 @@ export class Room {
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
     this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (see README's "Level format" section)
     this.treasureTimer = null;    // bonus-level 30s auto-complete timer (README's "Features" section, "Bonus treasure rooms")
+    this.aiNameCache = new Map(); // #17: n -> {name, description} once prefetchName(n)'s AI call resolves; see levelFor()/applyCachedName()
     this.sim = new Sim(this.levelFor(1), {
       levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign',
       rng: makeRng(`${seed}|sim`),
     });
+    this.prefetchName(2); // kick off level 2's AI name now, in parallel with the lobby/countdown, never awaited
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
     this.secondsTimer = setInterval(this.guard('creditTime', () => this.creditTime()), 30000);
     this.changing = false;
@@ -80,18 +83,46 @@ export class Room {
   }
 
   levelFor(n) {
-    if (this.source.type === 'death') return generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) });
+    if (this.source.type === 'death') return this.applyCachedName(n, generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) }));
     if (this.isTreasureLevel(n)) return generateTreasureRoom({ seed: this.seed, level: n });
     if (n === 1) {
       if (this.source.type === 'custom' && this.source.level) return this.source.level;
       return LEVEL1;
     }
-    return generateLevel({ seed: this.seed, level: n });
+    return this.applyCachedName(n, generateLevel({ seed: this.seed, level: n }));
   }
 
   /** Bonus level (README's "Features" section, "Bonus treasure rooms"): every 6th level (i.e. after every 5 regular levels) in any non-Death mode
    *  is a generated treasure room instead — see shared/procgen.js generateTreasureRoom(). */
   isTreasureLevel(n) { return this.source.type !== 'death' && n > 1 && n % 6 === 0; }
+
+  /** #17 AI assist: if prefetchName(n) already resolved an AI-written name/description for level
+   *  n, use it instead of generateLevel()'s own "<Adjective> <Theme>" name. Falling back to the
+   *  procedural name (by simply not overwriting it) is exactly what happens when the AI is
+   *  unavailable, still in flight, or errored -- prefetchName() never leaves a stale/wrong entry
+   *  behind, it either has the real answer cached or nothing at all. Also sweeps out cache entries
+   *  for levels already passed, since a Death-mode run can climb arbitrarily high. */
+  applyCachedName(n, level) {
+    const cached = this.aiNameCache.get(n);
+    if (cached) { level.name = cached.name; level.description = cached.description; }
+    for (const k of this.aiNameCache.keys()) if (k < n) this.aiNameCache.delete(k);
+    return level;
+  }
+
+  /** Fire-and-forget: ask the AI for level n's name/description well ahead of when it's actually
+   *  loaded (advanceLevel() calls this for levelIndex+1 right after loading levelIndex), so the
+   *  tick/level-load path itself never awaits a network call. A no-op with no AI key configured,
+   *  for level 1 (LEVEL1/a custom level already has its own name) and for bonus treasure rooms
+   *  (fixed "Treasure Vault" name) -- and idempotent, so calling it again for an already
+   *  cached-or-in-flight n does nothing. */
+  prefetchName(n) {
+    if (!aiAvailable() || n < 2 || this.isTreasureLevel(n) || this.aiNameCache.has(n)) return;
+    this.aiNameCache.set(n, null); // in-flight marker so a second call this tick doesn't double-fetch
+    const level = this.source.type === 'death' ? generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) }) : generateLevel({ seed: this.seed, level: n });
+    describeLevel({ level, seed: `${this.seed}:${n}` })
+      .then((out) => this.aiNameCache.set(n, out))
+      .catch(() => this.aiNameCache.delete(n));
+  }
 
   /** Death mode generator bias: arena layout, and monster mix shifting ghost -> grunt -> demon as
    *  the party goes deeper, with a Death appearing every 5th level. */
@@ -709,6 +740,7 @@ export class Room {
     this.broadcastRoom();
     if (treasure) { this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS }); this.startTreasureTimer(); this.maybeNarrate('treasure_enter', {}); }
     if (this.source.type === 'death') this.startWaves();
+    this.prefetchName(this.levelIndex + 1); // #17: get a head start on the AI name for whatever comes after this one
   }
 
   /** Fire a best-effort AI narrator line (#18, server/ai/narrator.js) for `eventType`/`context`.
