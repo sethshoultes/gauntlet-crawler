@@ -43,6 +43,8 @@ const MIME = {
   // Voice/audio clips (narrator pipeline) and static assets served as-is, with no build step.
   '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.webm': 'video/webm', '.mp4': 'video/mp4',
   '.woff2': 'font/woff2', '.map': 'application/json',
+  // PWA (#33): the manifest needs its dedicated MIME type for installability checks to pass.
+  '.webmanifest': 'application/manifest+json',
 };
 
 // ---------- tiny helpers ----------

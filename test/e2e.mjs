@@ -180,7 +180,7 @@ async function main() {
 
       // UI modal: register a *different* account on browser A's page — this becomes browser A's
       // logged-in identity for the rest of the run.
-      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
       await pageA.click('#nav-login');
       await pageA.fill('#au', userA.name);
       await pageA.fill('#ap', userA.pass);
@@ -219,7 +219,7 @@ async function main() {
       roomIdMain = urlA.searchParams.get('room');
       if (!roomIdMain) throw new Error(`browser A URL did not carry a room id after create: ${pageA.url()}`);
 
-      await pageB.goto(`${baseUrl}/?room=${roomIdMain}`, { waitUntil: 'load' });
+      await pageB.goto(`${baseUrl}/?room=${roomIdMain}&nosw=1`, { waitUntil: 'load' });
       await pageB.waitForSelector('#roomscreen.on', { timeout: 15_000 });
 
       await pageA.click('#rs-ready');
@@ -336,7 +336,7 @@ async function main() {
     // ---------------- 6. Editor ----------------
     await scenario('6. Editor: generate (procedural fallback), remix/tune/explain (#17), save, publish, test play', async () => {
       await pageA.click('#leave').catch(() => {}); // leave the Death mode room first
-      await pageA.goto(`${baseUrl}/editor.html`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/editor.html?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#gen', { timeout: 10_000 });
       await pageA.fill('#prompt', 'A small crypt guarded by ghosts with a treasure vault behind a locked door');
       await pageA.click('#gen');
@@ -389,7 +389,7 @@ async function main() {
 
     // ---------------- 7. Dashboard ----------------
     await scenario('7. Dashboard: progression, achievements, recent runs, leaderboard tabs', async () => {
-      await pageA.goto(`${baseUrl}/dashboard.html`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/dashboard.html?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#mine', { timeout: 10_000 });
       if (!(await pageA.locator('#mine').isVisible())) throw new Error('#mine panel is not visible for a logged-in user');
 
@@ -463,7 +463,7 @@ async function main() {
       // (never explicitly left) — clear it first so this fresh navigation lands on the lobby
       // instead of auto-reconnecting into that stale room (see game.js's resume-on-load check).
       await pageA.evaluate(() => { try { sessionStorage.removeItem('gc_resume'); } catch {} });
-      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#heroes .hero', { timeout: 10_000 });
       await pageA.click('#hero-tabs [data-tab="custom"]');
       await pageA.waitForSelector('#heroes-custom .hero', { timeout: 10_000 });
@@ -490,7 +490,7 @@ async function main() {
       const ctxC = await browser.newContext();
       const pageC = await ctxC.newPage(); attach(pageC, 'C');
 
-      await pageC.goto(`${baseUrl}/?touch=1`, { waitUntil: 'load' });
+      await pageC.goto(`${baseUrl}/?touch=1&nosw=1`, { waitUntil: 'load' });
       await pageC.waitForSelector('#heroes .hero', { timeout: 10_000 });
       await pageC.click('#heroes .hero:nth-child(1)'); // Warrior
       await pageC.fill('#gname', 'TouchTester');
@@ -556,7 +556,7 @@ async function main() {
       // wave), so the board is still empty here — a deterministic, low-risk check that the panel
       // itself fetches and renders without error, rather than trying to drive a full run to
       // completion (and the initials-entry modal) through two browser contexts.
-      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#lobby-highscores', { timeout: 10_000 });
       await pageA.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').trim().length > 0, { timeout: 10_000 });
       const text = await pageA.textContent('#lobby-highscores');
@@ -566,6 +566,37 @@ async function main() {
       if (!res.ok) throw new Error(`GET /api/highscores -> HTTP ${res.status}`);
       const body = await res.json();
       if (!Array.isArray(body.scores)) throw new Error(`expected { scores: [] }, got ${JSON.stringify(body)}`);
+    });
+
+    // ---------------- 12. PWA (#33): manifest, SW registration, offline reload ----------------
+    await scenario('12. PWA: manifest link present, service worker registers, lobby reloads offline', async () => {
+      // Its own context (no ?nosw=1 anywhere) so this is the one page load in the whole suite
+      // that actually exercises client/pwa.js registering client/sw.js for real.
+      const ctxD = await browser.newContext();
+      const pageD = await ctxD.newPage();
+      try {
+        await pageD.goto(`${baseUrl}/`, { waitUntil: 'load' });
+
+        const manifestHref = await pageD.locator('link[rel="manifest"]').getAttribute('href');
+        if (manifestHref !== '/manifest.webmanifest') throw new Error(`expected the manifest link, got href="${manifestHref}"`);
+
+        const reg = await pageD.evaluate(async () => {
+          const registration = await navigator.serviceWorker.getRegistration();
+          return registration ? { scope: registration.scope } : null;
+        });
+        if (!reg) throw new Error('navigator.serviceWorker.getRegistration() resolved to nothing after load');
+
+        // Give the worker a moment to finish installing/activating and precaching the shell
+        // before pulling the network out from under it.
+        await pageD.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 15_000 });
+
+        await ctxD.setOffline(true);
+        await pageD.reload({ waitUntil: 'load' });
+        await pageD.waitForSelector('#heroes .hero', { timeout: 10_000 });
+        await ctxD.setOffline(false);
+      } finally {
+        await ctxD.close().catch(() => {});
+      }
     });
 
     await ctxA.close().catch(() => {});
