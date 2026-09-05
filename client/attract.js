@@ -35,14 +35,41 @@ fitCanvas();
 
 // ---------- any input leaves attract mode ----------
 let navigating = false;
-function goToGame() {
+function goToGame(e) {
   if (navigating) return;
+  // Let the footer's "Trailer" link behave like a normal link instead of being hijacked
+  // straight back to '/' the instant it's clicked or tabbed to.
+  if (e && e.target && typeof e.target.closest === 'function' && e.target.closest('#footer-links')) return;
   navigating = true;
   location.href = '/';
 }
 window.addEventListener('keydown', goToGame);
 window.addEventListener('pointerdown', goToGame);
 window.addEventListener('click', goToGame);
+
+// ---------- AI-generated backdrop: video behind the canvas, static image fallback ----------
+(function initBackdrop() {
+  const video = document.getElementById('backdrop-video');
+  const fallback = document.getElementById('backdrop-fallback');
+  if (!video || !fallback) return;
+  function useFallback() {
+    video.style.display = 'none';
+    fallback.style.display = 'block';
+  }
+  if (reducedMotion) { useFallback(); return; } // CSS already hides the video in this case too
+  video.addEventListener('error', useFallback);
+  try {
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(useFallback);
+  } catch { useFallback(); }
+  // Autoplay can also fail silently (no error, no rejection) when a browser can't decode the
+  // stream at all -- headless Chromium without H.264 support is exactly this case. If playback
+  // never actually advances, treat it as failed and drop back to the static poster.
+  setTimeout(() => {
+    if (video.style.display === 'none') return;
+    if (video.readyState < 2 || video.currentTime === 0) useFallback();
+  }, 2000);
+})();
 
 // ---------- phase machine ----------
 const PHASES = ['title', 'intro', 'roster', 'scores'];

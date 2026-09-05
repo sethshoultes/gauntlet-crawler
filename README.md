@@ -253,6 +253,12 @@ no external images, no web fonts. Everything renders straight into a `<canvas>` 
   no server-side monster simulation.
 - `client/cutscenes-demo.html` (served at `/cutscenes-demo.html`) — a dev page listing every
   registered scene in a dropdown with Play/Skip/loop controls, for reviewing new scenes quickly.
+- An AI-generated dungeon backdrop (`client/media/title-backdrop.webp`, animated as
+  `title-loop.mp4`) plays full-bleed behind the in-engine attract-mode canvas, dimmed so the
+  bitmap title/text stay readable; a matching `title-card.webp` and `trailer.mp4` back the social
+  preview image and the `/trailer.html` page (see `client/media/README.md` for provenance).
+- `prefers-reduced-motion`, or the video simply failing to play (autoplay blocked, no decoder),
+  falls back to the static `title-backdrop.webp` poster instead of the loop.
 
 **Where scenes actually fire in `client/game.js`**: `intro` plays once per browser
 session over a small canvas at the top of the lobby (`#intro-cutscene` in `client/index.html`,
@@ -635,8 +641,8 @@ Tracked as GitHub issues. Implemented already (see [Features](#features) above):
 (#1), hero level-ups/progression (#2), the chest selection intermission (#3), Endless/Death mode
 (#4), the full pre-game lobby with ready-up/private rooms/reconnect (#5), durable guest kicks (#7),
 palette tint shown in the lobby roster and room list (#8), chests offered to players who join
-mid-intermission (#9), in-game cutscene triggers (#23) and the Hero Builder's lobby/simulation
-integration (#24).
+mid-intermission (#9), in-game cutscene triggers (#23), the Hero Builder's lobby/simulation
+integration (#24), and an AI-generated launch trailer and title backdrop (#21).
 
 Sound synthesis (#20) and pre-rendered narrator voice lines (#19) are also implemented (see
 [Sound](#sound) and [Narrator voice](#narrator-voice) above) even though both issues are still open
@@ -651,7 +657,6 @@ Open, not yet implemented:
 - **Mobile**: a full touch layout and gamepad support (#15).
 - **AI assist**: describe a hero and get a build/sprite suggestion (#16), remix and tune an
   existing level with AI (#17), optional opt-in AI narrator commentary (#18).
-- **Media**: an AI-generated launch trailer and title backdrop, optional (#21).
 - **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.
