@@ -1,3 +1,6 @@
+// The lobby/room screen and the in-game client: hero picking, room/ready UI, the WebSocket
+// protocol handshake, canvas rendering of the 20 Hz snapshot, HUD, chat, and the narrator/cutscene
+// trigger points (see client/audio.js, client/voice.js, client/cutscenes.js).
 import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';

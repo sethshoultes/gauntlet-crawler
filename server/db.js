@@ -1,3 +1,5 @@
+// SQLite connection (node:sqlite, no external driver) and schema migrations. Every other server
+// module imports `db`/`now` from here rather than opening its own connection.
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';

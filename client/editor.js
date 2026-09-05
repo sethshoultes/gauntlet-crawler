@@ -1,3 +1,6 @@
+// Level Builder (/editor.html): paint/flood-fill/resize a level, import/export ASCII, validate,
+// test-play, save/publish, and the AI-generator prompt UI (falls back to the procedural generator
+// without an Anthropic key).
 import { api, me, renderNav, authModal, toast, esc } from './common.js';
 import { sprite, TILE_SPRITE, GEN_TINT } from './sprites.js';
 import { T } from '/shared/constants.js';

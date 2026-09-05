@@ -1,3 +1,5 @@
+// Accounts: username/password registration (scrypt-hashed), login/logout, and bearer-token
+// session lookup. Sessions are opaque tokens in the `sessions` table, not JWTs.
 import crypto from 'node:crypto';
 import { db, now } from './db.js';
 

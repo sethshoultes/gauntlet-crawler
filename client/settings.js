@@ -1,3 +1,6 @@
+// Account settings (/settings.html): password change, the sound/narrator/cutscenes/accessibility
+// preferences (synced server-side and mirrored live into this tab's localStorage), data export,
+// and account deletion.
 import { api, me, renderNav, authModal, setToken, track } from './common.js';
 
 const $ = (s) => document.querySelector(s);

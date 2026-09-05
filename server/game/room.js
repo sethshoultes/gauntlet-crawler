@@ -1,3 +1,6 @@
+// A running dungeon: one Room per game, owning a Sim, the tick loop, level progression (campaign,
+// procedural, Death mode, bonus treasure rooms), the chest intermission, and the stats/achievement
+// hooks that fire as players play.
 import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';

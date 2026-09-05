@@ -1,3 +1,6 @@
+// Admin dashboard UI (/admin.html): live server overview, rooms, users, levels, error feed and
+// analytics charts. Talks to /api/admin/* (server/admin.js); shows an access-denied message for
+// a logged-in non-admin instead of the dashboard.
 import { api, me, renderNav, esc, ago } from './common.js';
 
 const $ = (s) => document.querySelector(s);

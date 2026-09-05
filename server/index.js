@@ -1,3 +1,5 @@
+// Entry point: static file serving, the REST API (/api/*) and the WebSocket protocol (/ws) that
+// drives live rooms. Wires together every other server/* module; see README.md "Architecture".
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,7 +49,7 @@ function readBody(req, limit = 256 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', (c) => { size += c.length; if (size > limit) { reject(new Error('Body too large')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new Error('Invalid JSON')); } });
+    req.on('end', () => { try { const v = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; resolve(v && typeof v === 'object' && !Array.isArray(v) ? v : {}); } catch { reject(new Error('Invalid JSON')); } });
     req.on('error', reject);
   });
 }
@@ -109,7 +111,7 @@ async function api(req, res, url) {
 
   if (m === 'POST' && url.pathname === '/api/register') {
     const ip = req.socket.remoteAddress || 'x';
-    if (!rateLimit('register:' + ip, 10, 60_000)) return json(res, 429, { error: 'Slow down' });
+    if (!rateLimit('register:' + ip, 10, 60_000)) return json(res, 429, { error: 'Slow down: 10 registrations per minute' });
     const b = await readBody(req); return json(res, 200, auth.register(b.username, b.password));
   }
   if (m === 'POST' && url.pathname === '/api/login') {
@@ -117,7 +119,7 @@ async function api(req, res, url) {
     // Rate-limited by IP (rather than by attempted username) so this can't be trivially sidestepped
     // by trying many different usernames, and so it doesn't let an attacker lock out a real user's
     // account by hammering their name from elsewhere.
-    if (!rateLimit('login:' + ip, 20, 60_000)) return json(res, 429, { error: 'Slow down' });
+    if (!rateLimit('login:' + ip, 20, 60_000)) return json(res, 429, { error: 'Slow down: 20 login attempts per minute' });
     const b = await readBody(req); return json(res, 200, auth.login(b.username, b.password));
   }
   if (m === 'POST' && url.pathname === '/api/logout') { auth.logout(auth.bearer(req)); return json(res, 200, { ok: true }); }
@@ -133,11 +135,15 @@ async function api(req, res, url) {
     });
   }
   if (m === 'POST' && url.pathname === '/api/me/password') {
-    const u = need(); const b = await readBody(req);
+    const u = need();
+    if (!rateLimit('pw:' + u.id, 10, 60_000)) return json(res, 429, { error: 'Slow down: 10 password changes per minute' });
+    const b = await readBody(req);
     return json(res, 200, account.changePassword(u.id, auth.bearer(req), b.current, b.next));
   }
   if (m === 'DELETE' && url.pathname === '/api/me') {
-    const u = need(); const b = await readBody(req).catch(() => ({}));
+    const u = need();
+    if (!rateLimit('delacct:' + u.id, 5, 60_000)) return json(res, 429, { error: 'Slow down' });
+    const b = await readBody(req).catch(() => ({}));
     return json(res, 200, account.deleteAccount(u.id, b.password));
   }
   if (m === 'GET' && url.pathname === '/api/me/prefs') { const u = need(); return json(res, 200, { prefs: account.getPrefs(u.id) }); }
@@ -191,6 +197,7 @@ async function api(req, res, url) {
   }
   if (m === 'POST' && url.pathname === '/api/levels') {
     const u = need();
+    if (!rateLimit('levels:w:' + u.id, 30, 60_000)) return json(res, 429, { error: 'Slow down: 30 writes per minute' });
     const b = await readBody(req);
     const problems = validateLevel(b);
     if (problems.length) return json(res, 400, { error: problems[0], problems });
@@ -219,6 +226,7 @@ async function api(req, res, url) {
     }
     if (m === 'POST' && seg[3] === 'publish') {
       const u = need(); if (row.owner_id !== u.id) return json(res, 403, { error: 'Not yours' });
+      if (!rateLimit('levels:w:' + u.id, 30, 60_000)) return json(res, 429, { error: 'Slow down: 30 writes per minute' });
       const pub = !row.published;
       db.prepare('UPDATE levels SET published = ?, updated_at = ? WHERE id = ?').run(pub ? 1 : 0, now(), id);
       const unlocked = pub ? stats.bump(u.id, 'levels_published') : [];
@@ -226,12 +234,16 @@ async function api(req, res, url) {
     }
     if (m === 'DELETE' && !seg[3]) {
       const u = need(); if (row.owner_id !== u.id) return json(res, 403, { error: 'Not yours' });
+      if (!rateLimit('levels:w:' + u.id, 30, 60_000)) return json(res, 429, { error: 'Slow down: 30 writes per minute' });
       db.prepare('DELETE FROM levels WHERE id = ?').run(id);
       return json(res, 200, { ok: true });
     }
     if (m === 'POST' && seg[3] === 'play') {
       if (!level.published && level.owner_id !== user?.id) return json(res, 403, { error: 'This level is private' });
       const ip = req.socket.remoteAddress || 'x';
+      // Shared 'createroom:' bucket with the WS `join`/`create:true` path below and the plain
+      // POST /api/rooms just under this block, so all three ways to mint a new room (which each
+      // persist a live sim + timers in memory until it empties out) count against one limit.
       if (!rateLimit('createroom:' + (user ? 'u' + user.id : ip), 10, 60_000)) return json(res, 429, { error: 'Slow down: too many rooms created' });
       const b = await readBody(req);
       const room = lobby.create({ name: b.name || level.name, source: { type: 'custom', levelId: level.id, level: { name: level.name, description: level.description, rows: level.rows } }, isPublic: b.public !== false });

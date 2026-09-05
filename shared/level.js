@@ -1,3 +1,6 @@
+// Level format: parse/validate/auto-repair an ASCII level (array of equal-length strings) and the
+// tile legend used by the editor and README. Used by both the server (level.js validation before
+// save/publish) and the client (editor.js preview).
 import { T, ALL_TILES, EXIT_TILES } from './constants.js';
 
 export const MIN_SIZE = 12;

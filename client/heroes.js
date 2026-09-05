@@ -1,3 +1,5 @@
+// Hero Builder UI (/heroes.html): the stat-notch/weapon/trait/pixel-art editor for a custom hero,
+// the "my heroes" list, and the published-hero gallery. Talks to /api/heroes/* (server/heroes.js).
 import { api, me, renderNav, authModal, toast, esc } from './common.js';
 import { sprite } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
