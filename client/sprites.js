@@ -360,6 +360,46 @@ const SPR = {
     'yddddddy',
     'yyyyyyyy',
   ],
+  acid: [ // acid puddle (#12): bubbling green pool — frame 1, alternates with acid2 for a cheap boil animation
+    '........',
+    '.eeeeee.',
+    'eeEeeeee',
+    'eeeeeEee',
+    'eEeeeeee',
+    'eeeeeEee',
+    'eeeeeeeE',
+    '.eeeeee.',
+  ],
+  acid2: [ // acid puddle, frame 2 — bubbles shifted so the pool reads as boiling
+    '........',
+    '.eeeeee.',
+    'eeeeEeee',
+    'eEeeeeee',
+    'eeeeeEee',
+    'eEeeeeee',
+    'eeeeeeee',
+    '.eeeeee.',
+  ],
+  stuntile: [ // stun tile (#12): pale tile with a small lightning-bolt mark
+    'wwwwwwww',
+    'wggggggw',
+    'wg..y.gw',
+    'wg.yy.gw',
+    'wgyyyygw',
+    'wg.yy.gw',
+    'wgy...gw',
+    'wwwwwwww',
+  ],
+  forcefield: [ // force field (#12): translucent blue energy bars — drawn with extra ctx alpha (see client/game.js)
+    'l.l.l.l.',
+    '.l.l.l.l',
+    'l.l.l.l.',
+    '.l.l.l.l',
+    'l.l.l.l.',
+    '.l.l.l.l',
+    'l.l.l.l.',
+    '.l.l.l.l',
+  ],
   lob: [ // lobber's arcing shot
     '........',
     '..nnnn..',
@@ -495,6 +535,9 @@ export const TILE_SPRITE = {
   // Timed walls (#11): drawn like a wall with a pale hourglass; client/game.js pulses their tint
   // faster as the level-provided remaining-seconds count (snapshot's `tw`) runs down.
   '^': 'timedwall', ':': 'timedwall',
+  // Environmental hazards (#12): acid alternates acid/acid2 for a cheap boil animation (see
+  // client/game.js's tile-drawing loop), force field is drawn with extra alpha for its translucent look.
+  'a': 'acid', 't': 'stuntile', 'f': 'forcefield',
 };
 // Tint shared by a plate glyph and its matching wall-group glyph (see TRAP_PLATES in
 // shared/constants.js) — kept here rather than derived so the client never needs that mapping.

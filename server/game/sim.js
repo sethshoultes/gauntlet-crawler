@@ -6,6 +6,7 @@ import {
   generatorTier, GENERATOR_TIER_HP, GENERATOR_TIER_HP_BONUS, GENERATOR_TIER_SCORE_MUL,
   AMULET_TILES, BOOST_TILES, AMULET_DURATION, AMULET_SCORE, BOOST_SCORE, BOOST_STACK_CAP, BOOST_EFFECT,
   REPULSE_RANGE, AMULET_LETTER, BOOST_LETTER, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS, TIMER_DEFAULT_SEC,
+  ACID_DAMAGE_PER_SEC, STUN_TICKS, STUN_IMMUNITY_TICKS,
 } from '../../shared/constants.js';
 import { parseLevel } from '../../shared/level.js';
 
@@ -100,6 +101,8 @@ export class Sim {
       // permanent per-run stat boosts) is deliberately NOT touched here: it persists for the
       // whole run and only resets when addPlayer() creates a fresh player (a new run/join).
       p.amulets = {};
+      // Stun (#12) doesn't carry across a level load either — new positions, new dangers.
+      p.stunTicks = 0; p.stunImmuneTicks = 0;
       if (p.pendingCurse === 'spawn') {
         const type = ['ghost', 'grunt', 'demon'][Math.floor(Math.random() * 3)];
         const side = Math.random() < 0.5 ? -1 : 1;
@@ -136,6 +139,10 @@ export class Sim {
       // — see BOOST_TILES), which persists across loadLevel() and only resets here, i.e. on a
       // fresh addPlayer() for a new run/join.
       amulets: {}, runBoosts: {},
+      // Stun tile (#12): stunTicks counts down the frozen (no movement/no firing) window;
+      // stunImmuneTicks counts down the whole no-retrigger period (frozen span + the grace window
+      // after it ends) — see triggerStun()/stepPlayers().
+      stunTicks: 0, stunImmuneTicks: 0,
     };
     this.players.set(id, p);
     this.placeAtStart(p);
@@ -163,6 +170,8 @@ export class Sim {
     if (c === T.WALL || c === T.DOOR || c === T.TRAP) return true;
     if (GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) return true;
     if (GENERATOR_TILES.has(c)) return true;
+    // Force field (#12): blocks a shot's path but never a hero's or monster's movement.
+    if (c === T.FORCE_FIELD) return who === 'shot';
     return false;
   }
   /** Move an entity with axis-separated AABB collision. Returns set of blocking tiles touched (for doors/traps). */
@@ -228,7 +237,8 @@ export class Sim {
   spawnMonster(type, x, y, hpBonus = 0) {
     if (this.monsters.size >= MAX_MONSTERS) return null;
     const def = MONSTERS[type];
-    const m = { id: uid(), type, x, y, hp: def.hp + hpBonus, cd: 0, shotCd: 1, drained: 0, dir: 4 };
+    // stunTicks/stunImmuneTicks (#12): mirrors the player fields below — see triggerStun().
+    const m = { id: uid(), type, x, y, hp: def.hp + hpBonus, cd: 0, shotCd: 1, drained: 0, dir: 4, stunTicks: 0, stunImmuneTicks: 0 };
     if (type === 'sorcerer') { m.visible = true; m.blinkTimer = def.blinkVisible; }
     if (type === 'thief') m.stolen = null;
     this.monsters.set(m.id, m);
@@ -278,6 +288,24 @@ export class Sim {
       this.setTile(tw.x, tw.y, becomes);
       this.onEvent({ type: 'timedWall', x: tw.x, y: tw.y, becomes });
     }
+  }
+  /** Stun tile (#12): freezes `entity` (a player or a monster — both carry stunTicks/stunImmuneTicks,
+   *  see addPlayer()/spawnMonster()) for STUN_TICKS, then leaves it immune to retriggering for a
+   *  further STUN_IMMUNITY_TICKS so it has a chance to walk off the tile before it can fire again.
+   *  A no-op while stunImmuneTicks is still counting down from an earlier trigger (which covers both
+   *  the frozen window itself and the grace period after it, since immuneTicks is always >= ticks). */
+  triggerStun(entity, isPlayer) {
+    if ((entity.stunImmuneTicks || 0) > 0) return;
+    entity.stunTicks = STUN_TICKS;
+    entity.stunImmuneTicks = STUN_TICKS + STUN_IMMUNITY_TICKS;
+    if (isPlayer) this.onEvent({ type: 'stun', pid: entity.id });
+  }
+  /** Acid puddle (#12): per-tick damage through the normal hurtPlayer() pipeline so armor/perks/boosts
+   *  reduce it exactly like any other source of damage (ACID_DAMAGE_PER_SEC * dt keeps it framerate-
+   *  correct — 0.5hp/tick at the default 10/s and 20Hz). Monsters are immune (native to the dungeon),
+   *  so this is only ever called for players. */
+  applyAcid(p, dt) {
+    this.hurtPlayer(p, ACID_DAMAGE_PER_SEC * dt, 'acid');
   }
   hurtPlayer(p, amount, source) {
     if (p.dead) return;
@@ -401,54 +429,64 @@ export class Sim {
       p.hp -= HEALTH_DRAIN_PER_SEC * dt * (p.boosts?.drainMul || 1) * (this.mode === 'death' ? 1.5 : 1);
       if (p.hp <= 0) { p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++; this.onEvent({ type: 'death', pid: p.id, source: 'hunger' }); continue; }
 
-      const moving = inp.dx !== 0 || inp.dy !== 0;
-      if (moving) p.dir = dirIndex(inp.dx, inp.dy);
-      p.shotCd = Math.max(0, p.shotCd - dt);
-      if (inp.fire) {
-        // Arcade rule: you stand still while firing; the stick turns you.
-        if (p.shotCd === 0 && [...this.shots.values()].filter((s) => s.owner === p.id).length < MAX_SHOTS_PER_PLAYER) {
-          const [dx, dy] = DIRS[p.dir];
-          const len = Math.hypot(dx, dy);
-          const sid = uid();
-          const wpn = c.weaponDef || null; // Hero Builder weapon (see shared/hero-builder.js WEAPONS)
-          const shotSpeed = SHOT_SPEED * (wpn?.shotSpeedMul || 1);
-          const dmg = (c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0)
-            + (p.runBoosts?.shotPower || 0) * BOOST_EFFECT.shotPower) * (wpn?.damageMul || 1);
-          // `range` (tiles) -> shot lifetime, so a weapon's reach stays constant regardless of its
-          // own speed multiplier; classics (no weaponDef) keep the old fixed 3s lifetime.
-          const life = wpn?.range != null ? wpn.range / shotSpeed : 3;
-          // Amulet effects are baked into the shot at fire time (see stepShots): reflective shots
-          // bounce off one wall instead of dying there, super shots pierce through every monster
-          // they pass instead of stopping at the first one.
-          this.shots.set(sid, {
-            id: sid, owner: p.id, cls: p.cls, shotKey: c.shotKey, x: p.x + dx * 0.5, y: p.y + dy * 0.5,
-            vx: dx / len * shotSpeed, vy: dy / len * shotSpeed, dmg, dir: p.dir, hostile: false, life,
-            homing: wpn?.homing || 0, splash: wpn?.splash || 0,
-            reflect: !!(p.amulets?.reflect > 0), pierce: !!(p.amulets?.super > 0),
-          });
-          const shotSpeedBoostMul = Math.max(0.2, 1 - (p.runBoosts?.shotSpeed || 0) * BOOST_EFFECT.shotSpeed);
-          p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1) * shotSpeedBoostMul * (wpn?.cooldownMul || 1);
-          // Custom heroes have no per-class synth tone; fall back to the weapon's own sound (the
-          // weapon id doubles as its sprite/sound key — see shared/hero-builder.js WEAPONS).
-          this.onEvent({ type: 'sound', name: 'shoot_' + (p.classDef ? c.weapon : p.cls), x: p.x, y: p.y });
-        }
-      } else if (moving) {
-        const len = Math.hypot(inp.dx, inp.dy);
-        // sprinter (Hero Builder trait): a speed boost that only kicks in below its HP threshold.
-        const sprint = (c.traitDef?.sprintSpeedMul && p.hp < (c.traitDef.sprintHpThreshold ?? Infinity)) ? c.traitDef.sprintSpeedMul : 1;
-        const runSpeedMul = 1 + (p.runBoosts?.speed || 0) * BOOST_EFFECT.speed;
-        const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1) * runSpeedMul * sprint;
-        const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
-        for (const [tx, ty, tc] of touched) {
-          if (tc === T.DOOR && p.keys > 0) {
-            // locksmith (Hero Builder trait): a chance the door opens without spending the key.
-            const saved = c.traitDef?.doorKeySaveChance ? this.rng.chance(c.traitDef.doorKeySaveChance) : false;
-            if (!saved) p.keys--;
-            this.dissolveGroup(tx, ty, T.DOOR);
-            this.onEvent({ type: 'door', pid: p.id, x: tx, y: ty });
-          } else if (tc === T.TRAP) {
-            this.dissolveGroup(tx, ty, T.TRAP);
-            this.onEvent({ type: 'secret', pid: p.id, x: tx, y: ty });
+      // Stun tile (#12): tick both counters down every step regardless of which is active — stunTicks
+      // is the frozen (no movement/no firing) window, stunImmuneTicks additionally covers the grace
+      // period right after it (see triggerStun()). While stunned, skip movement/firing entirely but
+      // still let the hazard-tile checks below run (e.g. acid still hurts you while frozen on it).
+      const stunned = (p.stunTicks || 0) > 0;
+      if (stunned) p.stunTicks--;
+      if (p.stunImmuneTicks > 0) p.stunImmuneTicks--;
+
+      if (!stunned) {
+        const moving = inp.dx !== 0 || inp.dy !== 0;
+        if (moving) p.dir = dirIndex(inp.dx, inp.dy);
+        p.shotCd = Math.max(0, p.shotCd - dt);
+        if (inp.fire) {
+          // Arcade rule: you stand still while firing; the stick turns you.
+          if (p.shotCd === 0 && [...this.shots.values()].filter((s) => s.owner === p.id).length < MAX_SHOTS_PER_PLAYER) {
+            const [dx, dy] = DIRS[p.dir];
+            const len = Math.hypot(dx, dy);
+            const sid = uid();
+            const wpn = c.weaponDef || null; // Hero Builder weapon (see shared/hero-builder.js WEAPONS)
+            const shotSpeed = SHOT_SPEED * (wpn?.shotSpeedMul || 1);
+            const dmg = (c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0)
+              + (p.runBoosts?.shotPower || 0) * BOOST_EFFECT.shotPower) * (wpn?.damageMul || 1);
+            // `range` (tiles) -> shot lifetime, so a weapon's reach stays constant regardless of its
+            // own speed multiplier; classics (no weaponDef) keep the old fixed 3s lifetime.
+            const life = wpn?.range != null ? wpn.range / shotSpeed : 3;
+            // Amulet effects are baked into the shot at fire time (see stepShots): reflective shots
+            // bounce off one wall instead of dying there, super shots pierce through every monster
+            // they pass instead of stopping at the first one.
+            this.shots.set(sid, {
+              id: sid, owner: p.id, cls: p.cls, shotKey: c.shotKey, x: p.x + dx * 0.5, y: p.y + dy * 0.5,
+              vx: dx / len * shotSpeed, vy: dy / len * shotSpeed, dmg, dir: p.dir, hostile: false, life,
+              homing: wpn?.homing || 0, splash: wpn?.splash || 0,
+              reflect: !!(p.amulets?.reflect > 0), pierce: !!(p.amulets?.super > 0),
+            });
+            const shotSpeedBoostMul = Math.max(0.2, 1 - (p.runBoosts?.shotSpeed || 0) * BOOST_EFFECT.shotSpeed);
+            p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1) * shotSpeedBoostMul * (wpn?.cooldownMul || 1);
+            // Custom heroes have no per-class synth tone; fall back to the weapon's own sound (the
+            // weapon id doubles as its sprite/sound key — see shared/hero-builder.js WEAPONS).
+            this.onEvent({ type: 'sound', name: 'shoot_' + (p.classDef ? c.weapon : p.cls), x: p.x, y: p.y });
+          }
+        } else if (moving) {
+          const len = Math.hypot(inp.dx, inp.dy);
+          // sprinter (Hero Builder trait): a speed boost that only kicks in below its HP threshold.
+          const sprint = (c.traitDef?.sprintSpeedMul && p.hp < (c.traitDef.sprintHpThreshold ?? Infinity)) ? c.traitDef.sprintSpeedMul : 1;
+          const runSpeedMul = 1 + (p.runBoosts?.speed || 0) * BOOST_EFFECT.speed;
+          const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1) * runSpeedMul * sprint;
+          const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
+          for (const [tx, ty, tc] of touched) {
+            if (tc === T.DOOR && p.keys > 0) {
+              // locksmith (Hero Builder trait): a chance the door opens without spending the key.
+              const saved = c.traitDef?.doorKeySaveChance ? this.rng.chance(c.traitDef.doorKeySaveChance) : false;
+              if (!saved) p.keys--;
+              this.dissolveGroup(tx, ty, T.DOOR);
+              this.onEvent({ type: 'door', pid: p.id, x: tx, y: ty });
+            } else if (tc === T.TRAP) {
+              this.dissolveGroup(tx, ty, T.TRAP);
+              this.onEvent({ type: 'secret', pid: p.id, x: tx, y: ty });
+            }
           }
         }
       }
@@ -483,6 +521,10 @@ export class Sim {
         this.tryTeleport(p);
       } else if (TRAP_PLATES[here] != null) {
         this.triggerPlate(here);
+      } else if (here === T.ACID) {
+        this.applyAcid(p, dt);
+      } else if (here === T.STUN_TILE) {
+        this.triggerStun(p, true);
       } else if ((here === T.EXIT || here === T.EXIT_SKIP) && !this.exitSealed) {
         p.score += LEVEL_BONUS;
         const skip = here === T.EXIT_SKIP ? 4 : 1;
@@ -603,6 +645,13 @@ export class Sim {
       // Pressure plates trigger for monsters too, not just heroes (#11's acceptance criteria).
       const underMonster = this.tile(Math.floor(m.x), Math.floor(m.y));
       if (TRAP_PLATES[underMonster] != null) this.triggerPlate(underMonster);
+      // Stun tile (#12): a monster is frozen exactly like a hero — see triggerStun() — skipping all
+      // AI/movement below (including a lobber's/thief's own step functions) for the duration.
+      const monsterStunned = (m.stunTicks || 0) > 0;
+      if (monsterStunned) m.stunTicks--;
+      if (m.stunImmuneTicks > 0) m.stunImmuneTicks--;
+      if (underMonster === T.STUN_TILE) this.triggerStun(m, false);
+      if (monsterStunned) continue;
       if (m.type === 'sorcerer') this.stepSorcererBlink(m, def, dt);
       if (m.type === 'lobber') { this.stepLobber(m, def, dt); continue; }
       if (m.type === 'thief') { this.stepThief(m, def, dt); continue; }
@@ -695,11 +744,17 @@ export class Sim {
         const t = Math.min(1, s.elapsed / s.flight);
         s.x = s.x0 + (s.tx - s.x0) * t; s.y = s.y0 + (s.ty - s.y0) * t;
         if (s.elapsed >= s.flight) {
-          for (const p of this.players.values()) {
-            if (p.dead) continue;
-            if (Math.hypot(p.x - s.tx, p.y - s.ty) <= 0.8) this.hurtPlayer(p, s.dmg, 'lobber');
+          // Force field (#12): even a lobber's over-the-walls arc can't land through one — it fizzles
+          // on the field instead of damaging whoever's standing there.
+          if (this.tile(Math.floor(s.tx), Math.floor(s.ty)) === T.FORCE_FIELD) {
+            this.onEvent({ type: 'spark', x: s.tx, y: s.ty });
+          } else {
+            for (const p of this.players.values()) {
+              if (p.dead) continue;
+              if (Math.hypot(p.x - s.tx, p.y - s.ty) <= 0.8) this.hurtPlayer(p, s.dmg, 'lobber');
+            }
+            this.onEvent({ type: 'lob_land', x: s.tx, y: s.ty });
           }
-          this.onEvent({ type: 'lob_land', x: s.tx, y: s.ty });
           this.shots.delete(s.id);
         }
         continue;
@@ -729,6 +784,7 @@ export class Sim {
         const tx = Math.floor(s.x), ty = Math.floor(s.y);
         const c = this.tile(tx, ty);
         if (s.hostile) {
+          if (c === T.FORCE_FIELD) { this.onEvent({ type: 'spark', x: s.x, y: s.y }); done = true; break; }
           if (this.isSolidFor(c, 'shot')) { done = true; break; }
           for (const p of this.players.values()) {
             if (p.dead) continue;
@@ -738,6 +794,9 @@ export class Sim {
         }
         const owner = this.players.get(s.owner);
         if (GENERATOR_TILES.has(c)) { const g = this.generators.get(`${tx},${ty}`); if (g) this.damageGenerator(g, s.dmg, owner); done = true; break; }
+        // Force field (#12): absorbs the shot outright (no reflect-amulet bounce off it — it's a
+        // field, not a wall) with a spark instead of the usual silent stop.
+        if (c === T.FORCE_FIELD) { this.onEvent({ type: 'spark', x: s.x, y: s.y }); done = true; break; }
         if (c === T.WALL || c === T.DOOR || c === T.TRAP || GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) {
           // Reflective shots amulet: bounce off a wall once (mirror the axis that was actually
           // blocked, so a shot hitting a wall square-on bounces straight back, and one clipping a
@@ -824,13 +883,17 @@ export class Sim {
     return {
       t: 's', tick: Math.round(this.time * 20), lt: Math.round(this.levelTime),
       // 10th element: compact run-boost pip string (encodeBoosts). 11th: compact active-amulet
-      // string with remaining seconds (encodeAmulets). See README's "Amulets and boosts" section.
+      // string with remaining seconds (encodeAmulets). 12th (#12): remaining stun ticks (0 when not
+      // stunned) — the client renders stun stars while it's positive. See README's "Amulets and
+      // boosts" and "Environmental hazards" sections.
       p: [...this.players.values()].map((p) => [
         p.id, r2(p.x), r2(p.y), p.dir, Math.round(p.hp), p.keys, p.potions, p.score, p.dead ? 1 : 0,
-        this.encodeBoosts(p.runBoosts), this.encodeAmulets(p.amulets),
+        this.encodeBoosts(p.runBoosts), this.encodeAmulets(p.amulets), p.stunTicks || 0,
       ]),
-      // 6th element: 1 while a sorcerer is blinked invisible (client draws it at 20% alpha); omitted otherwise.
-      m: [...this.monsters.values()].map((m) => [m.id, MONSTERS[m.type].snapKey, r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined]),
+      // 6th element: 1 while a sorcerer is blinked invisible (client draws it at 20% alpha); omitted
+      // otherwise. 7th (#12): remaining stun ticks when a monster is frozen on a stun tile; omitted
+      // (falls back to 0/falsy) otherwise.
+      m: [...this.monsters.values()].map((m) => [m.id, MONSTERS[m.type].snapKey, r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined, m.stunTicks > 0 ? m.stunTicks : undefined]),
       g: [...this.generators.values()].map((g) => [g.x, g.y, g.hp]),
       // 6th element on an arc (lobber) shot: flight progress 0..1, for the client's growing/shrinking scale.
       // 7th element (player shots only): owner pid — a custom hero's shotKey ('c') is shared by

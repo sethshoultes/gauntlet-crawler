@@ -189,6 +189,20 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   place: `^` becomes floor, `:` becomes a real exit tile. `exitReachable` always treats a timed wall as
   eventually passable, since its timer fires unconditionally. The client fades in newly-opened tiles over a
   few frames and pulses a timed wall's tint faster as its countdown runs down.
+- **Environmental hazards** (#12, `ACID_DAMAGE_PER_SEC`/`STUN_TICKS`/`STUN_IMMUNITY_TICKS` in
+  `shared/constants.js`, `server/game/sim.js` `applyAcid`/`triggerStun`): all three are walkable —
+  none of them ever block a hero's or a monster's movement — so they add spatial risk without
+  turning into another pathing puzzle. **Acid puddles** (tile `a`) drain a standing hero's health
+  every tick (10/s by default) straight through the same armor/perk/boost-scaled damage pipeline as
+  any hit, so an armor boost softens it too; monsters are immune, being native to the dungeon.
+  **Stun tiles** (tile `t`) freeze whoever touches them — hero or monster — for `STUN_TICKS` (1.5s):
+  no movement, no firing, shown in the HUD/on-map as orbiting stars, followed by a `STUN_IMMUNITY_TICKS`
+  (3s) grace window where the same tile won't retrigger, long enough to step off it. **Force fields**
+  (tile `f`) block every projectile that touches them — player shots, monster shots, even a lobber's
+  arc landing on one — destroying it with a spark, while never blocking movement, so gating a
+  generator behind one means you must walk up to it instead of sniping it from range.
+  `shared/procgen.js` sprinkles acid through corridors, an occasional stun tile guarding treasure,
+  and force fields gating a generator's approach tiles, all from level 5 on.
 - **Players block each other**: bumping into a teammate cancels that axis of movement (soft collision within
   0.7 tiles) so the party can't stack on top of one another — player shots still pass straight through
   teammates, only movement is blocked.
@@ -493,8 +507,9 @@ The catalogue covers a shot per weapon (axe whirr, sword slash, fireball whoosh,
 hammer thud, dagger tick, skull wail), a hit/death pair per monster (ghost pop, grunt grunt, demon
 roar, death moan, lobber plop, sorcerer blink, thief snicker), and one-shot cues for generator
 crumble, doors, keys, food/cider, poison (a sour, wavering tone), potions, teleports, chest opens,
-amulets (a magical shimmer) and permanent boosts (a brighter fanfare), the wave banner, level
-fanfare, victory/game-over stingers, rank-ups and achievements.
+amulets (a magical shimmer) and permanent boosts (a brighter fanfare), a stun-tile zap and a
+force-field spark (#12), the wave banner, level fanfare, victory/game-over stingers, rank-ups and
+achievements.
 
 The **master / SFX / narrator-voice** mixer lives in Settings (see below) and persists to
 `localStorage` (`gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`, `gc_mute`) so it works for guests
@@ -664,6 +679,8 @@ I invisibility amulet (20s)   R reflective-shots amulet (20s)   O repulsiveness 
 V speed boost (permanent)   A armor boost (permanent)   B shot-power boost (permanent)   Q shot-speed boost (permanent)   N magic-power boost (permanent)
 % plate A (opens =)   & plate B (opens +)   * plate C (opens ~)   = / + / ~ wall groups (solid until their plate is triggered)
 ^ timed wall (-> floor after its countdown)   : timed wall (-> exit after its countdown)
+a acid puddle (damages any hero standing on it; monsters immune)   t stun tile (freezes on contact, then a brief immunity window)
+f force field (blocks shots; heroes and monsters walk straight through)
 ```
 
 The same legend is exported as `LEGEND` from `shared/level.js` for the editor's tile palette and
@@ -675,7 +692,7 @@ its "Level format" help panel, so this table and the actual game logic can't dri
 server/            Node HTTP + WebSocket server
   index.js         static files, REST API (/api/*), WebSocket protocol (/ws), rate limits, maxPayload
   game/sim.js      authoritative simulation: movement, combat, generators, pickups, doors, potions, exits,
-                   pressure-plate wall groups, timed walls
+                   pressure-plate wall groups, timed walls, acid/stun/force-field hazards
   game/room.js     a running dungeon: tick loop, level progression, stats and achievement hooks
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
@@ -874,8 +891,9 @@ Tracked as GitHub issues. Implemented already (see [Features](#features) above):
 (#4), the full pre-game lobby with ready-up/private rooms/reconnect (#5), durable guest kicks (#7),
 palette tint shown in the lobby roster and room list (#8), chests offered to players who join
 mid-intermission (#9), in-game cutscene triggers (#23), the Hero Builder's lobby/simulation
-integration (#24), an AI-generated launch trailer and title backdrop (#21), and AI remix/tune/explain
-for existing levels plus AI-written names for procedural levels (#17).
+integration (#24), an AI-generated launch trailer and title backdrop (#21), AI remix/tune/explain
+for existing levels plus AI-written names for procedural levels (#17), and acid puddles/stun
+tiles/force fields from Gauntlet II (#12).
 
 Sound synthesis (#20), pre-rendered narrator voice lines (#19), optional opt-in AI narrator
 commentary (#18), the mobile touch layout/gamepad support (#15), and the original-style attract
@@ -887,8 +905,8 @@ five issues are still open on the tracker pending someone closing them out.
 Open, not yet implemented:
 
 - **Arcade parity** with the original cabinets: amulets and power-ups (#10), trap tiles that
-  dissolve walls and timed walls (#11), acid puddles/stun tiles/force fields from Gauntlet II
-  (#12), an "It" tag mode and mystery treasure rooms from Gauntlet II (#13).
+  dissolve walls and timed walls (#11), an "It" tag mode and mystery treasure rooms from Gauntlet II
+  (#13).
 - **AI assist**: describe a hero and get a build/sprite suggestion (#16).
 - **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
 

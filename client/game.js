@@ -5,7 +5,7 @@ import { api, me, token, toast, renderNav, esc, cssToken, authModal, NAME_KEY, C
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT, PLATE_TINT } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
 import {
-  CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER,
+  T, CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER,
   AMULET_TILES, BOOST_TILES, AMULET_NAMES, BOOST_NAMES,
 } from '/shared/constants.js';
 import { PALETTES, requirementText } from '/shared/unlocks.js';
@@ -495,6 +495,8 @@ function onEvent(e) {
     case 'death': log(`<span class="n">${esc(name)} the ${esc(hLabel)} has died</span>`); if (mine) { sfx('death'); say('died', `${hLabel} has died. Insert coin to continue.`); } break;
     case 'coin': if (mine) sfx('coin'); break;
     case 'exit': break;
+    case 'stun': log(`<span class="n">${esc(name)} got stunned!</span>`); if (mine) sfx('stun'); break;
+    case 'spark': G.fx.push({ kind: 'spark', x: e.x, y: e.y, t: 0 }); if (Math.random() < 0.5) sfx('spark'); break;
     case 'sound':
       if (!mine && Math.random() < 0.7) break;
       if (e.name.startsWith('shoot_')) sfx(e.name);
@@ -729,6 +731,18 @@ function frame(now) {
     let name = TILE_SPRITE[c];
     if (!name) name = 'floor';
     if (name !== 'wall' && name !== 'floor' && name !== 'trap') ctx.drawImage(sprite('floor'), x * TS, y * TS, TS, TS);
+    if (c === T.ACID) {
+      // Cheap 2-frame boil animation (#12) — no per-tile state needed, just alternate on the clock.
+      ctx.drawImage(sprite(Math.floor(now / 280) % 2 === 0 ? 'acid' : 'acid2'), x * TS, y * TS, TS, TS);
+      continue;
+    }
+    if (c === T.FORCE_FIELD) {
+      // Translucent energy bars (#12) with a slow shimmer; never blocks movement, only shots.
+      ctx.globalAlpha = 0.5 + 0.18 * Math.sin(now / 240 + x + y);
+      ctx.drawImage(sprite('forcefield'), x * TS, y * TS, TS, TS);
+      ctx.globalAlpha = 1;
+      continue;
+    }
     if (c === 'g' || c === 'h' || c === 'm' || c === 'l' || c === 's') {
       const g = snap.g.find((gg) => gg[0] === x && gg[1] === y);
       const hp = g ? g[2] : 3;
@@ -794,6 +808,7 @@ function frame(now) {
     if (invisible) ctx.globalAlpha = 0.2;
     drawEntity(sprite(name), m[2], m[3], m[4], bob);
     if (invisible) ctx.globalAlpha = 1;
+    if (m[6] > 0) drawStunStars(m[2] * TS, m[3] * TS, now); // stun tile (#12): frozen — see snapshot()
   }
   // players
   for (const p of snap.p) {
@@ -804,6 +819,7 @@ function frame(now) {
     const heroImg = (info?.custom && spriteFromPixels(info.custom.pixels, HERO_PALETTE, 4)) || sprite('hero', color);
     drawEntity(heroImg, p[1], p[2], p[3], p[8] ? 0 : bob, true);
     ctx.globalAlpha = 1;
+    if (p[11] > 0 && !p[8]) drawStunStars(p[1] * TS, p[2] * TS, now); // stun tile (#12): frozen hero
     // name tag
     ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = color;
     ctx.fillText((info?.name || '').toUpperCase(), p[1] * TS, p[2] * TS - TS / 2 - 3);
@@ -815,10 +831,11 @@ function frame(now) {
     if (f.kind === 'magic') {
       const r = Math.min(f.r, f.t * 20) * TS; ctx.strokeStyle = `rgba(92,214,255,${Math.max(0, 1 - f.t * 1.5)})`; ctx.lineWidth = 4;
       ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI * 2); ctx.stroke();
-    } else if (f.kind === 'boom' || f.kind === 'die' || f.kind === 'puff') {
-      const n = f.kind === 'boom' ? 10 : 6; const col = f.kind === 'boom' ? '#ff8c1a' : f.kind === 'die' ? '#f4f4f4' : '#9a9aa8';
-      ctx.fillStyle = col; ctx.globalAlpha = Math.max(0, 1 - f.t * 2);
-      for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; const d = f.t * 60 * (f.kind === 'boom' ? 1.6 : 1); ctx.fillRect(px + Math.cos(a) * d - 2, py + Math.sin(a) * d - 2, 4, 4); }
+    } else if (f.kind === 'boom' || f.kind === 'die' || f.kind === 'puff' || f.kind === 'spark') {
+      const n = f.kind === 'boom' ? 10 : f.kind === 'spark' ? 5 : 6;
+      const col = f.kind === 'boom' ? '#ff8c1a' : f.kind === 'die' ? '#f4f4f4' : f.kind === 'spark' ? '#5cd6ff' : '#9a9aa8';
+      ctx.fillStyle = col; ctx.globalAlpha = Math.max(0, 1 - f.t * (f.kind === 'spark' ? 4 : 2));
+      for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; const d = f.t * 60 * (f.kind === 'boom' ? 1.6 : f.kind === 'spark' ? 0.8 : 1); ctx.fillRect(px + Math.cos(a) * d - 2, py + Math.sin(a) * d - 2, 4, 4); }
       ctx.globalAlpha = 1;
     }
   }
@@ -929,6 +946,17 @@ function drawIntermission(now) {
   }
 }
 
+/** Stun tile (#12): a small ring of orbiting yellow stars over a frozen hero/monster — purely
+ *  cosmetic, driven off the snapshot's per-entity remaining-stun-ticks field (see sim.js snapshot()). */
+function drawStunStars(cx, cy, now) {
+  ctx.fillStyle = '#f2c400';
+  for (let i = 0; i < 3; i++) {
+    const a = now / 180 + i * (Math.PI * 2 / 3);
+    const sx = cx + Math.cos(a) * TS * 0.4, sy = cy - TS * 0.6 + Math.sin(a) * TS * 0.15;
+    ctx.fillRect(sx - 2, sy - 2, 4, 4);
+  }
+}
+
 function drawEntity(img, x, y, dir, bob = 0, isHero = false) {
   const px = x * TS, py = y * TS + bob;
   ctx.save(); ctx.translate(px, py);
@@ -969,6 +997,11 @@ function updateHudValues(s) {
     const el = document.querySelector(`.pp[data-pid="${p[0]}"]`); if (!el) continue;
     el.querySelector('.hp').textContent = p[4]; el.querySelector('.sc').textContent = p[7]; el.querySelector('.k').textContent = p[5]; el.querySelector('.po').textContent = p[6];
     el.classList.toggle('low', p[4] < LOW_HEALTH && !p[8]); el.classList.toggle('dead', !!p[8]);
+    // Acid puddle (#12): tint the HUD card while standing on one — read straight off the tile grid
+    // rather than a snapshot flag, since the client already tracks it for rendering.
+    const onAcid = !p[8] && G.grid?.[Math.floor(p[2])]?.[Math.floor(p[1])] === 'a';
+    el.classList.toggle('acid', onAcid);
+    el.classList.toggle('stunned', p[11] > 0 && !p[8]);
     // 10th element: run-boost pip string (one letter per stack, see sim.js's encodeBoosts).
     const rb = el.querySelector('.runboosts');
     if (rb) rb.innerHTML = [...(p[9] || '')].map((ch) => RUN_BOOST_ICON[BOOST_TILES[ch]] || '✨').join(' ');

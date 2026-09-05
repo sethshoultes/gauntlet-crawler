@@ -93,6 +93,21 @@ test('repairLevel sanitizes the pressure-plate/wall-group/timed-wall glyphs thro
   for (const glyph of ['%', '=', '+', '~', '^', ':']) assert.ok(joined.includes(glyph), `${glyph} survived repairLevel's sanitiser`);
 });
 
+test('the acid/stun/force-field glyphs (#12) are accepted tiles', () => {
+  const rows = LEVEL1.rows.slice();
+  rows[1] = rows[1].slice(0, 20) + 'a' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + 't' + rows[2].slice(21);
+  rows[4] = rows[4].slice(0, 20) + 'f' + rows[4].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+});
+
+test("repairLevel sanitizes the acid/stun/force-field glyphs (#12) through unchanged", () => {
+  const broken = { name: 'x', rows: ['..........', '..####....', '..#atf....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
+  const fixed = repairLevel(broken);
+  const joined = fixed.rows.join('');
+  for (const glyph of ['a', 't', 'f']) assert.ok(joined.includes(glyph), `${glyph} survived repairLevel's sanitiser`);
+});
+
 test('repairLevel fixes borders, missing start/exit and connectivity', () => {
   const broken = { name: 'x', rows: ['..........', '..####....', '..#..#....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
   const fixed = repairLevel(broken);

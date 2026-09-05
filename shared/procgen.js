@@ -1,6 +1,6 @@
 // Endless procedural dungeon generator. Deterministic for (seed, level).
 // Difficulty scales with level number: bigger maps, more generators, nastier monsters, less food.
-import { T } from './constants.js';
+import { T, GENERATOR_TILES } from './constants.js';
 import { makeRng, hashSeed } from './rng.js';
 import { parseLevel, exitReachable, repairLevel, validateLevel } from './level.js';
 
@@ -173,6 +173,43 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
       const plateSpot = (cells.length ? cells : freeCells()).pop();
       if (plateSpot) g[plateSpot[1]][plateSpot[0]] = plateGlyph;
       break;
+    }
+  }
+
+  // 9. Environmental hazards (#12, arcade parity): acid puddles, an occasional stun tile, and force
+  // fields guarding a generator's approach. All three are walkable (a force field only blocks
+  // shots), so scattering them can never break reachability the way a wall-like tile could — no
+  // extra exitReachable bookkeeping needed, unlike the plate puzzle above.
+  if (diff >= 5) {
+    const isInRoom = (x, y) => rooms.some((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+    const corridorCells = (cells.length ? cells : freeCells()).filter(([x, y]) => !isInRoom(x, y));
+    const acidN = clamp(Math.round(1 + diff * 0.15), 1, 6);
+    for (let i = 0; i < acidN && corridorCells.length; i++) {
+      const [x, y] = corridorCells.splice(rng.int(0, corridorCells.length - 1), 1)[0];
+      if (g[y][x] === T.FLOOR) g[y][x] = T.ACID;
+    }
+    // A stun tile next to a treasure tile, occasionally — guards the loot without blocking it.
+    if (rng.chance(0.3)) {
+      const treasureSpots = [];
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) if (g[y][x] === T.TREASURE) treasureSpots.push([x, y]);
+      for (const [tx, ty] of rng.shuffle(treasureSpots)) {
+        const spot = rng.shuffle([[tx + 1, ty], [tx - 1, ty], [tx, ty + 1], [tx, ty - 1]]).find(([nx, ny]) => g[ny]?.[nx] === T.FLOOR);
+        if (spot) { g[spot[1]][spot[0]] = T.STUN_TILE; break; }
+      }
+    }
+    // Force fields gate a generator's approach tiles: a shot can't reach it from outside the gate,
+    // but walking up to it (force fields never block movement) works exactly as before.
+    if (rng.chance(0.4)) {
+      const genSpots = [];
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) if (GENERATOR_TILES.has(g[y][x])) genSpots.push([x, y]);
+      if (genSpots.length) {
+        const [gx, gy] = rng.pick(genSpots);
+        let placed = 0;
+        for (const [nx, ny] of rng.shuffle([[gx + 1, gy], [gx - 1, gy], [gx, gy + 1], [gx, gy - 1]])) {
+          if (placed >= 2) break;
+          if (g[ny]?.[nx] === T.FLOOR) { g[ny][nx] = T.FORCE_FIELD; placed++; }
+        }
+      }
     }
   }
 

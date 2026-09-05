@@ -63,6 +63,14 @@ export const T = {
   // override) seconds after the level loads, then convert in place — see sim.js stepTimedWalls(). ----
   TIMED_WALL: '^',      // -> floor
   TIMED_WALL_EXIT: ':', // -> exit (E)
+  // ---- environmental hazards (#12, arcade parity: Gauntlet II's acid/stun/force-field tiles).
+  // All three are walkable — they only change what happens once you're standing on (or shooting
+  // through) them, never whether you can reach them — so exitReachable/procgen treat them as
+  // ordinary floor with no extra bookkeeping. See ACID_DAMAGE_PER_SEC/STUN_TICKS/STUN_IMMUNITY_TICKS
+  // below and server/game/sim.js's applyAcid/triggerStun/isSolidFor. ----
+  ACID: 'a',       // damages any hero standing on it every tick; monsters are immune (native to the dungeon)
+  STUN_TILE: 't',  // freezes movement/firing on contact (hero or monster) for STUN_TICKS, then a no-retrigger grace window
+  FORCE_FIELD: 'f',// blocks/erases every shot that touches it (player, monster, and lobber-arc landings); never blocks movement
 };
 
 export const SOLID_TILES = new Set([
@@ -73,6 +81,9 @@ export const TRAP_PLATES = { [T.TRAP_PLATE_A]: T.TRAP_WALL_A, [T.TRAP_PLATE_B]: 
 export const GROUP_WALLS = new Set(Object.values(TRAP_PLATES));
 export const TIMED_WALLS = new Set([T.TIMED_WALL, T.TIMED_WALL_EXIT]);
 export const TIMER_DEFAULT_SEC = 30; // seconds from level start before a timed wall converts, absent a level.timers override
+export const ACID_DAMAGE_PER_SEC = 10; // health drained per second standing on an acid puddle (0.5/tick @ 20Hz) — runs through hurtPlayer, so armor/perks scale it like any other damage
+export const STUN_TICKS = 30;          // ticks (1.5s @ TICK_RATE) a hero/monster is frozen after touching a stun tile
+export const STUN_IMMUNITY_TICKS = 60; // ticks (3s @ TICK_RATE) of no-retrigger grace once the freeze itself ends, so the victim can walk off the tile
 export const PICKUP_TILES = new Set([
   T.KEY, T.FOOD, T.POTION, T.TREASURE, T.POISON_FOOD, T.CIDER,
   T.AMULET_INVIS, T.AMULET_REFLECT, T.AMULET_REPULSE, T.AMULET_SUPER,

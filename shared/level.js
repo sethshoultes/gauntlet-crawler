@@ -88,7 +88,7 @@ export function exitReachable(lvl) {
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */
 export function repairLevel(raw) {
-  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN%&*=+~^:]/g, '.'));
+  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN%&*=+~^:atf]/g, '.'));
   rows = rows.filter((r) => r.length > 0);
   let w = Math.max(...rows.map((r) => r.length), MIN_SIZE);
   w = Math.min(w, MAX_SIZE);
@@ -156,4 +156,7 @@ export const LEGEND = [
   [T.TRAP_WALL_C, 'Wall group C (solid until plate C is triggered)'],
   [T.TIMED_WALL, 'Timed wall (becomes floor after the level timer)'],
   [T.TIMED_WALL_EXIT, 'Timed exit wall (becomes an exit after the level timer)'],
+  [T.ACID, 'Acid puddle (damages any hero standing on it; monsters immune)'],
+  [T.STUN_TILE, 'Stun tile (freezes on contact, then a brief immunity window)'],
+  [T.FORCE_FIELD, 'Force field (blocks shots; heroes and monsters walk through)'],
 ];

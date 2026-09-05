@@ -44,6 +44,13 @@ Tile legend (use ONLY these characters):
   ^ timed wall (turns to floor on its own after a countdown)   : timed wall that turns into an exit after a countdown
   (timed walls are optional, rare, deeper levels only — use at most 1-2, and never as the only route to the exit
   since their countdown takes time to fire)
+  a acid puddle (damages any hero standing on it every tick; monsters are immune, walkable)
+  t stun tile (freezes whoever touches it briefly, then a short immunity window; walkable)
+  f force field (blocks shots but not movement — heroes and monsters walk straight through)
+  (acid/stun/force-field are optional hazards, deeper levels only — a handful of acid in corridors,
+  at most one stun tile, and force fields gating a generator's approach are plenty; never place them
+  as the only route to the exit since acid/stun punish standing there, and force fields block nothing
+  about movement anyway)
 Rules: outer border is all #. There must be a walkable path from S to E (or 8) (doors are fine if there is a key before them).
 Every door must have at least one key reachable before it. Put 2-6 food, 3-10 treasure, 1-2 potions, 2-8 generators depending on the requested difficulty.
 Make rooms and corridors that are fun to fight in: choke points, side rooms with loot, generators guarding treasure.

@@ -65,6 +65,10 @@
   #hud .pp.low .hp { color: var(--red); animation: blink 1s steps(2) infinite; }
   #hud .pp.dead { opacity: .5; }
   #hud .pp.away { opacity: .4; filter: grayscale(60%); }
+  #hud .pp.acid { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+  #hud .pp.acid .hp { color: var(--green); }
+  #hud .pp.acid::after { content: 'ACID'; display: block; font-size: 10px; font-weight: bold; letter-spacing: 2px; color: var(--green); animation: blink .5s steps(2) infinite; }
+  #hud .pp.stunned .nm { color: var(--yellow); }
   #hud .pp .boosts { font-size: 14px; margin-top: 2px; letter-spacing: 2px; }
   @keyframes blink { 50% { opacity: .3; } }
   #hud .lvl { color: var(--yellow); text-align: center; text-transform: uppercase; letter-spacing: 1px; }
