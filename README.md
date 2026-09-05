@@ -83,8 +83,8 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
 - **AI generator**: describe a dungeon, pick difficulty and size. With an Anthropic key the server asks Claude for a level
   as structured JSON, validates and auto-repairs it, and falls back to the procedural generator if anything is off.
   `POST /api/levels/generate` validates input and rate-limits as normal, then starts generation in the background and
-  replies `202 {jobId, status:'pending'}` immediately; the client polls `GET /api/levels/generate/:jobId` every couple
-  of seconds until it reports `{status:'done', level, source, problems, note, unlocked}` (or `{status:'error', error}`) —
+  replies `202 {"jobId": "<id>", "status": "pending"}` immediately; the client polls `GET /api/levels/generate/:jobId` every couple
+  of seconds until it reports `{"status": "done", "level": {...}, "source": "ai"|"procedural", "problems": [], "note": "...", "unlocked": []}` (or `{"status": "error", "error": "..."}`) —
   jobs are scoped to the caller who started them and expire 10 minutes after finishing. Pass `?wait=1` on the POST to
   get the old synchronous response back instead, for tests and scripts. This exists because production sits behind
   Cloudflare, which kills any proxied request running past 100 seconds, and Claude generation can take close to that long.

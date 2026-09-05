@@ -15,7 +15,7 @@ test('with TRUST_PROXY cf-connecting-ip wins, then the first x-forwarded-for hop
   assert.equal(clientIp(req({ 'x-real-ip': '2001:db8::1' }), { trustProxy: true }), '2001:db8::1');
 });
 
-test('malformed proxy headers fall back to the socket address', () => {
+test('malformed proxy headers fall back to the socket address, and no socket address yields the "x" sentinel', () => {
   assert.equal(clientIp(req({ 'cf-connecting-ip': 'not-an-ip', 'x-forwarded-for': 'garbage' }), { trustProxy: true }), '10.0.0.9');
   assert.equal(clientIp({ headers: {}, socket: {} }, { trustProxy: true }), 'x');
 });

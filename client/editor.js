@@ -154,7 +154,7 @@ async function pollJob(jobId, onTick) {
 
 $('#gen').onclick = async () => {
   const btn = $('#gen'); btn.disabled = true; btn.textContent = 'Summoning…';
-  $('#ai-note').textContent = 'The AI is drawing your dungeon. This can take up to a minute or two…';
+  $('#ai-note').textContent = 'The AI is drawing your dungeon. This usually takes a minute or two and can run up to four…';
   try {
     const started = await api('/api/levels/generate', { method: 'POST', body: { prompt: $('#prompt').value, difficulty: Number($('#diff').value), size: $('#size').value } });
     let r;
