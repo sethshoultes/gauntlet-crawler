@@ -1,7 +1,7 @@
 // The lobby/room screen and the in-game client: hero picking, room/ready UI, the WebSocket
 // protocol handshake, canvas rendering of the 20 Hz snapshot, HUD, chat, and the narrator/cutscene
 // trigger points (see client/audio.js, client/voice.js, client/cutscenes.js).
-import { api, me, token, toast, renderNav, esc, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
+import { api, me, token, toast, renderNav, esc, cssToken, authModal, NAME_KEY, CLASS_KEY, PALETTE_KEY } from './common.js';
 import { sprite, TILE, TILE_SPRITE, SHOT_SPRITE, GEN_TINT } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
 import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS, SNAP_KEY_TO_MONSTER } from '/shared/constants.js';
@@ -149,7 +149,7 @@ function renderHeroPicker() {
     const el = document.createElement('div');
     el.className = 'hero' + (id === selectedClass ? ' sel' : '') + (isUnlocked ? '' : ' locked');
     const color = colorFor(id, id === selectedClass ? selectedPalette : '');
-    el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n cls-${id}">${c.name}</div><div class="s">${c.hero}</div>
+    el.innerHTML = `<canvas width="16" height="16" class="pixel"></canvas><div class="n cls-${cssToken(id)}">${c.name}</div><div class="s">${c.hero}</div>
       <div class="s">Speed ${'★'.repeat(Math.max(0, Math.round((c.speed - 4) * 1.5)))}<br>Shot ${'★'.repeat(c.shotDamage)}<br>Armor ${'★'.repeat(Math.max(0, Math.round((1.1 - c.armor) * 10)))}<br>Magic ${'★'.repeat(Math.round(c.magic))}</div>
       ${isUnlocked ? paletteRow(id) : `<div class="lock">🔒 ${esc(requirementText({ requires: c.requires }))}</div>`}`;
     el.querySelector('canvas').getContext('2d').drawImage(sprite('hero', color), 0, 0);

@@ -23,7 +23,23 @@ globalThis.fetch = (url, opts) => {
   return Promise.resolve({ ok: true, json: async () => ({}) });
 };
 
-const { track, TOKEN_KEY } = await import('../client/common.js');
+const { track, TOKEN_KEY, cssToken } = await import('../client/common.js');
+
+test('cssToken: passes through an already-safe token unchanged', () => {
+  assert.equal(cssToken('warrior'), 'warrior');
+  assert.equal(cssToken('boost_speed-01'), 'boost_speed-01');
+});
+
+test('cssToken: replaces any character outside [A-Za-z0-9_-] with an underscore', () => {
+  assert.equal(cssToken('custom:123'), 'custom_123');
+  assert.equal(cssToken('a b"c<d>'), 'a_b_c_d_');
+  assert.equal(cssToken('curse_health-0-abc def'), 'curse_health-0-abc_def');
+});
+
+test('cssToken: coerces non-string input via String()', () => {
+  assert.equal(cssToken(123), '123');
+  assert.equal(cssToken(null), 'null');
+});
 
 test('track() omits guestId when an auth token is present', async () => {
   globalThis.localStorage.setItem(TOKEN_KEY, 'sometoken');
