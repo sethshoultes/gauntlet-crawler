@@ -5,8 +5,9 @@ generators, keys and doors, food you must not shoot, a health bar that never sto
 narrator who reminds you that the Elf needs food badly.
 
 This version is **online multiplayer** (up to four players per dungeon), has **modern achievements** and a
-**player dashboard**, is **endless** thanks to a seeded procedural dungeon generator, and ships with a
-**level builder** that can draft dungeons with an **AI generator** (Claude) from a text prompt.
+**player dashboard**, is **endless** thanks to a seeded procedural dungeon generator, ships with a
+**level builder** that can draft dungeons with an **AI generator** (Claude) from a text prompt, and lets you
+design your own **custom hero** from scratch in the Hero Builder.
 
 Deliberately simple graphics: every sprite is 8x8 pixel art drawn in code, no asset pipeline.
 
@@ -15,40 +16,20 @@ Deliberately simple graphics: every sprite is 8x8 pixel art drawn in code, no as
 ```bash
 npm install
 npm start            # http://localhost:3000
-npm test             # unit tests: level format, procgen, simulation, achievements, progression, death
-                      # mode, chests, unlocks, Hero Builder, admin, settings, stats, telemetry,
-                      # voice lines, cutscenes, WS heartbeat, and room/lobby integration
+npm test             # unit tests (level format, procgen, simulation, achievements, progression, death mode, ...)
 ```
 
 Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/gauntlet.sqlite`.
 
-## Development
-
-`npm test` runs the unit tests (`test/**/*.test.js`) with `node --test`. `npm run smoke` boots the
-real server, drives it end-to-end in a real browser via Playwright (needs `npx playwright install --with-deps chromium`
-once), and checks the level generation API; CI (`.github/workflows/ci.yml`) runs both on every push and pull request.
-
-Optional environment variables:
-
-| Variable | Purpose |
-|---|---|
-| `PORT` | HTTP/WebSocket port (default 3000) |
-| `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
-| `ANTHROPIC_API_KEY` | Enables the AI level builder. Without it, "Generate with AI" falls back to the procedural generator steered by your prompt |
-| `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
-| `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
-| `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Auto-generated and persisted if unset — see [Analytics and privacy](#analytics-and-privacy) |
-| `GAUNTLET_DEBUG` | Set to `1` to enable test-only hooks used by `test/e2e.mjs` (the WS `debug` message's `clear`/`killall` actions, and `POST /api/heroes/debug/xp`). Never set this in production. |
-
 ## How to play
 
 - Pick a hero: **Warrior** (Thor, strongest shot and armor), **Valkyrie** (Thyra, balanced), **Wizard** (Merlin, best magic),
-  **Elf** (Questor, fastest, rapid fire).
+  **Elf** (Questor, fastest, rapid fire) — or bring your own from the [Hero Builder](#hero-builder).
 - **Quick Play** joins a public room that's still in its lobby (or makes one), **Create room** starts your own (optionally private).
   Either way you land in the **room screen** first: roster with hero/rank/ready state, a hero picker, chat, and an invite link
   (`/?room=ID`) to share. Toggle **Ready** — the host can start once everyone is ready (or alone), and the room also
   auto-starts on a cancellable 5s countdown once everyone readies up. The host can also pick campaign vs. a published
-  custom level, toggle private/public, and kick players.
+  custom level, toggle Death mode, toggle private/public, and kick players.
 - Rooms already in progress still take late joiners (up to 4) straight into the action; the public room list shows
   "In lobby" or the current level for each open dungeon.
 - If your connection drops mid-run, the client automatically tries to reconnect (with backoff) and resumes your same
@@ -57,6 +38,8 @@ Optional environment variables:
 - Move with `WASD` or arrows. Hold `Space` to fire; while firing you stand still and the stick turns you, just like the arcade.
 - `Q` or `Shift` uses a magic potion (clears monsters around you; kills Death). `Enter` inserts a coin after you die.
 - `T` chats, `M` toggles sound, `N` toggles the narrator. Touch controls appear on phones.
+- A master/SFX/narrator-voice **volume mixer**, a **Cutscenes** on/off toggle, colour-blind palette and reduced-motion
+  options all live in [Settings](#settings) (`/settings.html`) and take effect immediately.
 - A short pixel-art cutscene plays the first time you see the lobby, the first time you pick each
   hero, and at a few other story beats (Death mode start, a treasure room, game over/victory,
   depth milestones) — any key skips it, and it can be turned off entirely from Settings. The
@@ -77,8 +60,6 @@ Optional environment variables:
   Each monster type carries its own single-character `snapKey` (`shared/constants.js`) so the wire format never collides
   two types starting with the same letter (ghost/grunt both "g", demon/death both "d" — a bug that used to make grunts
   draw as ghosts and Death draw as a demon); `SNAP_KEY_TO_MONSTER` maps it back to a real type on the client.
-- **Pixel-art cutscenes, a synthesized sound engine, and a narrator voice pipeline** — see the Cutscenes/Sound/Narrator
-  voice sections below — plus an **Arcade** attract-mode nav link and a synced sound/cutscenes mixer in Settings.
 - **Rooms** of up to four players, public room list, quick play, deep links (`/?room=ID`), in-game chat.
 - **Pre-game room screen**: ready-up, host-only start (gated on all-ready, or auto-start on a 5s countdown), host settings
   (campaign vs. a published custom level, private/public), hero switching before start, and host-only kick. A kick sticks
@@ -95,7 +76,7 @@ Optional environment variables:
   damage resistance, max health and magic — capped so the arcade health-drain loop and 4-player fairness stay intact. Guests
   earn no XP. A rank-up shows an in-game toast and a leaderboard mention.
 - **Dashboard** (`/dashboard.html`): career stats, rank/XP progress bar and perks, achievement progress, recent runs, your levels,
-  and leaderboards (score, rank, depth, kills, achievements).
+  and leaderboards (score, rank, depth, kills, achievements, and a separate Death-mode tab).
 - **Level Builder** (`/editor.html`): paint tiles, flood fill, resize, import/export ASCII, validate (border, connectivity, keys before doors),
   test-play instantly, save, publish to the community list, and play other people's levels.
 - **AI generator**: describe a dungeon, pick difficulty and size. With an Anthropic key the server asks Claude for a level
@@ -159,87 +140,10 @@ Optional environment variables:
   low on health with potions in reserve, "I've not seen such bravery" clearing a level with zero deaths and
   30+ kills, a more urgent "*Hero* is about to die" under 100 health, and "Remember, don't shoot food" the
   second time you shoot food in a level.
+- **Pixel-art cutscenes, a synthesized sound engine, and a narrator voice pipeline** — see below — plus an
+  **Arcade** attract-mode nav link and a synced sound/cutscenes mixer in Settings.
 
-## Settings
-
-`/settings.html` (linked from the nav once you're logged in): change your password (rotates every
-other session's token so a stolen token elsewhere stops working, while keeping you signed in),
-adjust preferences — a **master/SFX/narrator-voice volume mixer**, narrator on/off, **cutscenes
-on/off**, colour-blind palette, reduced motion, and key bindings — saved server-side to a `prefs`
-table and synced to any device you log into, download a JSON export of everything the server
-knows about your account, or permanently delete your account (password-confirmed; cascades to
-your sessions, stats, achievements, run history and levels, unpublishing anything you'd shared).
-Every preference is merged into the same `localStorage` keys the game already reads directly
-(`gc_mute`, `gc_narrate`, `gc_cutscenes`, `gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`) the moment
-you log in or save, so `client/game.js`, `client/audio.js` and `client/voice.js` pick them up live
-with no page reload — and guests get the same mixer/cutscenes-toggle behavior from those same
-`localStorage` keys, just without server-side sync across devices.
-
-## Admin dashboard
-
-`/admin.html` (linked from the nav for admins only) gives a live overview of the server: user,
-run and level counts; every room currently open (public and private) with player counts and a
-one-click **Close** action; a searchable user list (rank/XP, last run); a searchable level list
-with **Unpublish**/**Delete** moderation actions; a feed of recent server- and client-side errors;
-and an analytics tab with simple inline-SVG bar charts (no external chart library) for daily
-active users, runs per day, average run length, a deepest-level histogram, hero pick rates and the
-most-played custom levels.
-
-**Who's an admin**: set `GAUNTLET_ADMINS` to a comma-separated list of usernames on the server
-(e.g. `GAUNTLET_ADMINS=alice,bob`). If it's unset, the very first account ever registered (user id
-1) is the admin — so a fresh install always has exactly one admin with zero configuration. Every
-`/api/admin/*` endpoint (mounted from `server/admin.js`) checks this on every request; a logged-in
-non-admin gets a 403 and `/admin.html` shows an access-denied message instead of the dashboard.
-
-## Analytics and privacy
-
-A first-party `events` table (`server/telemetry.js`) records a small set of interactions: server
-side, a room's `join`/`leave`/`start`/game-over the moment they cross the WebSocket boundary in
-`server/index.js` (nothing in `server/game/*` knows telemetry exists); client side, small beacons
-the browser posts to `POST /api/telemetry` for page views, session starts, level-reached, run-end
-and client error events (fired from `client/common.js`, rate-limited per IP). Guests are counted
-by a random per-browser id that resets if they clear site data — never anything more identifying.
-
-**What's stored**: an event's timestamp, kind, optional user id or guest id, a small JSON payload
-(e.g. which room), and a hashed IP. **Raw IP addresses are never written to the database** — each
-is SHA-256 hashed together with a server-side salt (`GAUNTLET_SALT`, or one generated once and
-kept in a `meta` table) before it's stored, so the same visitor hashes consistently without the
-address itself ever being recoverable. Events older than **90 days** are deleted automatically by
-a daily background job. The admin analytics tab only ever sees aggregates (counts per day, per
-class, per level) — never a list of raw events.
-
-## Error logging
-
-`server/log.js` is a small structured JSON logger; `server/index.js`'s one bare `console.error`
-now goes through it, and every `level: 'error'` line is also written to an `errors` table so
-failures survive past whatever log viewer you have. Browser errors reach the same table: `client/
-common.js` installs `window.onerror` and `unhandledrejection` handlers that `POST` to
-`/api/client-errors` (rate-limited, body size capped, stack traces truncated to 4 KB, identical
-messages deduped per page load). Admins can browse both server and client errors on the **Errors**
-tab of `/admin.html`.
-
-`GET /api/health` (no auth required) returns `{ ok, uptime, rooms, players, version }` for uptime
-monitoring and container health checks — `deploy/deploy.sh` and the `Dockerfile`'s `HEALTHCHECK`
-both poll it instead of the old `/api/ai/status`.
-
-**WebSocket protocol hardening**: the `/ws` server caps incoming message size (`maxPayload`, since
-every legitimate message is tiny) so a single hostile client can't force a huge allocation per
-message; `POST /api/register`, `POST /api/login`, room creation (`POST /api/rooms`,
-`POST /api/levels/:id/play`, and the WS `join` message's `create: true`), and in-room chat are all
-rate-limited per IP/user/connection for the same reason every other write endpoint is.
-
-## Level format
-
-Levels are arrays of equal-length strings. Border must be walls; a start `S` and exit `E` are required.
-
-```
-# wall   . floor   D door   K key   F food   ! poison food (-100 hp)   C cider (+50 hp)
-P potion   T treasure   E exit   8 skip-exit (+4 levels)   S start   X transporter
-g grunt generator   h ghost generator   m demon generator   l lobber generator   s sorcerer generator
-1 ghost   2 grunt   3 demon   4 lobber   5 sorcerer   6 thief (no generator)   Z Death   W secret wall
-```
-
-## Hero Builder
+### Hero Builder
 
 A player-authored custom hero: a 6-stat "notch" point-buy, a weapon, a trait, and hand-painted
 8x8 pixel art. Its own files (`shared/hero-builder.js`, `server/heroes.js`,
@@ -307,158 +211,22 @@ sprite, and its name tag/HUD use its painted color. The choice persists in `loca
   `/api/debug/xp`) purely so the single additive router line in `server/index.js` still routes it
   to `server/heroes.js` without adding a second mount point.
 
-### Integration (implemented — #24)
+Custom heroes are wired end to end into the sim, room and lobby (not just the character sheet):
+`join`/`hero` messages accept `cls: 'custom:<heroId>'`; `sim.addPlayer` accepts a `classDef` object
+so every place `server/game/sim.js` used to read `CLASSES[p.cls]` now goes through a `classOf(p)`
+helper (`p.classDef || CLASSES[p.cls]`), keeping classic classes byte-for-byte unaffected; snapshot
+and roster packets carry `custom: {name, pixels, color}` and `weapon` for display; and the lobby
+and in-room hero pickers both list `GET /api/heroes/mine` under a "Custom" tab, rendered with
+`spriteFromPixels` (`client/pixelsprite.js`).
 
-Custom heroes are wired end to end, per the plan this section used to lay out:
+### Level Builder and AI generator
 
-1. **`join`/`hero` messages accept `cls: 'custom:<heroId>'`.** `server/game/room.js`'s `pickHero`
-   recognizes the prefix, and `server/heroes.js`'s `resolveCustomHero(heroId, user)` confirms
-   `user` actually owns the hero and re-validates it against their *current* rank/achievements
-   (same reasoning as the publish-time re-check) before it's ever trusted — a hero belonging to
-   someone else, or one that no longer clears the rank-3 unlock, falls back to Warrior with an
-   `{t:'error'}` naming why. Guests can never use a custom hero.
-2. **`sim.addPlayer` accepts a `classDef` object**, stored on the player as `p.classDef`; every
-   place `server/game/sim.js` used to read `CLASSES[p.cls]` now goes through a `classOf(p)` helper
-   (`p.classDef || CLASSES[p.cls]`), so classic classes are byte-for-byte unaffected. `maxHealthBonus`
-   is folded into max health at spawn/respawn; `weaponDef` scales shot speed/damage/cooldown, turns
-   `range` (tiles) into shot lifetime, and drives homing steering and splash damage; `traitDef`
-   effects (food heal, loot score, ghost-touch damage, door-key-save chance, conditional sprint
-   speed, potion radius) are applied at their respective sim call sites.
-3. **Snapshot/roster**: `sim.playerInfo()` (and `room.info()`'s lobby roster) carry `custom:
-   {name, pixels, color}` and `weapon` for a custom hero — display-only data, sent only on the
-   `players`/room-info packets, never on the 20 Hz `snapshot()`. A custom hero's shots use
-   `shotKey: 'c'`; the client maps a `'c'` shot back to its owner's `weapon` (== its sprite id) to
-   pick the right sprite.
-4. **Client**: the hero picker on both the lobby page and the in-room screen has a "Custom" tab/section
-   listing `GET /api/heroes/mine`, rendered with `spriteFromPixels` (`client/pixelsprite.js`); the
-   pick persists to `localStorage` (`gc_class` as `custom:<id>`) and falls back to Warrior if that
-   hero no longer exists. In game, `client/game.js` draws `spriteFromPixels(custom.pixels)` in place
-   of the tinted stock hero sprite, and uses `custom.color` for name tags/HUD.
+See the Features list above — `/editor.html` (paint/flood-fill/resize/import-export/validate/publish)
+and the "Generate with AI" prompt (Claude with a procedural fallback) are covered there. The AI side
+lives in `server/ai/levelgen.js`; the shared validate/repair logic both sides rely on lives in
+`shared/level.js`.
 
-## Architecture
-
-```
-server/            Node HTTP + WebSocket server
-  index.js         static files, REST API (/api/*), WebSocket protocol (/ws), rate limits, maxPayload
-  game/sim.js      authoritative simulation: movement, combat, generators, pickups, doors, potions, exits
-  game/room.js     a running dungeon: tick loop, level progression, chests, waves, stats/achievement hooks
-  game/lobby.js    room registry, quick play
-  ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
-  heroes.js        Hero Builder REST API (/api/heroes/*), server-side validation/re-validation
-  db.js / auth.js / stats.js   node:sqlite persistence, sessions, counters + achievement unlocks
-  account.js       settings-page ops: password change + session rotation, prefs, account deletion, data export
-  admin.js         admin dashboard API (mounted under /api/admin/*), admin designation
-  telemetry.js     first-party analytics: events table, IP hashing, aggregations, 90-day retention
-  log.js           structured JSON logger + persisted `errors` table
-  ws-heartbeat.js  WebSocket liveness sweep (ping/terminate dead sockets), unit-testable in isolation
-shared/            code used by both server and browser
-  constants.js     tiles, classes, monsters, tuning
-  level.js         parse / validate / repair
-  procgen.js       seeded endless generator (rooms + corridors + loot + generators), bonus treasure rooms
-  rng.js           seeded PRNG (mulberry32) used everywhere gameplay randomness must be reproducible
-  levels/level1.js the hand-built opener
-  achievements.js  achievement definitions
-  progression.js   XP curve, rank titles/thresholds, perk caps — shared by server and dashboard/HUD
-  chests.js        intermission chest pool, seeded rolling, and applying picked chests to a player
-  unlocks.js       palette + hero-archetype unlock catalogue, requirement evaluation, dashboard catalogue
-  hero-builder.js  Hero Builder rules: notch stats, weapons, traits, validation, classDef conversion
-client/            static browser app (no build step)
-  game.js / index.html         the game itself: lobby, room screen, canvas renderer, HUD, input
-  dashboard.js / settings.js   career stats/achievements/leaderboards; prefs, password, export, delete
-  editor.js / heroes.js        Level Builder (paint/validate/AI generate/publish); Hero Builder UI
-  admin.js                     admin dashboard (overview, users, levels, errors, analytics)
-  sprites.js / font.js / pixelsprite.js   procedural 8x8 sprites, bitmap font, Hero Builder pixel art
-  audio.js / voice.js          synthesized SFX + mixer; narrator voice (pre-rendered clip or speechSynthesis)
-  cutscenes.js / attract.js    pixel-art cutscene engine; arcade attract-mode title/roster/high-scores
-  common.js                    shared helpers: auth token, API fetch, nav, toasts, telemetry/error beacons
-test/              node:test suites (test/**/*.test.js) plus test/smoke.mjs and test/e2e.mjs (Playwright,
-                   run explicitly via `npm run smoke` / `npm run e2e`, not part of `npm test`)
-```
-
-## Roadmap
-
-Tracked as GitHub issues. Hero level-ups (#2), the full pre-game lobby with ready-up, private rooms
-and reconnect (#5), the chest selection intermission between levels (#3), character unlocks —
-alternate palettes and new hero archetypes (#1) — and Endless / Death mode with timed waves and a
-rank-gated level cap (#4) are all implemented above (issues closed).
-
-Open issues, roughly in the order they'd land:
-
-- **Small polish** (#7-#9): durable guest kicks, palette tint in the lobby roster/room list, and
-  offering chests to a player who joins mid-intermission — all three are actually implemented
-  already (see "Rooms", "Character unlocks" and "Chest intermission" above); the issues remain open
-  pending someone verifying and closing them.
-- **Arcade parity with the original Gauntlet/Gauntlet II** (#10-#13): amulets and power-ups, trap
-  tiles that dissolve walls and timed walls, acid puddles/stun tiles/force fields, and an "It" tag
-  mode plus mystery treasure rooms.
-- **Presentation** (#14-#15): an original-style attract mode with high-score entry (partially covered
-  by `/attract.html`, see "Cutscenes and attract mode" above) and a full mobile touch layout/gamepad
-  support.
-- **AI-assisted content** (#16-#18): describe-a-hero-get-a-build-and-sprite, remixing/tuning an
-  existing level, and optional AI narrator commentary.
-- **Sound and voice** (#19-#20): pre-rendered narrator audio and arcade-grade SFX synthesis — both
-  shipped (see "Sound" and "Narrator voice" above); issues remain open pending closure.
-- **Ops and media** (#21-#22): an optional AI-generated launch trailer/title backdrop, and optional
-  Sentry-compatible error reporting (the first-party `errors` table and admin Errors tab above cover
-  the "see failures" need in the meantime).
-
-Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.
-
-## Deployment
-
-The app ships as a single Docker image (`Dockerfile`, `node:22-slim`, non-root user, `npm ci --omit=dev` so
-`playwright` never lands in production) fronted by [Caddy](https://caddyserver.com) for automatic HTTPS and
-WebSocket-aware reverse proxying (`docker-compose.yml`, `deploy/Caddyfile`). It's designed to run on a single
-Hetzner Cloud VPS with data persisted in a Docker volume, and to auto-deploy from GitHub Actions over SSH whenever
-`main` is updated.
-
-### Hetzner quick start
-
-1. Create a Hetzner Cloud server: **CX22**, image **Ubuntu 24.04**, add your SSH key.
-2. Point your domain's DNS `A`/`AAAA` record at the server's IP (skip this for an IP-only/test deploy).
-3. SSH in as root and bootstrap it:
-
-   ```bash
-   ssh root@YOUR_SERVER_IP
-   curl -fsSL https://raw.githubusercontent.com/sethshoultes/gauntlet-crawler/main/deploy/setup-server.sh | bash
-   ```
-
-   (Or `scp deploy/setup-server.sh root@YOUR_SERVER_IP:/root/` and run it there.) This installs Docker, opens
-   `ufw` for `22/80/443`, creates a `deploy` user, clones the repo into `/opt/gauntlet-crawler`, copies
-   `deploy/.env.example` to `.env`, and runs `docker compose up -d --build`.
-4. Edit `/opt/gauntlet-crawler/.env` and set `DOMAIN` (your real hostname, for Caddy's automatic HTTPS) and,
-   optionally, `ANTHROPIC_API_KEY` to enable the AI level builder. Then re-apply:
-
-   ```bash
-   cd /opt/gauntlet-crawler && docker compose up -d --build
-   ```
-
-### Auto-deploy from GitHub Actions
-
-`.github/workflows/deploy.yml` runs `npm ci && npm test` on every push to `main` (and via manual
-`workflow_dispatch`), then SSHes into the server and runs `deploy/deploy.sh`, which pulls the branch, rebuilds
-with `docker compose up -d --build --remove-orphans`, prunes old images, and polls `/api/ai/status` inside the
-`app` container before declaring success. It's a no-op (skipped, not failed) until these repository secrets are
-set:
-
-| Secret | Purpose |
-|---|---|
-| `DEPLOY_HOST` | Server hostname or IP to SSH into |
-| `DEPLOY_USER` | SSH user on the server (the `deploy` user created by `setup-server.sh`) |
-| `DEPLOY_SSH_KEY` | Private key authorized for that user (its public half must be in the user's `~/.ssh/authorized_keys`) |
-| `DEPLOY_PORT` *(optional)* | SSH port, if not 22 |
-
-### Manual operations
-
-```bash
-cd /opt/gauntlet-crawler
-docker compose up -d --build       # deploy/redeploy
-docker compose logs -f app         # tail server logs
-docker compose ps                  # container status
-docker compose down                # stop everything (volumes persist)
-```
-
-## Cutscenes and attract mode
+### Cutscenes and attract mode
 
 A small in-engine cutscene system draws pixel-art story beats using only the game's existing
 8x8 sprites (`client/sprites.js`) and a hand-drawn 5x7 bitmap font (`client/font.js`) — no video,
@@ -485,7 +253,7 @@ no external images, no web fonts. Everything renders straight into a `<canvas>` 
 - `client/cutscenes-demo.html` (served at `/cutscenes-demo.html`) — a dev page listing every
   registered scene in a dropdown with Play/Skip/loop controls, for reviewing new scenes quickly.
 
-**Where scenes actually fire in `client/game.js`** (issue #23): `intro` plays once per browser
+**Where scenes actually fire in `client/game.js`**: `intro` plays once per browser
 session over a small canvas at the top of the lobby (`#intro-cutscene` in `client/index.html`,
 hidden again once it finishes or is skipped); `hero_<classId>` plays the first time that session
 picks that hero in the picker; `death_mode` plays over the in-game canvas (`#scene-cutscene`,
@@ -494,7 +262,7 @@ absolutely positioned on top of `#cv`) the moment a Death-mode room's `start` me
 `wipe` vs `cap`); and `level_milestone_10`/`_25`/`_50` fire as short stingers on the matching
 `level` packet index. Every trigger is gated on `hasSeen`/`markSeen` where it's meant to run once,
 and on a **Cutscenes** on/off toggle in Settings (`gc_cutscenes` in `localStorage`, default on —
-see the Settings section above); `playCutscene` itself always honors
+see Settings below); `playCutscene` itself always honors
 `prefers-reduced-motion` and is skippable on any key, click or tap, and never blocks or delays the
 server-authoritative game underneath it.
 
@@ -553,12 +321,12 @@ scene's captions are sorted and in-bounds.
 treats *any* input as "go play the game" rather than gating on a specific key. Nothing here ever
 blocks a player who just wants to get into the dungeon.
 
-## Sound (issue #20)
+### Sound
 
 Every sound effect is synthesized at runtime with the Web Audio API — no audio assets ship with
 the game. `client/audio.js` is the whole engine: `initAudio()` arms the context to resume on the
-first click/keypress (autoplay policy), `sfx(name)` plays one named effect, `setVolumes({master,
-sfx, voice})` updates the mixer live, and `setMuted(bool)` backs the `M` key. Square/triangle/noise
+first click/keypress (autoplay policy), `sfx(name)` plays one named effect, and `setMuted(bool)`
+backs the `M` key. Square/triangle/noise
 oscillators feed a small **bit-crusher** (a quantizing `WaveShaperNode`, no `ScriptProcessor`/
 `AudioWorklet` needed) on the shared SFX bus for a grittier, lower-fidelity 1985-arcade character.
 
@@ -568,12 +336,13 @@ roar, death moan, lobber plop, sorcerer blink, thief snicker), and one-shot cues
 crumble, doors, keys, food/cider, poison (a sour, wavering tone), potions, teleports, chest opens,
 the wave banner, level fanfare, victory/game-over stingers, rank-ups and achievements.
 
-The **master / SFX / narrator-voice** mixer lives in Settings (see above) and persists to
+The **master / SFX / narrator-voice** mixer lives in Settings (see below) and persists to
 `localStorage` (`gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`, `gc_mute`) so it works for guests
 too, mirrored to a logged-in account's saved `prefs` the same way sound/narrator preferences
-already were.
+already were. Volumes are read once when `client/audio.js` loads (a page navigation, e.g. from
+Settings back to the lobby, is what picks up a change) rather than adjusted live within one page.
 
-## Narrator voice (issue #19)
+### Narrator voice
 
 `client/voice.js` exports `say(lineId, text)`. It first tries a pre-rendered clip at
 `/audio/voice/<lineId>.ogg` — checking `client/audio/voice/manifest.json` for which ids actually
@@ -589,9 +358,175 @@ mixer volume from Settings.
 `client/voice-lines.json` is the source of truth mapping every id to its line's text, and
 `client/audio/voice/manifest.json` (ships empty) lists which ids currently have a rendered clip.
 `test/voice.test.js` greps `client/game.js` for every `say(id, ...)` call and fails if an id is
-missing from `voice-lines.json`.
+missing from `voice-lines.json`. See [Development](#development) below for how to generate real
+clips with `tools/generate-voice.mjs`.
 
-To generate real clips, run `tools/generate-voice.mjs`:
+### Settings
+
+`/settings.html` (linked from the nav once you're logged in): change your password (rotates every
+other session's token so a stolen token elsewhere stops working, while keeping you signed in),
+adjust preferences — a **master/SFX/narrator-voice volume mixer**, narrator on/off, **cutscenes
+on/off**, colour-blind palette, reduced motion, and key bindings — saved server-side to a `prefs`
+table and synced to any device you log into, download a JSON export of everything the server
+knows about your account, or permanently delete your account (password-confirmed; cascades to
+your sessions, stats, achievements, run history and levels, unpublishing anything you'd shared).
+Every preference is merged into the same `localStorage` keys the game already reads directly
+(`gc_mute`, `gc_narrate`, `gc_cutscenes`, `gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`) the moment
+you log in or save, so `client/game.js`, `client/audio.js` and `client/voice.js` pick them up on
+their next load with no page reload needed once you navigate — and guests get the same
+mixer/cutscenes-toggle behavior from those same `localStorage` keys, just without server-side sync
+across devices. `server/account.js`'s `PREF_KEYS` whitelist names the exact same preference keys
+(`soundVolume`, `sfxVolume`, `voiceVolume`, `narrator`, `cutscenes`, `colorBlindPalette`,
+`reducedMotion`, `keyBindings`) that `client/settings.js` sends and `client/common.js` mirrors
+into `localStorage`.
+
+### Admin dashboard
+
+`/admin.html` (linked from the nav for admins only) gives a live overview of the server: user,
+run and level counts; every room currently open (public and private) with player counts and a
+one-click **Close** action; a searchable user list (rank/XP, last run); a searchable level list
+with **Unpublish**/**Delete** moderation actions; a feed of recent server- and client-side errors;
+and an analytics tab with simple inline-SVG bar charts (no external chart library) for daily
+active users, runs per day, average run length, a deepest-level histogram, hero pick rates and the
+most-played custom levels.
+
+**Who's an admin**: set `GAUNTLET_ADMINS` to a comma-separated list of usernames on the server
+(e.g. `GAUNTLET_ADMINS=alice,bob`). If it's unset, the very first account ever registered (user id
+1) is the admin — so a fresh install always has exactly one admin with zero configuration. Every
+`/api/admin/*` endpoint (mounted from `server/admin.js`) checks this on every request via a single
+`isAdmin(user)` gate at the top of `admin.handle()`; a logged-in non-admin gets a 403 and
+`/admin.html` shows an access-denied message instead of the dashboard.
+
+### Analytics and logging
+
+A first-party `events` table (`server/telemetry.js`) records a small set of interactions: server
+side, a room's `join`/`leave`/`start`/game-over the moment they cross the WebSocket boundary in
+`server/index.js` (nothing in `server/game/*` knows telemetry exists); client side, small beacons
+the browser posts to `POST /api/telemetry` for page views, session starts, level-reached, run-end
+and client error events (fired from `client/common.js`, rate-limited per IP). Guests are counted
+by a random per-browser id that resets if they clear site data — never anything more identifying.
+See [Privacy](#privacy) below for exactly what is and isn't stored.
+
+`server/log.js` is a small structured JSON logger; `server/index.js`'s one bare `console.error`
+goes through it, and every `level: 'error'` line is also written to an `errors` table so
+failures survive past whatever log viewer you have. Browser errors reach the same table: `client/
+common.js` installs `window.onerror` and `unhandledrejection` handlers that `POST` to
+`/api/client-errors` (rate-limited, body size capped, stack traces truncated to 4 KB, identical
+messages deduped per page load). Admins can browse both server and client errors on the **Errors**
+tab of `/admin.html`.
+
+`GET /api/health` (no auth required) returns `{ ok, uptime, rooms, players, version }` for uptime
+monitoring and container health checks — `deploy/deploy.sh` and the `Dockerfile`'s `HEALTHCHECK`
+both poll it.
+
+**WebSocket protocol hardening**: the `/ws` server caps incoming message size (`maxPayload: 16KB`
+— every legitimate message on this protocol is tiny, and chat text alone is already capped at 200
+chars server-side) so a single hostile client can't force a huge allocation per message. Every
+write path is rate-limited: `POST /api/register`, `POST /api/login`, room creation (`POST
+/api/rooms`, `POST /api/levels/:id/play`, and the WS `join` message's `create: true` — all three
+share one bucket, since each persists a live sim and timers in memory until the room empties out),
+account changes, and every level/hero write. In-room chat is additionally trimmed, drops
+empty/whitespace-only messages, and throttles a single connection to 10 messages per 10 seconds.
+
+## Level format
+
+Levels are arrays of equal-length strings. Border must be walls; a start `S` and exit `E` are required.
+
+```
+# wall   . floor   D door   K key   F food   ! poison food (-100 hp)   C cider (+50 hp)
+P potion   T treasure   E exit   8 skip-exit (+4 levels)   S start   X transporter
+g grunt generator   h ghost generator   m demon generator   l lobber generator   s sorcerer generator
+1 ghost   2 grunt   3 demon   4 lobber   5 sorcerer   6 thief (no generator)   Z Death   W secret wall
+```
+
+The same legend is exported as `LEGEND` from `shared/level.js` for the editor's tile palette and
+its "Level format" help panel, so this table and the actual game logic can't drift apart.
+
+## Architecture
+
+```
+server/            Node HTTP + WebSocket server
+  index.js         static files, REST API (/api/*), WebSocket protocol (/ws), rate limits, maxPayload
+  game/sim.js      authoritative simulation: movement, combat, generators, pickups, doors, potions, exits
+  game/room.js     a running dungeon: tick loop, level progression, stats and achievement hooks
+  game/lobby.js    room registry, quick play
+  ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
+  db.js            node:sqlite connection + schema migrations
+  auth.js          registration, login/logout, bearer-token sessions
+  stats.js         per-user stat counters + achievement unlocking
+  heroes.js        Hero Builder REST API (custom heroes) and the sim/room integration point
+  account.js       settings-page ops: password change + session rotation, prefs, account deletion, data export
+  admin.js         admin dashboard API (mounted under /api/admin/*), admin designation
+  telemetry.js     first-party analytics: events table, IP hashing, aggregations, 90-day retention
+  log.js           structured JSON logger + persisted `errors` table
+  ws-heartbeat.js  WebSocket liveness sweep (ping/pong, dead-client cleanup)
+shared/            code used by both server and browser
+  constants.js     tiles, classes, monsters, tuning
+  level.js         parse / validate / repair, tile legend
+  procgen.js       seeded endless generator (rooms + corridors + loot + generators + bonus rooms)
+  levels/level1.js the hand-built opener
+  rng.js           seeded PRNG (mulberry32) used everywhere gameplay randomness must be reproducible
+  achievements.js  achievement definitions
+  progression.js   XP curve, rank titles/thresholds, perk caps — shared by server and dashboard/HUD
+  chests.js        intermission chest pool, seeded rolling, and applying picked chests to a player
+  unlocks.js       palette + hero-archetype unlock catalogue, requirement evaluation, dashboard catalogue
+  hero-builder.js  Hero Builder stat/weapon/trait rules, validation and pricing (server + client)
+client/            static browser app (no build step)
+  index.html/game.js       lobby, room screen and in-game client
+  dashboard.html/js        player dashboard
+  editor.html/js           Level Builder + AI generator UI
+  heroes.html/js           Hero Builder UI
+  settings.html/js         account settings
+  admin.html/js            admin dashboard UI
+  attract.html/js          attract-mode title screen
+  cutscenes-demo.html      dev page for reviewing cutscenes
+  common.js, sprites.js, font.js, pixelsprite.js, audio.js, voice.js, cutscenes.js   shared client modules
+test/               node:test unit suites, plus smoke.mjs and e2e.mjs (Playwright)
+tools/              tools/generate-voice.mjs — narrator voice clip generation
+deploy/             Hetzner/Docker deployment scripts and Caddy config
+```
+
+## Development
+
+```bash
+npm test                                              # unit tests (test/**/*.test.js), node --test
+CHROMIUM_PATH=/path/to/chromium npm run smoke         # boots the real server, drives it in a real browser
+CHROMIUM_PATH=/path/to/chromium npm run e2e           # full multiplayer/editor/dashboard scenarios, two browsers
+```
+
+`npm run smoke` and `npm run e2e` need `npx playwright install --with-deps chromium` once (or an
+existing Chromium binary pointed at by `CHROMIUM_PATH`). `.github/workflows/ci.yml` runs all three
+— `test`, `smoke`, `e2e` — on every push and pull request.
+
+Optional environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `PORT` | HTTP/WebSocket port (default 3000) |
+| `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
+| `ANTHROPIC_API_KEY` | Enables the AI level builder. Without it, "Generate with AI" falls back to the procedural generator steered by your prompt |
+| `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
+| `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
+| `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Auto-generated and persisted if unset — see [Privacy](#privacy) |
+| `GAUNTLET_DEBUG` | Set to `1` to arm test-only hooks (below). Never set this in production |
+
+**Debug hooks** (only reachable when `GAUNTLET_DEBUG=1`, otherwise a plain 404/no-op — these are
+the *only* debug surfaces in the app):
+
+- A `{t:'debug', action}` WebSocket message, handled by `Room#debugAction` (`server/game/room.js`):
+  `action: 'clear'` force-completes the current level (used by `test/e2e.mjs` to reach the chest
+  intermission and later levels without playing them out), `action: 'killall'` wipes every current
+  monster (used to force a Death-mode wave to advance instantly).
+- `POST /api/heroes/debug/xp` (body `{amount}`), handled in `server/heroes.js`: grants XP to the
+  caller so `test/heroes-api.test.js` and `test/e2e.mjs` can reach the Hero Builder's rank-3 unlock
+  without a long grind.
+
+`test/e2e.mjs` starts its server with `GAUNTLET_DEBUG=1`; `npm start`/`npm run dev` don't set it,
+so these hooks are unreachable in a normal or deployed instance.
+
+**Generating narrator voice clips**: the game works out of the box via the browser's
+`speechSynthesis` (see [Narrator voice](#narrator-voice) above). To pre-render real audio clips
+instead, run `tools/generate-voice.mjs`:
 
 ```bash
 # no key set: prints setup instructions and exits 0 (the game already works via speechSynthesis)
@@ -606,5 +541,115 @@ node tools/generate-voice.mjs [id ...]  # omit ids to (re)generate every line
 It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
 additionally down-samples each clip to 8kHz mono Ogg/Vorbis (a cheap-DAC "bit-crush" pass that
 matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing the
-manifest. `server/index.js`'s static-file `Content-Type` table already lists `.ogg`/`.mp3`/`.wav`/
-`.webm`, so a generated clip is served with the right MIME type as soon as it lands on disk.
+manifest. Generated clips are not committed to the repo (see `.gitignore`) — only
+`client/audio/voice/manifest.json` is, shipping empty so a fresh checkout always falls back to
+`speechSynthesis` until someone runs the script.
+
+## Deployment
+
+The app ships as a single Docker image (`Dockerfile`, `node:22-slim`, non-root user, `npm ci --omit=dev` so
+`playwright` never lands in production) fronted by [Caddy](https://caddyserver.com) for automatic HTTPS and
+WebSocket-aware reverse proxying (`docker-compose.yml`, `deploy/Caddyfile`). It's designed to run on a single
+Hetzner Cloud VPS with data persisted in a Docker volume, and to auto-deploy from GitHub Actions over SSH whenever
+`main` is updated.
+
+### Hetzner quick start
+
+1. Create a Hetzner Cloud server: **CX22**, image **Ubuntu 24.04**, add your SSH key.
+2. Point your domain's DNS `A`/`AAAA` record at the server's IP (skip this for an IP-only/test deploy).
+3. SSH in as root and bootstrap it:
+
+   ```bash
+   ssh root@YOUR_SERVER_IP
+   curl -fsSL https://raw.githubusercontent.com/sethshoultes/gauntlet-crawler/main/deploy/setup-server.sh | bash
+   ```
+
+   (Or `scp deploy/setup-server.sh root@YOUR_SERVER_IP:/root/` and run it there.) This installs Docker, opens
+   `ufw` for `22/80/443`, creates a `deploy` user, clones the repo into `/opt/gauntlet-crawler`, copies
+   `deploy/.env.example` to `.env`, and runs `docker compose up -d --build`.
+4. Edit `/opt/gauntlet-crawler/.env` and set `DOMAIN` (your real hostname, for Caddy's automatic HTTPS) and,
+   optionally, `ANTHROPIC_API_KEY` to enable the AI level builder. Then re-apply:
+
+   ```bash
+   cd /opt/gauntlet-crawler && docker compose up -d --build
+   ```
+
+### Auto-deploy from GitHub Actions
+
+`.github/workflows/deploy.yml` runs `npm ci && npm test` on every push to `main` (and via manual
+`workflow_dispatch`), then SSHes into the server and runs `deploy/deploy.sh`, which pulls the branch, rebuilds
+with `docker compose up -d --build --remove-orphans`, prunes old images, and polls `GET /api/health` inside the
+`app` container before declaring success. It's a no-op (skipped, not failed) until these repository secrets are
+set:
+
+| Secret | Purpose |
+|---|---|
+| `DEPLOY_HOST` | Server hostname or IP to SSH into |
+| `DEPLOY_USER` | SSH user on the server (the `deploy` user created by `setup-server.sh`) |
+| `DEPLOY_SSH_KEY` | Private key authorized for that user (its public half must be in the user's `~/.ssh/authorized_keys`) |
+| `DEPLOY_PORT` *(optional)* | SSH port, if not 22 |
+
+### Manual operations
+
+```bash
+cd /opt/gauntlet-crawler
+docker compose up -d --build       # deploy/redeploy
+docker compose logs -f app         # tail server logs
+docker compose ps                  # container status
+docker compose down                # stop everything (volumes persist)
+```
+
+## Privacy
+
+**Raw IP addresses are never written to the database.** Every event's IP (used only for coarse,
+aggregate analytics and rate limiting) is SHA-256 hashed together with a server-side salt
+(`GAUNTLET_SALT`, or one generated once and kept in a `meta` table) before it's stored, so the same
+visitor hashes consistently across requests without the address itself ever being recoverable from
+the data. Guests are otherwise counted by a random per-browser id that resets if they clear site
+data — never anything more identifying than that.
+
+**What's stored** in the first-party `events` table (`server/telemetry.js`): a timestamp, an event
+kind (page view, join/leave/start/game-over, client error, etc.), an optional user id or guest id,
+a small JSON payload (e.g. which room), and the hashed IP described above. Events older than **90
+days** are deleted automatically by a daily background job. The admin analytics tab (see [Admin
+dashboard](#admin-dashboard)) only ever sees aggregates — counts per day, per class, per level —
+never a list of raw events.
+
+**Your account's data**: `/settings.html` lets any logged-in user download a JSON export of
+everything the server knows about their account (profile, stat counters, achievements, run
+history, owned levels, preferences) or permanently delete the account — password-confirmed,
+cascading to sessions, stats, achievements, run history and levels, and unpublishing anything
+they'd shared.
+
+## Roadmap
+
+Tracked as GitHub issues. Implemented already (see [Features](#features) above): character unlocks
+(#1), hero level-ups/progression (#2), the chest selection intermission (#3), Endless/Death mode
+(#4), the full pre-game lobby with ready-up/private rooms/reconnect (#5), durable guest kicks (#7),
+palette tint shown in the lobby roster and room list (#8), chests offered to players who join
+mid-intermission (#9), in-game cutscene triggers (#23) and the Hero Builder's lobby/simulation
+integration (#24).
+
+Sound synthesis (#20) and pre-rendered narrator voice lines (#19) are also implemented (see
+[Sound](#sound) and [Narrator voice](#narrator-voice) above) even though both issues are still open
+on the tracker pending someone closing them out.
+
+Open, not yet implemented:
+
+- **Arcade parity** with the original cabinets: amulets and power-ups (#10), trap tiles that
+  dissolve walls and timed walls (#11), acid puddles/stun tiles/force fields from Gauntlet II
+  (#12), an "It" tag mode and mystery treasure rooms from Gauntlet II (#13).
+- **Presentation**: an original-style attract mode and high-score name entry (#14).
+- **Mobile**: a full touch layout and gamepad support (#15).
+- **AI assist**: describe a hero and get a build/sprite suggestion (#16), remix and tune an
+  existing level with AI (#17), optional opt-in AI narrator commentary (#18).
+- **Media**: an AI-generated launch trailer and title backdrop, optional (#21).
+- **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
+
+Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.
+
+## Credits
+
+Built as a fan tribute to the 1985 Atari Games arcade classic *Gauntlet*, with every sprite, sound
+and voice line original to this project (see [Sound](#sound) and [Narrator voice](#narrator-voice)
+above) — no assets from the original game are used.

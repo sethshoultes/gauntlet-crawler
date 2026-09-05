@@ -13,7 +13,7 @@ export function init(lobbyInstance) { lobby = lobbyInstance; }
 /** Admins are whoever is listed (by username) in GAUNTLET_ADMINS, comma-separated — or, when
  *  that env var is unset entirely, whichever account registered first (user id 1). This means a
  *  fresh install always has exactly one admin (its first user) with no configuration required,
- *  while a deployed instance can name real admins explicitly. See README's Admin section. */
+ *  while a deployed instance can name real admins explicitly. See README's "Admin dashboard" section. */
 export function isAdmin(user) {
   if (!user) return false;
   const raw = process.env.GAUNTLET_ADMINS;
