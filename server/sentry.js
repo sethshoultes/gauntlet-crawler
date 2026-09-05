@@ -99,24 +99,31 @@ function browserFamily(ua) {
  */
 export function captureError(msg, fields = {}) {
   if (!enabled()) return;
-  const { stack, ua, source, url, ...rest } = fields;
-  const tags = { source: source === 'client' ? 'client' : 'server' };
-  const browser = browserFamily(ua);
-  if (browser) tags.browser = browser;
-  const extra = scrub(url ? { ...rest, url } : rest);
-  loadSentry().then((Sentry) => {
-    Sentry.withScope((scope) => {
-      scope.setTags(tags);
-      scope.setExtras(extra);
-      if (stack) {
-        const err = new Error(String(msg || 'Error'));
-        err.stack = String(stack);
-        Sentry.captureException(err);
-      } else {
-        Sentry.captureMessage(String(msg || 'Error'), 'error');
-      }
-    });
-  }).catch(() => { /* init or network failure must never affect the caller */ });
+  // The whole synchronous half is wrapped too, not just the async Sentry call below: `fields` is
+  // whatever a caller's error path happened to build (server/log.js already guards its own calls,
+  // but this module's contract -- never throws -- must hold on its own, for any caller, including a
+  // malformed/non-object `fields`) -- e.g. an explicit `null` would otherwise throw destructuring it.
+  try {
+    const safeFields = fields && typeof fields === 'object' ? fields : {};
+    const { stack, ua, source, url, ...rest } = safeFields;
+    const tags = { source: source === 'client' ? 'client' : 'server' };
+    const browser = browserFamily(ua);
+    if (browser) tags.browser = browser;
+    const extra = scrub(url ? { ...rest, url } : rest);
+    loadSentry().then((Sentry) => {
+      Sentry.withScope((scope) => {
+        scope.setTags(tags);
+        scope.setExtras(extra);
+        if (stack) {
+          const err = new Error(String(msg || 'Error'));
+          err.stack = String(stack);
+          Sentry.captureException(err);
+        } else {
+          Sentry.captureMessage(String(msg || 'Error'), 'error');
+        }
+      });
+    }).catch(() => { /* init or network failure must never affect the caller */ });
+  } catch { /* malformed input must never affect the caller -- this function must never throw */ }
 }
 
 /** Flush any queued Sentry events before the process exits. No-op when disabled. Exported for

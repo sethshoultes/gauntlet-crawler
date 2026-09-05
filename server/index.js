@@ -182,8 +182,13 @@ async function api(req, res, url) {
   // ----- arcade high scores (#14) -----
   if (m === 'GET' && url.pathname === '/api/highscores') return json(res, 200, { scores: highscores.topHighScores(10) });
   if (m === 'POST' && seg[0] === 'api' && seg[1] === 'runs' && seg[2] && seg[3] === 'initials' && seg.length === 4) {
+    const ip = req.socket.remoteAddress || 'x';
+    // Unauthenticated (guests can claim their own runs too), so keyed by IP rather than by user;
+    // the claim token check below is the real ownership guard, this just bounds brute-force
+    // guessing of a run's token from one source.
+    if (!rateLimit('initials:' + ip, 20, 60_000)) return json(res, 429, { error: 'Slow down: too many attempts' });
     const b = await readBody(req);
-    return json(res, 200, highscores.setInitials(seg[2], b.initials));
+    return json(res, 200, highscores.setInitials(seg[2], b.initials, b.token));
   }
   // Test-only: lets test/highscores.test.js seed board rows (and control `endedAt`, to exercise
   // the 5-minute claim window) without simulating a whole Death mode run through the WebSocket

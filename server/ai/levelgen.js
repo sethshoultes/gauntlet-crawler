@@ -7,6 +7,10 @@ import { generateLevel, biasFromPrompt, nameForSeed } from '../../shared/procgen
 import { hashSeed } from '../../shared/rng.js';
 
 const MODEL = process.env.GAUNTLET_AI_MODEL || 'claude-opus-5';
+// The SDK's own default (10 minutes, and retried) is far too long for a request an HTTP client is
+// blocked on -- every call below passes this explicitly so a slow/stuck upstream degrades into the
+// procedural fallback instead of holding a request (and its rate-limit slot) open indefinitely.
+const AI_TIMEOUT_MS = 30_000;
 
 let client = null;
 function getClient() {
@@ -92,7 +96,7 @@ export async function generateFromPrompt({ prompt, difficulty = 3, size = 'mediu
           content: `Design a level. Difficulty ${difficulty}/10. Size: ${size}.\nDesigner's request: ${cleanPrompt || 'Surprise me.'}`,
         }],
         output_config: { format: { type: 'json_schema', schema: SCHEMA } },
-      });
+      }, { timeout: AI_TIMEOUT_MS });
       if (response.stop_reason === 'refusal') {
         return fallback(cleanPrompt, difficulty, size, 'The AI declined this request, so a procedural level was generated instead.');
       }
@@ -296,7 +300,7 @@ export async function remixLevel({ level, mode }) {
             + `${locks.map(([x, y, ch]) => `(${x},${y})=${ch}`).join(', ')}.\nCurrent level, top to bottom:\n${parsed.rows.join('\n')}`,
         }],
         output_config: { format: { type: 'json_schema', schema: REMIX_SCHEMA } },
-      });
+      }, { timeout: AI_TIMEOUT_MS });
       if (response.stop_reason !== 'refusal') {
         const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
         let raw = JSON.parse(text);
@@ -353,7 +357,7 @@ export async function explainLevel({ level }) {
             + `(generators, doors/keys, poison food, a thief, Death) and how to approach it. Prose only, do not repeat the raw map.\n${parsed.rows.join('\n')}`,
         }],
         output_config: { format: { type: 'json_schema', schema: EXPLAIN_SCHEMA } },
-      });
+      }, { timeout: AI_TIMEOUT_MS });
       if (response.stop_reason !== 'refusal') {
         const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
         const raw = JSON.parse(text);
@@ -387,7 +391,7 @@ export async function describeLevel({ level, seed }) {
         system: SYSTEM,
         messages: [{ role: 'user', content: `Write a short evocative name (max 40 chars) and a one-sentence description (max 200 chars) for this level.\n${rows.join('\n')}` }],
         output_config: { format: { type: 'json_schema', schema: NAME_SCHEMA } },
-      });
+      }, { timeout: AI_TIMEOUT_MS });
       if (response.stop_reason !== 'refusal') {
         const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
         const raw = JSON.parse(text);

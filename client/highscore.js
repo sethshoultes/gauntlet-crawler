@@ -89,10 +89,13 @@ function pollGamepad(prevRef, onAction) {
  * Classic arcade "enter your initials" modal: three A-Z slots, Up/Down cycles the active slot's
  * letter, Left/Right moves between slots, Enter (or clicking Confirm, or a gamepad's "A") submits
  * — which POSTs to /api/runs/:id/initials (server/highscores.js), the only place that validates
- * and one-shots the entry. Resolves with the submitted initials, or null if the player dismisses
- * it without a successful submit (e.g. the tab is left open past the server's claim window).
+ * and one-shots the entry. `token` is the private claim token the server sent us for this run (its
+ * 'hstoken' message, see client/game.js) and must be presented so the server can tell this really
+ * is our run, not just a guessed/enumerated run id. Resolves with the submitted initials, or null
+ * if the player dismisses it without a successful submit (e.g. the tab is left open past the
+ * server's claim window).
  */
-export function showInitialsModal({ runId, score }) {
+export function showInitialsModal({ runId, score, token }) {
   return new Promise((resolve) => {
     const bg = document.createElement('div'); bg.className = 'modal-bg hs-modal-bg';
     bg.innerHTML = `<div class="modal hs-modal">
@@ -128,7 +131,7 @@ export function showInitialsModal({ runId, score }) {
       if (done) return;
       const initials = letters.map((n) => LETTERS[n]).join('');
       try {
-        await api(`/api/runs/${runId}/initials`, { method: 'POST', body: { initials } });
+        await api(`/api/runs/${runId}/initials`, { method: 'POST', body: { initials, token } });
         done = true; cleanup(); resolve(initials);
       } catch (e) {
         bg.querySelector('#hs-err').textContent = e.message || 'Could not save your score';

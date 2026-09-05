@@ -505,9 +505,14 @@ career leaderboard on `/dashboard.html` — see `server/highscores.js` and `clie
   active slot's letter, Left/Right moves between slots, Enter (or a click, or a gamepad's face
   button — a small poll-based reader in the modal itself, not the general input system) confirms.
   Confirming calls `POST /api/runs/:id/initials`.
-- **Claiming initials**: `POST /api/runs/:id/initials` (body `{initials}`), open to guests (no
-  login required — the run id is the token), validated against `/^[A-Z]{3}$/` (400 otherwise), and
-  one-shot per run within 5 minutes of the run ending (409 past either limit).
+- **Claiming initials**: `POST /api/runs/:id/initials` (body `{initials, token}`), open to guests
+  (no login required). `token` is a random value `recordHighScore()` mints for the run and hands
+  back *only* to the client that owns it, via a private `hstoken` WS message sent just before the
+  room-wide `gameover` broadcast (never inside `gameover`'s shared `scores[]`, which every player in
+  the room receives identically) — a run id alone is a small sequential integer, so it is never
+  trusted as its own capability. `initials` is validated against `/^[A-Z]{3}$/` (400 otherwise), the
+  token is compared in constant time (403 if missing/wrong), and the claim is one-shot per run
+  within 5 minutes of the run ending (409 past either limit).
 - **Reading the board**: `GET /api/highscores` returns the top 10 all-time, `{ initials, username,
   score, class, level_reached, ended_at }[]`, `username` `null` for a guest run and `initials`
   `null` until claimed. Rendered as an arcade table both in the lobby (`#lobby-highscores` in
@@ -684,7 +689,7 @@ chars server-side) so a single hostile client can't force a huge allocation per 
 write path is rate-limited: `POST /api/register`, `POST /api/login`, room creation (`POST
 /api/rooms`, `POST /api/levels/:id/play`, and the WS `join` message's `create: true` — all three
 share one bucket, since each persists a live sim and timers in memory until the room empties out),
-account changes, and every level/hero write. In-room chat is additionally trimmed, drops
+account changes, every level/hero write, and `POST /api/runs/:id/initials`. In-room chat is additionally trimmed, drops
 empty/whitespace-only messages, and throttles a single connection to 10 messages per 10 seconds.
 
 ## Level format

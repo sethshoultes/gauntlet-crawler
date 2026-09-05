@@ -116,6 +116,23 @@ test('super shots amulet pierces through multiple monsters, damaging each one it
   assert.equal(sim.monsters.has(m2.id), false, 'the second monster in the shot\'s path also died — the shot pierced through');
 });
 
+test('a pierce (super-shots) bolt that lingers over the same monster across several ticks damages it exactly once', () => {
+  // Regression test for stepShots' `s.hit` set: a shot slow enough to stay within hit range of one
+  // monster for many consecutive ticks/sub-steps must still only ever damage it the one time (the
+  // fast-moving pierce test above only proves it *can* pierce forward, not that lingering can't
+  // re-trigger the same hit).
+  const sim = new Sim(ROOM);
+  const m = sim.spawnMonster('demon', 10.5, 6.5);
+  m.hp = 100; // plenty of headroom to notice more than one hit landing
+  sim.shots.set('lingering-pierce-shot', {
+    id: 'lingering-pierce-shot', owner: 'a', cls: 'warrior', shotKey: 'w',
+    x: m.x, y: m.y, vx: 0.05, vy: 0, dmg: 3, dir: 2, hostile: false, life: 100,
+    homing: 0, splash: 0, reflect: false, pierce: true,
+  });
+  run(sim, 60); // 3s of ticks with the shot still well within the monster's hit box the whole time
+  assert.equal(m.hp, 97, 'exactly one hit of damage landed, not one per tick it overlapped the monster');
+});
+
 test('repulsiveness amulet pushes a nearby monster away and it cannot touch the player', () => {
   const sim = new Sim(ROOM);
   const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
@@ -127,6 +144,19 @@ test('repulsiveness amulet pushes a nearby monster away and it cannot touch the 
   const endDist = Math.hypot(m.x - p.x, m.y - p.y);
   assert.ok(endDist > startDist, 'the monster was pushed farther away, not closer');
   assert.ok(p.hp > START_HEALTH - 5, 'no contact damage was ever applied while repulsion was active');
+});
+
+test('repulsiveness never shoves a cornered monster through a wall or off the grid', () => {
+  const sim = new Sim(ROOM);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.amulets.repulse = AMULET_DURATION;
+  // The monster starts wedged into the room's top-left inside corner, with the player bearing
+  // down on it from the open side -- repulsion's push is squarely into the wall.
+  p.x = 3.5; p.y = 3.5;
+  const m = sim.spawnMonster('grunt', 1.6, 1.6);
+  run(sim, 100); // 5s, plenty of ticks for a movement-clamping bug to show up
+  assert.ok(m.x >= 1 && m.y >= 1, 'the monster was never pushed past the border wall');
+  assert.equal(sim.isSolidFor(sim.tile(Math.floor(m.x), Math.floor(m.y)), 'monster'), false, 'the monster never ends up standing inside a solid tile');
 });
 
 test('permanent run-boosts persist across a level advance and reset only on a fresh addPlayer (new run)', () => {

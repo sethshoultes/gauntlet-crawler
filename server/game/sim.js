@@ -494,6 +494,12 @@ export class Sim {
         if (inp.respawn) {
           inp.respawn = false;
           p.dead = false; p.hp = p.maxHealth; p.coins++;
+          // Stun tile (#12): a player who died while frozen (or during the post-freeze immunity
+          // window) never gets to tick stunTicks/stunImmuneTicks down while dead (the `continue`
+          // above skips stepPlayers' countdown for every dead player) -- without this reset, a
+          // fresh respawn at the start tile would otherwise carry over a stale stun and come back
+          // unable to move or fire for no reason a player at the spawn point could see.
+          p.stunTicks = 0; p.stunImmuneTicks = 0;
           this.placeAtStart(p);
           this.onEvent({ type: 'coin', pid: p.id });
         }

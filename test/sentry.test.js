@@ -21,6 +21,13 @@ test('enabled() is false and captureError is a no-op when SENTRY_DSN is unset', 
   assert.doesNotThrow(() => sentry.captureError('should be ignored', { stack: 'Error: x' }));
 });
 
+test('captureError never throws with SENTRY_DSN unset, even given malformed fields', () => {
+  delete process.env.SENTRY_DSN;
+  assert.doesNotThrow(() => sentry.captureError('null fields', null));
+  assert.doesNotThrow(() => sentry.captureError('string fields', 'not-an-object'));
+  assert.doesNotThrow(() => sentry.captureError());
+});
+
 test('captureError touches no network when SENTRY_DSN is unset', async () => {
   delete process.env.SENTRY_DSN;
   // Sentry's node transport sends envelopes via plain http(s).request -- if captureError ever
@@ -102,6 +109,7 @@ test('captureError, with a DSN pointing at a local server, posts an envelope wit
     assert.equal(sentry.enabled(), true);
 
     const plantedToken = 'PLANTED-SECRET-TOKEN-Zx91q';
+    const plantedNestedToken = 'PLANTED-NESTED-SECRET-Qw77z';
     sentry.captureError('sentry integration boom', {
       stack: 'Error: sentry integration boom\n    at somewhere.js:1:1',
       source: 'server',
@@ -109,13 +117,25 @@ test('captureError, with a DSN pointing at a local server, posts an envelope wit
       token: plantedToken,
       authorization: `Bearer ${plantedToken}`,
       safeField: 'this-is-fine',
+      // extra is not always flat -- confirm the scrub the beforeSend hook applies (scrubEvent in
+      // server/sentry.js) reaches a sensitive key nested inside the extras object too, not just
+      // the fields captureError itself flattens at the top level.
+      nested: { password: plantedNestedToken, safeNested: 'nested-and-fine' },
     });
+    // captureError's own contract ("never throws") must hold for a real, wired-up Sentry client
+    // too, not just the disabled no-op path covered above -- these must not throw or otherwise
+    // disrupt the assertions below.
+    assert.doesNotThrow(() => sentry.captureError('null fields', null));
+    assert.doesNotThrow(() => sentry.captureError('string fields', 'not-an-object'));
+    assert.doesNotThrow(() => sentry.captureError());
     await sentry.flush(3000);
 
     assert.ok(received.length >= 1, 'the local server should have received at least one request');
     const bodies = received.join('\n');
     assert.match(bodies, /sentry integration boom/, 'the envelope should contain the error message');
     assert.doesNotMatch(bodies, new RegExp(plantedToken), 'the planted token must never reach the wire');
+    assert.doesNotMatch(bodies, new RegExp(plantedNestedToken), 'a sensitive key nested inside extra must never reach the wire either');
+    assert.match(bodies, /nested-and-fine/, 'a non-sensitive nested value should still be forwarded');
     assert.doesNotMatch(bodies, /Bearer /, 'the authorization value must never reach the wire');
     assert.match(bodies, /this-is-fine/, 'non-sensitive fields should still be forwarded');
   } finally {

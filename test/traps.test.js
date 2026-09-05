@@ -120,6 +120,21 @@ test('a timed exit wall becomes a real exit tile, and completing the level throu
   assert.ok(sim.completed, 'stepping onto the now-open timed exit completes the level like any other exit');
 });
 
+test('a hero standing on a timed-exit tile the instant it converts completes the level that same tick, not a tick late', () => {
+  // stepTimedWalls() runs before stepPlayers() within step() -- confirm that ordering actually
+  // means a hero already positioned on the tile (however it got there) sees the freshly-converted
+  // exit and completes immediately, rather than needing one more tick to notice the grid changed.
+  const level = { ...ROOM, timers: { exit: 1 } };
+  const sim = new Sim(level);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  sim.grid[3][7] = T.TIMED_WALL_EXIT;
+  sim.timedWalls = [{ x: 7, y: 3, glyph: T.TIMED_WALL_EXIT, remaining: DT / 2 }]; // fires on the very next step()
+  p.x = 7.5; p.y = 3.5; // already sitting exactly on the tile's centre when it converts
+  sim.step(DT);
+  assert.equal(sim.grid[3][7], T.EXIT, 'converted this same tick');
+  assert.ok(sim.completed, 'the level completed in the same tick the tile opened, no tick of delay');
+});
+
 test('exitReachable: a group wall is passable only when its own plate is present in the level', () => {
   // A single '=' gap in an otherwise solid dividing wall, between the start (top) and exit (bottom).
   const rowsNoPlate = [

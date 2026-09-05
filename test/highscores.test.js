@@ -38,6 +38,8 @@ test('recordHighScore + topHighScores: guest and logged-in runs both land on the
   const b = recordHighScore({ guestId: 'guest-1', cls: 'elf', score: 8000, level: 20, mode: 'death', endedAt: Math.floor(Date.now() / 1000) });
   assert.equal(a.qualifies, true);
   assert.equal(b.qualifies, true);
+  assert.match(a.token, /^[0-9a-f]{32}$/, 'a random claim token is minted for every run');
+  assert.notEqual(a.token, b.token, 'each run gets its own token');
   const top = topHighScores(10);
   assert.equal(top[0].score, 8000);
   assert.equal(top[0].username, null, 'a guest run carries no username');
@@ -46,25 +48,27 @@ test('recordHighScore + topHighScores: guest and logged-in runs both land on the
   assert.equal(top[0].initials, null, 'nobody has claimed initials yet');
 });
 
-test('setInitials: rejects a malformed pattern, then accepts, then one-shots', () => {
-  const { id } = recordHighScore({ guestId: 'guest-2', cls: 'warrior', score: 12345, level: 5, endedAt: Math.floor(Date.now() / 1000) });
-  assert.throws(() => setInitials(id, 'ab1'), (err) => err.status === 400);
-  assert.throws(() => setInitials(id, 'ABCD'), (err) => err.status === 400);
-  const ok = setInitials(id, 'ABC');
+test('setInitials: rejects a malformed pattern, then rejects a wrong token, then accepts with the right one, then one-shots', () => {
+  const { id, token } = recordHighScore({ guestId: 'guest-2', cls: 'warrior', score: 12345, level: 5, endedAt: Math.floor(Date.now() / 1000) });
+  assert.throws(() => setInitials(id, 'ab1', token), (err) => err.status === 400);
+  assert.throws(() => setInitials(id, 'ABCD', token), (err) => err.status === 400);
+  assert.throws(() => setInitials(id, 'ABC'), (err) => err.status === 403, 'a missing token is rejected');
+  assert.throws(() => setInitials(id, 'ABC', 'wrong-token'), (err) => err.status === 403, 'someone else\'s guessed/enumerated run id cannot claim it without the token');
+  const ok = setInitials(id, 'ABC', token);
   assert.deepEqual(ok, { id, initials: 'ABC' });
-  assert.throws(() => setInitials(id, 'XYZ'), (err) => err.status === 409, 'a second attempt on the same run is rejected');
+  assert.throws(() => setInitials(id, 'XYZ', token), (err) => err.status === 409, 'a second attempt on the same run is rejected');
   const top = topHighScores(10);
   assert.equal(top.find((r) => r.score === 12345)?.initials, 'ABC');
 });
 
 test('setInitials: the claim window expires 5 minutes after the run ended', () => {
   const staleEndedAt = Math.floor(Date.now() / 1000) - 301;
-  const { id } = recordHighScore({ guestId: 'guest-3', cls: 'valkyrie', score: 999, level: 3, endedAt: staleEndedAt });
-  assert.throws(() => setInitials(id, 'OLD'), (err) => err.status === 409);
+  const { id, token } = recordHighScore({ guestId: 'guest-3', cls: 'valkyrie', score: 999, level: 3, endedAt: staleEndedAt });
+  assert.throws(() => setInitials(id, 'OLD', token), (err) => err.status === 409);
 });
 
 test('setInitials: 404 for an unknown run id', () => {
-  assert.throws(() => setInitials(999999, 'ABC'), (err) => err.status === 404);
+  assert.throws(() => setInitials(999999, 'ABC', 'anything'), (err) => err.status === 404);
 });
 
 // ---------------- HTTP surface ----------------
@@ -82,7 +86,7 @@ test('HTTP: GET /api/highscores shape/order, POST /api/runs/:id/initials validat
   async function seedRun(overrides = {}) {
     const r = await api('/api/debug/highscore', { method: 'POST', body: { cls: 'warrior', score: 100, level: 1, ...overrides } });
     assert.equal(r.status, 200, JSON.stringify(r.data));
-    return r.data.id;
+    return { id: r.data.id, token: r.data.token };
   }
 
   try {
@@ -113,27 +117,47 @@ test('HTTP: GET /api/highscores shape/order, POST /api/runs/:id/initials validat
 
     await t.test('POST initials 400s on anything but exactly three A-Z letters', async () => {
       for (const bad of ['ab1', 'AB', 'ABCD', '', '123']) {
-        const r = await api(`/api/runs/${ids.high}/initials`, { method: 'POST', body: { initials: bad } });
+        const r = await api(`/api/runs/${ids.high.id}/initials`, { method: 'POST', body: { initials: bad, token: ids.high.token } });
         assert.equal(r.status, 400, `expected 400 for initials=${JSON.stringify(bad)}`);
       }
     });
 
+    await t.test('POST initials is an ownership check: a missing or wrong token 403s instead of claiming the run', async () => {
+      const noToken = await api(`/api/runs/${ids.high.id}/initials`, { method: 'POST', body: { initials: 'ACE' } });
+      assert.equal(noToken.status, 403);
+      const wrongToken = await api(`/api/runs/${ids.high.id}/initials`, { method: 'POST', body: { initials: 'ACE', token: ids.mid.token } });
+      assert.equal(wrongToken.status, 403, "another run's token (guessing/enumerating ids) must not work");
+      const board = await api('/api/highscores');
+      assert.equal(board.data.scores[0].initials, null, 'the failed attempts left the run unclaimed');
+    });
+
     await t.test('a valid claim succeeds and shows up on the board', async () => {
-      const r = await api(`/api/runs/${ids.high}/initials`, { method: 'POST', body: { initials: 'ACE' } });
+      const r = await api(`/api/runs/${ids.high.id}/initials`, { method: 'POST', body: { initials: 'ACE', token: ids.high.token } });
       assert.equal(r.status, 200);
-      assert.deepEqual(r.data, { id: ids.high, initials: 'ACE' });
+      assert.deepEqual(r.data, { id: ids.high.id, initials: 'ACE' });
       const board = await api('/api/highscores');
       assert.equal(board.data.scores[0].initials, 'ACE');
     });
 
     await t.test('a second claim on the same run is rejected with 409', async () => {
-      const r = await api(`/api/runs/${ids.high}/initials`, { method: 'POST', body: { initials: 'ZZZ' } });
+      const r = await api(`/api/runs/${ids.high.id}/initials`, { method: 'POST', body: { initials: 'ZZZ', token: ids.high.token } });
       assert.equal(r.status, 409);
     });
 
     await t.test('claiming an unknown run id 404s', async () => {
-      const r = await api('/api/runs/999999999/initials', { method: 'POST', body: { initials: 'ABC' } });
+      const r = await api('/api/runs/999999999/initials', { method: 'POST', body: { initials: 'ABC', token: 'x' } });
       assert.equal(r.status, 404);
+    });
+
+    await t.test('POST /api/runs/:id/initials is rate-limited per IP (20/min)', async () => {
+      // The block above already made ~10 requests against this same server/IP; a further burst
+      // must eventually trip the 20/min bucket, independent of the claim outcome itself.
+      let sawLimited = false;
+      for (let i = 0; i < 15 && !sawLimited; i++) {
+        const r = await api('/api/runs/999999999/initials', { method: 'POST', body: { initials: 'ABC', token: 'x' } });
+        if (r.status === 429) sawLimited = true;
+      }
+      assert.equal(sawLimited, true, 'expected a 429 within a burst of requests to the same endpoint/IP');
     });
 
     await t.test('the debug seed hook is unreachable without GAUNTLET_DEBUG=1', async () => {

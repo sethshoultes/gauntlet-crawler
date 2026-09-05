@@ -242,6 +242,7 @@ const G = {
   bonus: null, // { total, startedAt } — treasure-room countdown (see 'bonus' message)
   keyCount: 0, foodShotCount: 0, // per-level narrator counters
   lastMagicNag: 0, lastDying: 0, // narrator rate-limit timestamps
+  hsTokens: new Map(), // runId -> claim token (private 'hstoken' message, #14 ownership check)
 };
 // exposed for manual/E2E debugging only — not used by the game itself
 window.__gc = {
@@ -308,6 +309,9 @@ $('#leave').onclick = () => { if (G.ws) G.ws.send(JSON.stringify({ t: 'leave' })
 
 function onMessage(m) {
   switch (m.t) {
+    // Arcade high scores (#14): private per-connection claim token for our own just-ended run,
+    // sent ahead of the room-wide 'gameover' broadcast — see server/game/room.js endRun().
+    case 'hstoken': G.hsTokens.set(m.runId, m.token); break;
     case 'welcome':
       G.pid = m.pid; G.room = m.room; G.inRoom = true; G.reconnecting = false; G.reconnectAttempts = 0;
       if (m.guestId && m.guestId !== guestId) { guestId = m.guestId; try { localStorage.setItem(GUEST_KEY, guestId); } catch {} }
@@ -379,7 +383,11 @@ function onMessage(m) {
       // Arcade high scores (#14): the server tells us via the matching scores[] entry whether our
       // own run just cracked the all-time top 10 (server/game/room.js endRun()).
       const mine = m.scores.find((s) => s.pid === G.pid);
-      if (mine?.hs && mine.runId != null) showInitialsModal({ runId: mine.runId, score: mine.score });
+      if (mine?.hs && mine.runId != null) {
+        const hsToken = G.hsTokens.get(mine.runId);
+        G.hsTokens.delete(mine.runId);
+        showInitialsModal({ runId: mine.runId, score: mine.score, token: hsToken });
+      }
       setTimeout(() => {
         $('#game').classList.remove('on'); $('#roomscreen').classList.add('on'); $('#touch').classList.remove('on');
         if (G.room) renderRoomScreen(G.room);
@@ -710,7 +718,13 @@ cv.addEventListener('click', (ev) => {
 
 function lerpSnap(now) {
   if (!G.cur) return null;
-  if (!G.prev) return { p: G.cur.p, m: G.cur.m, b: G.cur.b, g: G.cur.g, it: G.cur.it };
+  // tw (#11 timed walls) is never interpolated -- like g (generators) and it (It mode's tagged
+  // monster id, #13), its entries don't move/aren't positional, so this always passes the latest
+  // snapshot's value straight through. Omitting it here used to mean snap.tw was always undefined
+  // (only p/m/b/g were ever copied onto the returned object), so the timed-wall pulse below always
+  // fell back to its "no data yet" default instead of ever reading the real remaining-seconds
+  // countdown the server actually sends every tick.
+  if (!G.prev) return { p: G.cur.p, m: G.cur.m, b: G.cur.b, g: G.cur.g, it: G.cur.it, tw: G.cur.tw };
   const span = Math.max(1, G.curAt - G.prevAt);
   const t = Math.min(1.2, Math.max(0, (now - G.curAt) / span)); // extrapolate slightly past the latest snapshot
   const lerpList = (prevL, curL, idIdx, xi, yi) => {
@@ -722,7 +736,7 @@ function lerpSnap(now) {
       return out;
     });
   };
-  return { p: lerpList(G.prev.p, G.cur.p, 0, 1, 2), m: lerpList(G.prev.m, G.cur.m, 0, 2, 3), b: lerpList(G.prev.b, G.cur.b, 0, 1, 2), g: G.cur.g, it: G.cur.it };
+  return { p: lerpList(G.prev.p, G.cur.p, 0, 1, 2), m: lerpList(G.prev.m, G.cur.m, 0, 2, 3), b: lerpList(G.prev.b, G.cur.b, 0, 1, 2), g: G.cur.g, it: G.cur.it, tw: G.cur.tw };
 }
 
 let lastFrame = performance.now();

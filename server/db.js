@@ -140,8 +140,9 @@ CREATE TABLE IF NOT EXISTS narrator_lines (
 // while this one is the classic-cabinet "everybody's best runs" board, so user_id/guest_id are
 // both nullable and `username`/`class` are snapshotted at insert time (a later username change or
 // account deletion shouldn't rewrite history on the score table). `initials` starts NULL and is
-// filled in once by POST /api/runs/:id/initials within a short window of the run ending — see
-// server/highscores.js for the exact rule.
+// filled in once by POST /api/runs/:id/initials within a short window of the run ending, and only
+// when the request carries the matching `claim_token` (a random value minted at insert time and
+// handed to the client solely via the 'gameover' broadcast) — see server/highscores.js.
 db.exec(`
 CREATE TABLE IF NOT EXISTS highscores (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -154,9 +155,15 @@ CREATE TABLE IF NOT EXISTS highscores (
   mode TEXT NOT NULL DEFAULT 'campaign',
   ended_at INTEGER NOT NULL,
   initials TEXT,
-  initials_set_at INTEGER
+  initials_set_at INTEGER,
+  claim_token TEXT
 );
 CREATE INDEX IF NOT EXISTS highscores_score ON highscores(score DESC);
 `);
+
+// Idempotent migration: a highscores table created before claim tokens existed (an earlier build
+// of this same feature branch) predates this column.
+const highscoreCols = db.prepare('PRAGMA table_info(highscores)').all().map((r) => r.name);
+if (!highscoreCols.includes('claim_token')) db.exec('ALTER TABLE highscores ADD COLUMN claim_token TEXT');
 
 export const now = () => Math.floor(Date.now() / 1000);

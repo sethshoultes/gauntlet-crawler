@@ -8,6 +8,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import { db, now } from '../db.js';
 
 const MODEL = process.env.GAUNTLET_AI_MODEL || 'claude-opus-5';
+// See server/ai/levelgen.js's AI_TIMEOUT_MS comment. Narrator lines are fire-and-forget and never
+// awaited on the tick path, but a stuck request would otherwise linger for the SDK's 10-minute
+// default (and get retried) for no benefit -- a line this late is worthless anyway.
+const AI_TIMEOUT_MS = 15_000;
 
 // Same in-memory Map cache used across the AI features, capped so a room that somehow cycles
 // through many distinct context keys over a long uptime can't grow this unbounded — see MAX_CACHE.
@@ -97,7 +101,7 @@ async function defaultGenerate(eventType, context) {
       system: SYSTEM,
       messages: [{ role: 'user', content: promptFor(eventType, context) }],
       output_config: { format: { type: 'json_schema', schema: SCHEMA } },
-    });
+    }, { timeout: AI_TIMEOUT_MS });
     if (response.stop_reason === 'refusal') return null;
     const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
     const raw = JSON.parse(text);

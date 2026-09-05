@@ -20,6 +20,9 @@ import { hashSeed } from '../../shared/rng.js';
 export { aiAvailable };
 
 const MODEL = process.env.GAUNTLET_AI_MODEL || 'claude-opus-5';
+// See server/ai/levelgen.js's AI_TIMEOUT_MS comment: the SDK's default (10 minutes, retried) is far
+// too long to hold an HTTP request open on -- fall back to the deterministic preset instead.
+const AI_TIMEOUT_MS = 30_000;
 const MAX_PROMPT = 300;
 const PIXEL_ROW_RE = /^[.0-7]{8}$/;
 const NAME_RE = /^[A-Za-z0-9 ]{2,12}$/;
@@ -176,7 +179,7 @@ export async function generateHeroFromPrompt({ prompt, rank, achievements }) {
         system: buildSystem(budget, weaponIds, traitIds),
         messages: [{ role: 'user', content: `Design a hero. Player's request: ${cleanPrompt || 'Surprise me.'}` }],
         output_config: { format: { type: 'json_schema', schema: schemaFor(weaponIds) } },
-      });
+      }, { timeout: AI_TIMEOUT_MS });
       if (response.stop_reason === 'refusal') {
         return presetFallback(cleanPrompt, budget, weaponIds, traitIds, 'The AI declined this request, so a preset hero was suggested instead.');
       }

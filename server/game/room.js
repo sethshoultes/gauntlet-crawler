@@ -934,6 +934,12 @@ export class Room {
       });
       const entry = scores.find((s) => s.pid === c.pid);
       if (entry) { entry.runId = hs.id; entry.hs = hs.qualifies; }
+      // `scores` above is sent to every client via this.broadcast() below (one identical JSON
+      // payload for the whole room) -- the claim token must reach *only* the client that owns this
+      // run, never its roommates, so it goes out as its own private message instead of riding along
+      // in the shared array. Sent ahead of the broadcast on the same (ordered) connection so the
+      // client already has it by the time 'gameover' arrives and offers the initials modal.
+      if (hs.qualifies) this.send(c, { t: 'hstoken', runId: hs.id, token: hs.token });
     }
     this.broadcast({ t: 'gameover', reason, level: this.levelIndex, cap: Number.isFinite(cap) ? cap : null, scores });
     for (const pid of [...this.sim.players.keys()]) this.sim.removePlayer(pid);
