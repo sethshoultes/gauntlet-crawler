@@ -16,14 +16,20 @@ const jobs = new Map(); // id -> { owner, status, result, error, createdAt, fini
  * the eventual result payload.
  * @returns {string} jobId
  */
+export class JobStoreFullError extends Error {
+  constructor() { super('The level generator is busy; please try again in a minute'); this.status = 503; }
+}
+
 export function startJob(owner, runner) {
-  // Cap concurrent entries: evict the oldest finished job to make room, and if nothing is
-  // finished yet just refuse to grow further (the caller's rate limit should make this rare).
+  // Cap concurrent entries: evict the oldest finished job to make room; if every job is still
+  // pending there is nothing safe to evict, so refuse (the API maps this to a 503) rather than
+  // letting the map grow past MAX_JOBS while slow generations pile up.
   if (jobs.size >= MAX_JOBS) {
     const oldestDone = [...jobs.entries()]
       .filter(([, j]) => j.status !== 'pending')
       .sort((a, b) => a[1].finishedAt - b[1].finishedAt)[0];
-    if (oldestDone) jobs.delete(oldestDone[0]);
+    if (!oldestDone) throw new JobStoreFullError();
+    jobs.delete(oldestDone[0]);
   }
   const id = crypto.randomBytes(12).toString('hex');
   const job = { owner, status: 'pending', result: null, error: null, createdAt: Date.now(), finishedAt: null };

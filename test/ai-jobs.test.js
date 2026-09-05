@@ -2,7 +2,7 @@
 // (server/ai/jobs.js). See test/levelgen-api.test.js for the HTTP-level behaviour.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { startJob, getJob, _clear, _size } from '../server/ai/jobs.js';
+import { startJob, getJob, _clear, _size, JobStoreFullError } from '../server/ai/jobs.js';
 
 function tick() { return new Promise((r) => setImmediate(r)); }
 
@@ -48,4 +48,13 @@ test('the store is capped at 200 concurrent entries: a finished job is evicted t
   assert.equal(_size(), 200);
   assert.equal(getJob(first, 'u1'), undefined, 'the oldest finished job should have been evicted');
   assert.ok(getJob(extra, 'u1'));
+});
+
+test('the cap holds when every job is still pending: the extra request is refused with a 503-style error', async () => {
+  _clear();
+  for (let i = 0; i < 200; i++) startJob('u1', () => new Promise(() => {})); // never settle
+  assert.equal(_size(), 200);
+  assert.throws(() => startJob('u1', async () => ({})), (err) => err instanceof JobStoreFullError && err.status === 503);
+  assert.equal(_size(), 200, 'the store must not grow past the cap');
+  _clear();
 });
