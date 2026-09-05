@@ -798,9 +798,19 @@ button appears (bottom-right, or wherever the page already provides an install s
   shell loads and the classic hero list still renders, but live play, rooms, chat, the leaderboard and the AI
   level builder all need the network — none of that is, or should be, served from cache.
 - On activation, a new version posts a message back to every open tab and `client/pwa.js` shows a small
-  "Updated — reload for the latest version" toast.
+  "Updated — reload for the latest version" toast — deferred until gameplay ends (it checks the same
+  `gc-playing` `<body>` class the mobile layout uses) so it never interrupts an active run.
 - Pass `?nosw=1` in the URL to skip registering the service worker entirely (used by the smoke/e2e test
   harnesses so a cached shell from a previous run can never mask a fresh code change).
+- **Version bump discipline**: `client/sw.js`'s `SW_VERSION` constant must change whenever the precached
+  shell does — a new/removed file in `PRECACHE_URLS` (`client/sw-rules.js`), or a content change to any
+  file already in it — because that's what makes the *worker script's own bytes* change, which is what
+  actually triggers a browser's update check; the cache name it derives (`gauntlet-shell-${SW_VERSION}`)
+  is also what makes `activate()` drop the previous cache instead of leaving it to leak. Forgetting the
+  bump means a deploy silently never reaches players on the cached shell. `test/pwa.test.js` enforces this:
+  it hashes `SW_VERSION` together with `PRECACHE_URLS` and the bytes of every precached file and pins that
+  to `test/fixtures/sw-shell-hash.json`, so any of that changing without updating both `SW_VERSION` and the
+  fixture fails the test (its failure message prints the exact new hash to paste in).
 
 ## Level format
 

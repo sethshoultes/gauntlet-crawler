@@ -10,6 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { startServer } from './helpers/server.mjs';
 import { isNetworkOnly, shouldHandle, PRECACHE_URLS } from '../client/sw-rules.js';
 import { ICON_SPECS, ICONS_DIR, generateAll } from '../tools/generate-icons.mjs';
@@ -157,4 +158,44 @@ test('PRECACHE_URLS covers every client and shared module, so an offline reload 
     const file = url.startsWith('/shared/') ? path.join(root, url.slice(1)) : path.join(root, 'client', url.slice(1));
     assert.ok(fs.existsSync(file), `${url} is precached but does not exist on disk`);
   }
+});
+
+// client/sw.js caches the precached shell under `gauntlet-shell-${SW_VERSION}` and only clears the
+// previous cache in activate() when that name actually changed — so an offline install's stale
+// game.js/style.css/etc. only ever gets refreshed by a browser update check that notices *some*
+// byte of the registered worker script changed. Bump discipline (README "Install as an app") is
+// the only thing standing between a deploy and a shell every returning player is stuck on: nothing
+// in the code enforces it. This test is the enforcement — it hashes SW_VERSION together with
+// PRECACHE_URLS and the actual bytes of every precached file and pins that to a checked-in fixture,
+// so any change to the precached shell (a file's content, or the URL list itself) that isn't paired
+// with a SW_VERSION bump fails right here instead of shipping a silently-stale offline shell.
+//
+// To update after a deliberate shell change: bump SW_VERSION in client/sw.js, then replace
+// test/fixtures/sw-shell-hash.json with `{ "version": "<new SW_VERSION>", "hash": "<digest this
+// test's failure message prints>" }`.
+test('client/sw.js SW_VERSION is pinned to a hash of the precached shell (bump discipline)', () => {
+  const swSrc = fs.readFileSync(path.join(CLIENT_DIR, 'sw.js'), 'utf8');
+  const versionMatch = swSrc.match(/const SW_VERSION = '([^']+)'/);
+  assert.ok(versionMatch, 'could not find `const SW_VERSION = \'...\'` in client/sw.js');
+  const version = versionMatch[1];
+
+  const digest = createHash('sha256');
+  digest.update(version);
+  digest.update(JSON.stringify(PRECACHE_URLS));
+  for (const url of PRECACHE_URLS) {
+    if (url === '/') continue; // same bytes as /index.html on disk, already hashed once
+    const file = url.startsWith('/shared/') ? path.join(ROOT, url.slice(1)) : path.join(CLIENT_DIR, url.slice(1));
+    digest.update(fs.readFileSync(file));
+  }
+  const hash = digest.digest('hex');
+
+  const fixturePath = path.join(ROOT, 'test', 'fixtures', 'sw-shell-hash.json');
+  const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+  assert.equal(fixture.version, version,
+    `client/sw.js's SW_VERSION ("${version}") doesn't match the version this fixture was recorded for `
+    + `("${fixture.version}") — update ${path.relative(ROOT, fixturePath)} to { "version": "${version}", "hash": "${hash}" }.`);
+  assert.equal(fixture.hash, hash,
+    `the precached shell changed (a file in PRECACHE_URLS, or its content) but SW_VERSION in client/sw.js `
+    + `was not bumped. Bump SW_VERSION, then set ${path.relative(ROOT, fixturePath)} to `
+    + `{ "version": "<new SW_VERSION>", "hash": "${hash}" }.`);
 });

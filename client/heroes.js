@@ -93,10 +93,15 @@ pcv.addEventListener('pointerdown', (e) => {
   paintAt(e, false);
 });
 pcv.addEventListener('pointermove', (e) => { if (painting) paintAt(e, true); });
-window.addEventListener('pointerup', (e) => {
+// See client/editor.js's identical pointercancel handling: a touch drag can be cancelled mid-stroke
+// (a scroll/zoom takeover, another touch point, an OS interruption) with no matching pointerup, so
+// without this `painting` would stay stuck true and the next stray pointermove would keep painting.
+function stopPainting(e) {
   painting = false; lastCell = null;
   try { pcv.releasePointerCapture(e.pointerId); } catch { /* not captured / already released */ }
-});
+}
+window.addEventListener('pointerup', stopPainting);
+window.addEventListener('pointercancel', stopPainting);
 
 // palette swatches
 const swatchesEl = $('#swatches');

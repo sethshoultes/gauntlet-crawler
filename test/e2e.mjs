@@ -658,6 +658,24 @@ async function main() {
       if (!(await pageM.locator('#nav-links').isVisible())) throw new Error('#nav-links should become visible after clicking #nav-toggle');
       if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'true') throw new Error('#nav-toggle should report aria-expanded="true" once opened');
 
+      // Escape closes it too, and re-queries the live elements rather than closing over stale ones
+      // (client/common.js installNavGlobalListeners() — this same page already re-rendered the nav
+      // seven times over by this point in the loop above, so this also exercises that the document-
+      // level Escape/outside-click listeners still work correctly after renderNav() has run more
+      // than once).
+      await pageM.keyboard.press('Escape');
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should collapse on Escape');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'false') throw new Error('#nav-toggle should report aria-expanded="false" after Escape');
+
+      // A click outside the menu (and outside the toggle button itself) closes it the same way.
+      await pageM.click('#nav-toggle');
+      if (!(await pageM.locator('#nav-links').isVisible())) throw new Error('#nav-links should reopen after clicking #nav-toggle again');
+      await pageM.evaluate(() => document.body.click()); // anywhere outside nav.top entirely
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should collapse on an outside click');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'false') throw new Error('#nav-toggle should report aria-expanded="false" after an outside click');
+
+      await pageM.click('#nav-toggle'); // reopen once more for the nav-link-click check below
+      if (!(await pageM.locator('#nav-links').isVisible())) throw new Error('#nav-links should reopen a third time');
       await pageM.click('#nav-links a.nl >> nth=0'); // any nav link click should close the menu
       if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should collapse again after clicking a nav link');
 
@@ -692,6 +710,31 @@ async function main() {
       const grid = await pageE.evaluate(() => window.__ed.grid());
       for (let x = 3; x <= 28; x++) {
         if (grid[10][x] !== 'F') throw new Error(`Level Builder drag left a gap at column ${x} (row 10): expected food ("F"), got "${grid[10][x]}"`);
+      }
+
+      // A touch drag can be cancelled mid-stroke (the browser taking over for a scroll/zoom
+      // gesture, another touch point, an OS interruption) with no matching pointerup. Simulate that
+      // by capturing the real pointerdown's pointerId, then dispatching a synthetic pointercancel
+      // for it partway through a still-in-progress mouse press, and confirm painting really stops:
+      // before the pointercancel handler was added, `ED.painting` stayed stuck true and the mouse
+      // movement below (still physically "down" from Playwright's perspective) kept painting.
+      await pageE.evaluate(() => {
+        window.__lastPointerId = null;
+        document.querySelector('#ecv').addEventListener('pointerdown', (e) => { window.__lastPointerId = e.pointerId; }, { once: true });
+      });
+      const cFrom = ecvCell(3, 15), cTo = ecvCell(15, 15);
+      await pageE.mouse.move(cFrom.x, cFrom.y);
+      await pageE.mouse.down();
+      await pageE.mouse.move(ecvCell(8, 15).x, ecvCell(8, 15).y); // paints columns 3-8 on row 15 normally
+      await pageE.evaluate(() => {
+        document.querySelector('#ecv').dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.__lastPointerId, bubbles: true, cancelable: true }));
+      });
+      await pageE.mouse.move(cTo.x, cTo.y); // still "down" per Playwright — must NOT resume painting past the cancel
+      await pageE.mouse.up();
+
+      const gridAfterCancel = await pageE.evaluate(() => window.__ed.grid());
+      for (let x = 10; x <= 15; x++) {
+        if (gridAfterCancel[15][x] !== '.') throw new Error(`pointercancel did not stop the stroke: column ${x} (row 15) got painted ("${gridAfterCancel[15][x]}") after the cancel`);
       }
       await ctxE.close().catch(() => {});
 
@@ -787,6 +830,44 @@ async function main() {
 
       await pageD.click('#leave').catch(() => {});
       await ctxD.close().catch(() => {});
+    });
+
+    // ---------------- 16. PWA update toast defers during active gameplay (#33) ----------------
+    await scenario('16. PWA: the "reload for the latest version" toast waits until gameplay ends instead of interrupting a run', async () => {
+      // Its own context with no ?nosw=1 (like scenario 12) so this exercises the real service
+      // worker registration/message path, not a stub.
+      const ctxU = await browser.newContext();
+      const pageU = await ctxU.newPage(); attach(pageU, 'U');
+      try {
+        await pageU.goto(`${baseUrl}/`, { waitUntil: 'load' });
+        await pageU.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 15_000 });
+        // client/sw.js's activate() posts its "updated" message on every activation, including this
+        // very first install (there's no previous version to distinguish it from) — so a real toast
+        // is expected here too, before this scenario's own check even starts. Wait for and clear it
+        // (bypassing the toast's own remove()-on-click path, which would reload the page) so the
+        // assertions below are only about the synthetic message dispatched below.
+        await pageU.waitForSelector('#pwa-update-toast', { timeout: 15_000 });
+        await pageU.evaluate(() => document.getElementById('pwa-update-toast')?.remove());
+
+        // Simulate an in-progress run without needing a full multiplayer join/start round trip:
+        // client/game.js's only contract with client/pwa.js here is the `gc-playing` class it puts
+        // on <body> for exactly the window the game canvas is on-screen (see leaveGame()/onMessage()).
+        await pageU.evaluate(() => document.body.classList.add('gc-playing'));
+        // A real service-worker update posts this exact message (client/sw.js activate()); dispatch
+        // it directly on the container rather than driving an actual redeploy.
+        await pageU.evaluate(() => navigator.serviceWorker.dispatchEvent(
+          new MessageEvent('message', { data: { type: 'gauntlet-sw-updated', version: 'e2e-test' } }),
+        ));
+        await pageU.waitForTimeout(300);
+        if (await pageU.locator('#pwa-update-toast').count()) {
+          throw new Error('update toast appeared while gc-playing was set on <body> — it must not interrupt an active run');
+        }
+
+        await pageU.evaluate(() => document.body.classList.remove('gc-playing')); // the "run" ends, back to the lobby
+        await pageU.waitForSelector('#pwa-update-toast', { timeout: 5_000 });
+      } finally {
+        await ctxU.close().catch(() => {});
+      }
     });
 
     await ctxA.close().catch(() => {});

@@ -50,7 +50,28 @@ function showUpdateToast() {
   document.body.appendChild(toast);
 }
 
+// A new-version-available toast is harmless in the lobby but is the worst possible moment to pop
+// up over an active dungeon run — it steals screen space right where the touch controls live and
+// invites a reload that would drop the player's connection mid-fight. client/game.js toggles
+// `gc-playing` on <body> for exactly the window a run is actually on-screen (on, not merely
+// "in a room" — the lobby/room screen doesn't set it), so gate the toast on that instead of
+// showing it the instant the message arrives. Pages with no game screen at all (dashboard, editor,
+// heroes, settings, ...) never get `gc-playing`, so the toast still shows immediately there.
+let pendingUpdate = false;
+function maybeShowUpdateToast() {
+  if (!pendingUpdate) return;
+  if (document.body.classList.contains('gc-playing')) return; // still mid-run — try again once it clears
+  pendingUpdate = false;
+  showUpdateToast();
+}
+
 if (!disabled) {
+  // Re-check the moment gameplay ends rather than polling: game.js only ever adds/removes classes
+  // on <body>, so a class-attribute observer catches every place `gc-playing` comes off
+  // (leaveGame(), dropping back to the room/lobby screen, gameover, ...) without this file needing
+  // to know any of them individually.
+  new MutationObserver(maybeShowUpdateToast).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
     showInstallButton(event);
@@ -66,7 +87,7 @@ if (!disabled) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('/sw.js', { type: 'module' }).then(() => {
         navigator.serviceWorker.addEventListener('message', (event) => {
-          if (event.data && event.data.type === 'gauntlet-sw-updated') showUpdateToast();
+          if (event.data && event.data.type === 'gauntlet-sw-updated') { pendingUpdate = true; maybeShowUpdateToast(); }
         });
       }).catch(() => {}); // offline support is a nice-to-have; never block the app on it
     });

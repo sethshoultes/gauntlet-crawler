@@ -507,7 +507,19 @@ export class Room {
       // generated level. `msg.timers` overrides the default timed-wall countdown (see
       // shared/constants.js TIMER_DEFAULT_SEC) so a scenario doesn't have to wait 30s for one to
       // fire; `msg.treasureRoom` exercises the bonus-round entry exactly like advanceLevel() does.
-      this.sim.loadLevel({ name: 'Debug Fixture', rows: msg.rows, timers: msg.timers }, this.levelIndex, { treasureRoom: !!msg.treasureRoom });
+      //
+      // `msg.rows` comes straight off the wire (a test/manual script), so it can be array-shaped
+      // but otherwise garbage — too small/large, ragged rows, an unknown tile glyph, no S/E tile —
+      // which Sim#loadLevel's parseLevel() call rejects by throwing. That throw happens before
+      // Sim mutates any of its own fields (parseLevel() is always the very first thing it does),
+      // so the room's current level survives untouched either way, but letting it propagate out of
+      // debugAction() at all just pushes "don't crash" onto every caller (server/index.js's ws
+      // message handler happens to wrap this in a try/catch today, but this hook has no business
+      // relying on that). Swallow it here instead and treat a bad fixture as a no-op, same as an
+      // unrecognized action — see the regression test for a rows array that used to throw uncaught.
+      try {
+        this.sim.loadLevel({ name: 'Debug Fixture', rows: msg.rows, timers: msg.timers }, this.levelIndex, { treasureRoom: !!msg.treasureRoom });
+      } catch { return; }
       this.changing = false;
       this.broadcast(this.sim.levelPacket());
       this.broadcast(this.playersPacket());

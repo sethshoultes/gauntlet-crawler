@@ -116,6 +116,40 @@ export function toast(title, text, kind = '') {
   setTimeout(() => el.remove(), 5000);
 }
 
+// The Escape-key and outside-click handlers below live on `document`, not on #nav-toggle/#nav-links
+// themselves, because renderNav() can legitimately run more than once on the same page (editor.js
+// re-renders the nav after a mid-session login to refresh the "Logged in as ..." line) — each call
+// replaces #nav-toggle/#nav-links wholesale via innerHTML, so listeners bound directly to those
+// elements are discarded for free along with the old nodes, but a listener added to `document`
+// itself is not: adding one on every renderNav() call would stack up a fresh copy each time,
+// permanently, since nothing on a static multi-page site ever tears them down. `navListenersReady`
+// guards against that — the handlers themselves re-query #nav-toggle/#nav-links live (rather than
+// closing over the elements current at install time) so the single copy stays correct across any
+// number of re-renders.
+let navListenersReady = false;
+function installNavGlobalListeners() {
+  if (navListenersReady) return;
+  navListenersReady = true;
+  const closeMenu = () => {
+    const links = document.querySelector('#nav-links');
+    const toggle = document.querySelector('#nav-toggle');
+    if (!links || !links.classList.contains('open')) return;
+    links.classList.remove('open');
+    toggle?.setAttribute('aria-expanded', 'false');
+  };
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+  document.addEventListener('click', (e) => {
+    const links = document.querySelector('#nav-links');
+    const toggle = document.querySelector('#nav-toggle');
+    if (!links || !links.classList.contains('open')) return;
+    // A click on the toggle button itself is already handled by its own listener below (which
+    // would otherwise immediately reopen what this just closed); anywhere inside the open panel
+    // is a normal in-menu click, not an "outside" one.
+    if (toggle?.contains(e.target) || links.contains(e.target)) return;
+    closeMenu();
+  });
+}
+
 export async function renderNav(active) {
   const nav = document.querySelector('nav.top');
   if (!nav) return;
@@ -149,10 +183,12 @@ export async function renderNav(active) {
 
   const toggle = nav.querySelector('#nav-toggle');
   const links = nav.querySelector('#nav-links');
-  toggle.addEventListener('click', () => {
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation(); // don't let the document click listener below immediately close what this just opened
     const open = links.classList.toggle('open');
     toggle.setAttribute('aria-expanded', String(open));
   });
+  installNavGlobalListeners();
   // Closing on navigation matters even though every nav link is a full page load (so the menu
   // would reset anyway) — it keeps the collapsed state correct for the instant between the click
   // and the browser actually navigating away, and for any future same-page link added here.

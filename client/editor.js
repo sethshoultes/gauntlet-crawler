@@ -125,10 +125,17 @@ cv.addEventListener('pointerdown', (e) => {
   paint(e, false);
 });
 cv.addEventListener('pointermove', (e) => { if (ED.painting) paint(e, true); });
-window.addEventListener('pointerup', (e) => {
+// A touch drag can be cancelled mid-stroke — the browser taking over for a scroll/zoom gesture,
+// another touch point arriving, or the OS interrupting for its own UI — and a cancelled pointer
+// never gets a matching pointerup. Without this, ED.painting would stay stuck true forever after
+// one cancelled stroke, so the *next* stray pointermove (e.g. just moving the mouse with no button
+// held) would silently keep painting.
+function stopPainting(e) {
   ED.painting = false; ED.lastCell = null;
   try { cv.releasePointerCapture(e.pointerId); } catch { /* not captured / already released */ }
-});
+}
+window.addEventListener('pointerup', stopPainting);
+window.addEventListener('pointercancel', stopPainting);
 
 // zoom (#32): the grid otherwise shrinks to fit the panel (max-width:100%), which is unusably
 // small on a phone for anything but the smallest levels. Zooming changes only the canvas's

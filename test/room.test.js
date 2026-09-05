@@ -846,4 +846,19 @@ test('debug loadLevel is a no-op outside "playing" state, or with malformed rows
   } finally { room.close(); }
 });
 
+test('debug loadLevel does not throw when rows is an array but fails parseLevel validation', () => {
+  // Below MIN_SIZE (shared/level.js), so Sim#loadLevel's parseLevel() call throws inside
+  // Room#debugAction. This used to propagate straight out of debugAction() uncaught — harmless
+  // only because server/index.js's ws message handler happens to wrap the whole dispatch in a
+  // try/catch; debugAction() itself must not rely on that.
+  const room = makeRoom({ id: 'dbg-5' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    assert.doesNotThrow(() => room.debugAction('loadLevel', { rows: ['###', '#S#', '###'] }));
+    assert.equal(room.state, 'playing', 'the room keeps running after a rejected fixture');
+    assert.equal(room.sim.level.name, LEVEL1.name, 'the too-small fixture never replaced the live level');
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });
