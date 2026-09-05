@@ -6,7 +6,7 @@ import {
   generatorTier, GENERATOR_TIER_HP, GENERATOR_TIER_HP_BONUS, GENERATOR_TIER_SCORE_MUL,
   AMULET_TILES, BOOST_TILES, AMULET_DURATION, AMULET_SCORE, BOOST_SCORE, BOOST_STACK_CAP, BOOST_EFFECT,
   REPULSE_RANGE, AMULET_LETTER, BOOST_LETTER, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS, TIMER_DEFAULT_SEC,
-  ACID_DAMAGE_PER_SEC, STUN_TICKS, STUN_IMMUNITY_TICKS,
+  ACID_DAMAGE_PER_SEC, STUN_TICKS, STUN_IMMUNITY_TICKS, IT_KILL_BONUS,
 } from '../../shared/constants.js';
 import { parseLevel } from '../../shared/level.js';
 
@@ -38,6 +38,10 @@ export class Sim {
     // Locksmith trait's door-key-save roll) — defaults to plain Math.random so nothing else changes.
     this.rng = rng || { chance: (p) => Math.random() < p };
     this.players = new Map();
+    // It tag mode (#13): pid of the currently-tagged player, or null when the mode is off, the
+    // level hasn't assigned one yet, or fewer than two players remain — see assignItTag()/
+    // reassignItTag() and nearestPlayer()'s use of it below.
+    this.itPid = null;
     this.loadLevel(levelDef, levelIndex);
   }
 
@@ -56,6 +60,12 @@ export class Sim {
     this.completed = null;
     this.levelKills = 0;
     this.treasureRoom = !!opts.treasureRoom; // see shared/procgen.js generateTreasureRoom + server/game/room.js
+    // Mystery treasure rooms (#13): derived straight from the grid (T.HIDDEN_EXIT present anywhere)
+    // rather than a separate flag, so it's automatically right for any level — procedurally
+    // generated, custom, or editor-authored — that happens to use the glyph. `exitsRevealed` guards
+    // revealHiddenExits() so it only ever fires once per level (see that method).
+    this.mysteryRoom = this.grid.some((row) => row.includes(T.HIDDEN_EXIT));
+    this.exitsRevealed = false;
     // Death mode: every level starts with the exit sealed until Room clears all its waves.
     this.exitSealed = this.mode === 'death';
     // Pressure-plate wall groups (#11): each plate glyph fires at most once per level (see
@@ -113,7 +123,11 @@ export class Sim {
   }
 
   levelPacket() {
-    return { t: 'level', index: this.levelIndex, name: this.level.name, description: this.level.description, w: this.w, h: this.h, rows: this.grid.map((r) => r.join('')), sealed: !!this.exitSealed, treasureRoom: !!this.treasureRoom };
+    return {
+      t: 'level', index: this.levelIndex, name: this.level.name, description: this.level.description, w: this.w, h: this.h,
+      rows: this.grid.map((r) => r.join('')), sealed: !!this.exitSealed, treasureRoom: !!this.treasureRoom,
+      mysteryRoom: !!this.mysteryRoom, // #13: hidden exits present — client shows the "find the exit" banner
+    };
   }
 
   // ---------- players ----------
@@ -148,7 +162,12 @@ export class Sim {
     this.placeAtStart(p);
     return p;
   }
-  removePlayer(id) { this.players.delete(id); }
+  removePlayer(id) {
+    this.players.delete(id);
+    // It tag mode (#13): a departing tagged player passes the tag on immediately, same as a death.
+    if (this.itPid === id) this.reassignItTag(id);
+    else if (this.players.size < 2) this.itPid = null; // "when only one player remains, nobody is It"
+  }
   setInput(id, input) {
     const p = this.players.get(id);
     if (!p) return;
@@ -172,6 +191,9 @@ export class Sim {
     if (GENERATOR_TILES.has(c)) return true;
     // Force field (#12): blocks a shot's path but never a hero's or monster's movement.
     if (c === T.FORCE_FIELD) return who === 'shot';
+    // Hidden exit (#13): renders/behaves exactly like a wall — solid for everyone — until
+    // revealHiddenExits() converts it to a real T.EXIT tile in place.
+    if (c === T.HIDDEN_EXIT) return true;
     return false;
   }
   /** Move an entity with axis-separated AABB collision. Returns set of blocking tiles touched (for doors/traps). */
@@ -213,8 +235,21 @@ export class Sim {
   }
   /** Nearest living player to (x,y). `opts.skipInvisible` (invisibility amulet, see
    *  AMULET_TILES/README's "Amulets and boosts") excludes a player currently invisible — used by
-   *  every monster AI target search so an invisible player gets no targeting/aggro at all. */
+   *  every monster AI target search so an invisible player gets no targeting/aggro at all.
+   *
+   *  It tag mode (#13): whenever a player is tagged It (this.itPid), every one of those callers
+   *  prefers them over whoever's actually closest — as long as they're alive, within maxDist (the
+   *  same "line of sight/pathing within range" a monster already uses to wake up), and not excluded
+   *  by opts.skipInvisible (an invisible It player still can't be targeted, exactly like any other
+   *  invisible player — the search below just falls through to plain nearest-player instead). */
   nearestPlayer(x, y, maxDist = Infinity, opts = {}) {
+    if (this.itPid != null) {
+      const itP = this.players.get(this.itPid);
+      if (itP && !itP.dead && !(opts.skipInvisible && itP.amulets?.invis > 0)) {
+        const d = (itP.x - x) ** 2 + (itP.y - y) ** 2;
+        if (d <= maxDist * maxDist) return itP;
+      }
+    }
     let best = null, bd = maxDist * maxDist;
     for (const p of this.players.values()) {
       if (p.dead) continue;
@@ -223,6 +258,30 @@ export class Sim {
       if (d < bd) { bd = d; best = p; }
     }
     return best;
+  }
+  /** It tag mode (#13): (re)pick a fresh random It player for the level that's just starting —
+   *  called by server/game/room.js right after beginPlay()/advanceLevel() puts everyone in place.
+   *  A no-op (clears the tag) unless `enabled` (the room's itMode setting) and at least two players
+   *  are present, per the acceptance criteria. */
+  assignItTag(enabled) {
+    if (!enabled || this.players.size < 2) { this.itPid = null; return; }
+    const ids = [...this.players.keys()];
+    this.itPid = ids[Math.floor(Math.random() * ids.length)];
+    this.onEvent({ type: 'it', pid: this.itPid });
+  }
+  /** It tag mode (#13): the current It player just died or left (`excludeId`) — hand the tag to a
+   *  random other player, preferring one who's alive right now (a dead-and-awaiting-respawn
+   *  teammate would otherwise sit untargetable for however long they take to come back), and
+   *  falling back to any other player if literally everyone else is currently dead. Clears the tag
+   *  entirely once fewer than two players remain, regardless of who's still around. */
+  reassignItTag(excludeId) {
+    if (this.players.size < 2) { this.itPid = null; return; }
+    const candidates = [...this.players.values()].filter((p) => p.id !== excludeId);
+    if (!candidates.length) { this.itPid = null; return; }
+    const alive = candidates.filter((p) => !p.dead);
+    const pool = alive.length ? alive : candidates;
+    this.itPid = pool[Math.floor(Math.random() * pool.length)].id;
+    this.onEvent({ type: 'it', pid: this.itPid });
   }
   /** Nearest monster to (x,y) within maxDist — used by a homing (Hero Builder skull) shot's gentle
    *  steering (see stepShots). */
@@ -289,6 +348,21 @@ export class Sim {
       this.onEvent({ type: 'timedWall', x: tw.x, y: tw.y, becomes });
     }
   }
+  /** Mystery treasure rooms (#13): reveal every concealed exit in the level at once — flips each
+   *  T.HIDDEN_EXIT tile to a real T.EXIT tile in place through setTile(), exactly like a timed exit
+   *  wall's own conversion (stepTimedWalls) — which is also what drives the client's tile-change
+   *  flash on each one, for free, with no extra client-side plumbing. Triggered by a hero stepping
+   *  on the level's switch (see T.SWITCH in stepPlayers) or by its treasure being fully collected;
+   *  fires at most once per level regardless of which condition (or both) is met. */
+  revealHiddenExits() {
+    if (this.exitsRevealed) return;
+    this.exitsRevealed = true;
+    let n = 0;
+    for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
+      if (this.grid[y][x] === T.HIDDEN_EXIT) { this.setTile(x, y, T.EXIT); n++; }
+    }
+    if (n) this.onEvent({ type: 'reveal', count: n });
+  }
   /** Stun tile (#12): freezes `entity` (a player or a monster — both carry stunTicks/stunImmuneTicks,
    *  see addPlayer()/spawnMonster()) for STUN_TICKS, then leaves it immune to retriggering for a
    *  further STUN_IMMUNITY_TICKS so it has a chance to walk off the tile before it can fire again.
@@ -318,6 +392,7 @@ export class Sim {
     if (p.hp <= 0) {
       p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++;
       this.onEvent({ type: 'death', pid: p.id, source });
+      if (this.itPid === p.id) this.reassignItTag(p.id); // It tag mode (#13): passes on death
     }
   }
   killMonster(m, killer, viaPotion = false) {
@@ -330,6 +405,9 @@ export class Sim {
     }
     if (killer) {
       killer.score += def.score;
+      // It tag mode (#13): a small incentive to embrace being the target — bonus on top of the
+      // monster's normal score, only while the killer is actually the one currently tagged.
+      if (this.itPid === killer.id) killer.score += IT_KILL_BONUS;
       killer.kills++; killer.levelKills++;
       this.onEvent({ type: 'kill', pid: killer.id, monster: m.type, viaPotion, x: m.x, y: m.y });
     }
@@ -427,7 +505,12 @@ export class Sim {
       // health drain — the clock is always ticking (a cursed chest can double this for the level;
       // Death mode itself drains 1.5x to keep the timed waves under pressure)
       p.hp -= HEALTH_DRAIN_PER_SEC * dt * (p.boosts?.drainMul || 1) * (this.mode === 'death' ? 1.5 : 1);
-      if (p.hp <= 0) { p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++; this.onEvent({ type: 'death', pid: p.id, source: 'hunger' }); continue; }
+      if (p.hp <= 0) {
+        p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++;
+        this.onEvent({ type: 'death', pid: p.id, source: 'hunger' });
+        if (this.itPid === p.id) this.reassignItTag(p.id); // It tag mode (#13): passes on death
+        continue;
+      }
 
       // Stun tile (#12): tick both counters down every step regardless of which is active — stunTicks
       // is the frozen (no movement/no firing) window, stunImmuneTicks additionally covers the grace
@@ -498,7 +581,12 @@ export class Sim {
         if (here === T.KEY) p.keys++;
         else if (here === T.FOOD) { this.onEvent({ type: 'food', pid: p.id, lowHealth: p.hp < LOW_HEALTH }); p.hp += FOOD_HEALTH * (c.traitDef?.foodHealMul || 1); }
         else if (here === T.POTION) p.potions++;
-        else if (here === T.TREASURE) p.score += TREASURE_SCORE * (c.traitDef?.lootScoreMul || 1);
+        else if (here === T.TREASURE) {
+          p.score += TREASURE_SCORE * (c.traitDef?.lootScoreMul || 1);
+          // Mystery treasure rooms (#13): collecting every last piece of treasure reveals every
+          // hidden exit too, as an alternative to finding the switch.
+          if (!this.grid.some((row) => row.includes(T.TREASURE))) this.revealHiddenExits();
+        }
         else if (here === T.POISON_FOOD) { p.hp = Math.max(1, p.hp - 100); this.onEvent({ type: 'poison', pid: p.id }); }
         else if (here === T.CIDER) p.hp += 50;
         else if (AMULET_TILES[here]) {
@@ -525,6 +613,10 @@ export class Sim {
         this.applyAcid(p, dt);
       } else if (here === T.STUN_TILE) {
         this.triggerStun(p, true);
+      } else if (here === T.SWITCH) {
+        // Mystery treasure rooms (#13): unlike a pickup, the switch itself stays in the level —
+        // it's a lever, not a consumable — so this just fires the (idempotent) reveal.
+        this.revealHiddenExits();
       } else if ((here === T.EXIT || here === T.EXIT_SKIP) && !this.exitSealed) {
         p.score += LEVEL_BONUS;
         const skip = here === T.EXIT_SKIP ? 4 : 1;
@@ -906,6 +998,10 @@ export class Sim {
       // Timed walls (#11): [x, y, wholeSecondsLeft] — cheap (a level has at most a handful) and
       // lets the client pulse them more urgently as their timer runs down.
       tw: this.timedWalls.map((t) => [t.x, t.y, Math.max(0, Math.ceil(t.remaining))]),
+      // It tag mode (#13): the currently-tagged player's pid, or undefined when nobody is It —
+      // only one player is ever tagged at a time, so a single top-level field is enough (no need
+      // to fold it into the per-player `p` array). See client/game.js's ring/crown + HUD banner.
+      it: this.itPid ?? undefined,
     };
   }
   playerInfo() {

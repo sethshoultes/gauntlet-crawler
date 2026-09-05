@@ -51,6 +51,13 @@ Tile legend (use ONLY these characters):
   at most one stun tile, and force fields gating a generator's approach are plenty; never place them
   as the only route to the exit since acid/stun punish standing there, and force fields block nothing
   about movement anyway)
+  H hidden exit (renders and behaves exactly like a wall # until revealed — use in place of E for a
+  "mystery room")   L switch (a walkable floor tile, a lever: a hero stepping on it reveals every H
+  in the level at once)
+  (H is only ever revealable if the level also has at least one L switch tile OR at least one T
+  treasure tile — collecting every last piece of treasure also reveals every hidden exit. Never use
+  H without one of those, and never as the only exit unless that condition holds. Optional, rare,
+  used for a deliberate "find the secret way out" room, not a normal level.)
 Rules: outer border is all #. There must be a walkable path from S to E (or 8) (doors are fine if there is a key before them).
 Every door must have at least one key reachable before it. Put 2-6 food, 3-10 treasure, 1-2 potions, 2-8 generators depending on the requested difficulty.
 Make rooms and corridors that are fun to fight in: choke points, side rooms with loot, generators guarding treasure.

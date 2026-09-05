@@ -260,7 +260,18 @@ export function nameForSeed(seed, level = 1) {
 
 /** Bonus level (README's "Features" section, "Bonus treasure rooms"): an open room full of treasure, no monsters, several exits. See
  *  server/game/room.js — after every 5th campaign level, levelFor() returns this instead of a
- *  regular generated level; Sim.loadLevel({treasureRoom:true}) starts a 30s auto-complete timer. */
+ *  regular generated level; Sim.loadLevel({treasureRoom:true}) starts a 30s auto-complete timer.
+ *
+ *  Mystery variant (#13, arcade parity: Gauntlet II's level-8-style secret vaults): every other
+ *  treasure room a run reaches conceals its exits behind T.HIDDEN_EXIT instead of a plain T.EXIT,
+ *  plus a T.SWITCH tile across the room from the entrance — either throwing the switch or picking
+ *  up every last piece of treasure reveals them all at once (server/game/sim.js
+ *  revealHiddenExits()). `level` is always this room's own campaign level number (6, 12, 18, …, see
+ *  Room#isTreasureLevel), so "every other" is simply every other *occurrence*, not a coin flip —
+ *  deterministic for a given run regardless of seed (the seed still drives everything about the
+ *  room's own layout). A treasure room is, by construction, always full of T.TREASURE, so
+ *  shared/level.js's exitReachable() rule for hidden exits (switch-or-treasure) is always satisfied
+ *  here. */
 export function generateTreasureRoom({ seed, level = 1 } = {}) {
   const rng = makeRng(hashSeed(`treasure:${seed}:${level}`));
   const w = 22, h = 16;
@@ -270,11 +281,22 @@ export function generateTreasureRoom({ seed, level = 1 } = {}) {
   const midY = h >> 1;
   g[midY][1] = T.START; g[midY][2] = T.START;
   g[midY - 1][1] = T.START; g[midY + 1][1] = T.START;
+  const roomNum = Math.round(level / 6) - 1; // 0 for the first treasure room (level 6), 1 for the second (level 12), ...
+  const mystery = roomNum % 2 === 1;
   const exitSpots = rng.shuffle([[w - 2, 2], [w - 2, midY], [w - 2, h - 3], [w >> 1, h - 2], [w >> 1, 2]]).slice(0, rng.int(3, 4));
-  for (const [ex, ey] of exitSpots) g[ey][ex] = T.EXIT;
+  for (const [ex, ey] of exitSpots) g[ey][ex] = mystery ? T.HIDDEN_EXIT : T.EXIT;
+  if (mystery) {
+    // Across the room from the entrance (start sits against the west wall) — finding it takes a
+    // real lap of the vault, not just a lucky first step. Any of these candidate spots is still
+    // solid rock or plain treasure at this point, so overwriting it is always safe.
+    const [swx, swy] = rng.pick([[w - 3, h - 3], [w - 3, 2], [(w >> 1) + 2, midY]]);
+    g[swy][swx] = T.SWITCH;
+  }
   let lvl = {
-    name: 'Treasure Vault',
-    description: `Grab everything before the ${30}s timer runs out — any exit will do.`,
+    name: mystery ? 'Mystery Vault' : 'Treasure Vault',
+    description: mystery
+      ? `Find the concealed exit — or the switch that reveals it — before the ${30}s timer runs out.`
+      : `Grab everything before the ${30}s timer runs out — any exit will do.`,
     rows: g.map((r) => r.join('')),
   };
   if (!exitReachable(parseLevel(lvl))) lvl = repairLevel(lvl);

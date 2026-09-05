@@ -69,6 +69,9 @@
   #hud .pp.acid .hp { color: var(--green); }
   #hud .pp.acid::after { content: 'ACID'; display: block; font-size: 10px; font-weight: bold; letter-spacing: 2px; color: var(--green); animation: blink .5s steps(2) infinite; }
   #hud .pp.stunned .nm { color: var(--yellow); }
+  #hud .pp.it { border-color: var(--yellow); box-shadow: 0 0 0 1px var(--yellow); animation: itpulse 1s ease-in-out infinite; }
+  #hud .pp.it .nm::after { content: ' 👑 IT'; color: var(--yellow); font-size: 10px; }
+  @keyframes itpulse { 0%, 100% { box-shadow: 0 0 0 1px var(--yellow); } 50% { box-shadow: 0 0 4px 2px var(--yellow); } }
   #hud .pp .boosts { font-size: 14px; margin-top: 2px; letter-spacing: 2px; }
   @keyframes blink { 50% { opacity: .3; } }
   #hud .lvl { color: var(--yellow); text-align: center; text-transform: uppercase; letter-spacing: 1px; }
@@ -179,6 +182,7 @@
             <p class="help" id="rs-death-help" style="display:none">Endless arena waves against the clock. Every level seals the exit until you clear all its
               waves; the level cap depends on the highest rank in the room.</p>
             <label><input type="checkbox" id="rs-private" /> Private room (hidden from the public list)</label>
+            <label><input type="checkbox" id="rs-itmode" /> It tag mode (2+ players: one hero draws all monster aggro)</label>
           </div>
         </div>
       </div>

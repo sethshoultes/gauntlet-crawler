@@ -1,7 +1,15 @@
 // Level format: parse/validate/auto-repair an ASCII level (array of equal-length strings) and the
 // tile legend used by the editor and README. Used by both the server (level.js validation before
 // save/publish) and the client (editor.js preview).
-import { T, ALL_TILES, EXIT_TILES, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS } from './constants.js';
+import { T, ALL_TILES, EXIT_TILES, EXIT_LIKE_TILES, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS } from './constants.js';
+
+// Mystery treasure rooms (#13): a hidden exit only counts as reachable (see exitReachable below) if
+// the level gives players a way to ever reveal it — a switch tile, or at least one treasure tile
+// (the "collect it all" reveal condition, see server/game/sim.js revealHiddenExits()). With
+// neither, a hidden exit can never open, so it stays impassable like a permanent wall.
+function hiddenExitOpenable(rows) {
+  return rows.some((r) => r.includes(T.SWITCH)) || rows.some((r) => r.includes(T.TREASURE));
+}
 
 export const MIN_SIZE = 12;
 export const MAX_SIZE = 64;
@@ -22,12 +30,14 @@ export function parseLevel(raw) {
   }
   const starts = [];
   const exits = [];
+  // EXIT_LIKE_TILES (not the narrower EXIT_TILES): a hidden exit (#13) still counts as an exit
+  // having been placed for this structural check, even though it behaves like a wall until revealed.
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     if (rows[y][x] === T.START) starts.push([x, y]);
-    if (EXIT_TILES.has(rows[y][x])) exits.push([x, y]);
+    if (EXIT_LIKE_TILES.has(rows[y][x])) exits.push([x, y]);
   }
   if (starts.length === 0) throw new Error('level has no start (S) tile');
-  if (exits.length === 0) throw new Error('level has no exit tile (E or 8)');
+  if (exits.length === 0) throw new Error('level has no exit tile (E, 8, or H)');
   return {
     name: String(raw.name || 'Untitled').slice(0, 40),
     description: String(raw.description || '').slice(0, 200),
@@ -64,17 +74,24 @@ export function exitReachable(lvl) {
   for (const [plateGlyph, wallGlyph] of Object.entries(TRAP_PLATES)) {
     if (rows.some((r) => r.includes(plateGlyph))) openableGroups.add(wallGlyph);
   }
+  // Mystery treasure rooms (#13): a hidden exit is only ever a real exit if it can eventually be
+  // revealed (hiddenExitOpenable above) — otherwise it's treated exactly like a wall, both as a
+  // terminal tile (never satisfies the BFS) and as something to path through.
+  const hiddenOk = hiddenExitOpenable(rows);
   const seen = new Uint8Array(w * h);
   const q = [starts[0]];
   seen[starts[0][1] * w + starts[0][0]] = 1;
   while (q.length) {
     const [x, y] = q.shift();
-    if (EXIT_TILES.has(rows[y][x])) return true;
+    const here = rows[y][x];
+    if (EXIT_TILES.has(here)) return true;
+    if (here === T.HIDDEN_EXIT && hiddenOk) return true;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const c = rows[ny][nx];
       if (c === T.WALL) continue;
+      if (c === T.HIDDEN_EXIT && !hiddenOk) continue; // can never open: treated like a permanent wall
       if (c === T.DOOR && !hasKey) continue;
       if (GROUP_WALLS.has(c) && !openableGroups.has(c)) continue;
       const i = ny * w + nx;
@@ -88,7 +105,7 @@ export function exitReachable(lvl) {
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */
 export function repairLevel(raw) {
-  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN%&*=+~^:atf]/g, '.'));
+  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN%&*=+~^:atfHL]/g, '.'));
   rows = rows.filter((r) => r.length > 0);
   let w = Math.max(...rows.map((r) => r.length), MIN_SIZE);
   w = Math.min(w, MAX_SIZE);
@@ -120,7 +137,7 @@ export function repairLevel(raw) {
     const [ex, ey] = parsed.exits[0];
     const carve = (x, y) => {
       const c = grid[y][x];
-      if (c === T.WALL || c === T.TRAP || c === T.DOOR || GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) grid[y][x] = T.FLOOR;
+      if (c === T.WALL || c === T.TRAP || c === T.DOOR || GROUP_WALLS.has(c) || TIMED_WALLS.has(c) || c === T.HIDDEN_EXIT) grid[y][x] = T.FLOOR;
     };
     for (let x = Math.min(sx, ex); x <= Math.max(sx, ex); x++) carve(x, sy);
     for (let y = Math.min(sy, ey); y <= Math.max(sy, ey); y++) carve(ex, y);
@@ -159,4 +176,6 @@ export const LEGEND = [
   [T.ACID, 'Acid puddle (damages any hero standing on it; monsters immune)'],
   [T.STUN_TILE, 'Stun tile (freezes on contact, then a brief immunity window)'],
   [T.FORCE_FIELD, 'Force field (blocks shots; heroes and monsters walk through)'],
+  [T.HIDDEN_EXIT, 'Hidden exit (solid like a wall until revealed by a switch or full treasure pickup)'],
+  [T.SWITCH, 'Switch (reveals every hidden exit in the level when a hero steps on it)'],
 ];

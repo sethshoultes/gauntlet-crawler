@@ -71,10 +71,18 @@ export const T = {
   ACID: 'a',       // damages any hero standing on it every tick; monsters are immune (native to the dungeon)
   STUN_TILE: 't',  // freezes movement/firing on contact (hero or monster) for STUN_TICKS, then a no-retrigger grace window
   FORCE_FIELD: 'f',// blocks/erases every shot that touches it (player, monster, and lobber-arc landings); never blocks movement
+  // ---- mystery treasure rooms (#13, arcade parity: Gauntlet II's level-8-style secret vaults).
+  // A hidden exit renders/behaves exactly like a wall (see SOLID_TILES) until server/game/sim.js's
+  // revealHiddenExits() flips every one in the level to a real EXIT tile in place — triggered by a
+  // hero stepping on the switch, or by the level's treasure being fully collected. See
+  // shared/level.js's exitReachable() for the reachability rule these two glyphs are paired under. ----
+  HIDDEN_EXIT: 'H', // solid like a wall until revealed; becomes T.EXIT in place, never a different tile
+  SWITCH: 'L',      // walkable floor tile (a lever): a hero stepping on it reveals every hidden exit at once
 };
 
 export const SOLID_TILES = new Set([
   T.WALL, T.DOOR, T.TRAP, T.TRAP_WALL_A, T.TRAP_WALL_B, T.TRAP_WALL_C, T.TIMED_WALL, T.TIMED_WALL_EXIT,
+  T.HIDDEN_EXIT,
 ]);
 // plate glyph -> the wall group glyph it dissolves (see server/game/sim.js triggerPlate()).
 export const TRAP_PLATES = { [T.TRAP_PLATE_A]: T.TRAP_WALL_A, [T.TRAP_PLATE_B]: T.TRAP_WALL_B, [T.TRAP_PLATE_C]: T.TRAP_WALL_C };
@@ -116,7 +124,14 @@ export const BOOST_EFFECT = {
 };
 export const GENERATOR_TILES = new Set([T.GEN_GRUNT, T.GEN_GHOST, T.GEN_DEMON, T.GEN_LOBBER, T.GEN_SORCERER]);
 export const MONSTER_TILES = new Set([T.GHOST, T.GRUNT, T.DEMON, T.DEATH, T.LOBBER, T.SORCERER, T.THIEF]);
+// EXIT_TILES is deliberately narrow: "this tile literally completes the level right now" (used by
+// server/game/sim.js's stepPlayers and shared/level.js's exitReachable terminal check). A hidden
+// exit (#13) does NOT belong here — it behaves like a wall until revealed. EXIT_LIKE_TILES is the
+// broader "an exit was placed here, concealed or not" set used only for structural bookkeeping:
+// parseLevel's "does this level have an exit at all" check and its `exits` coordinate list (which
+// repairLevel's connectivity fallback and the AI remix's start/exit locking both key off).
 export const EXIT_TILES = new Set([T.EXIT, T.EXIT_SKIP]);
+export const EXIT_LIKE_TILES = new Set([...EXIT_TILES, T.HIDDEN_EXIT]);
 export const ALL_TILES = new Set(Object.values(T));
 
 // `shotKey` picks the shot sprite/snapshot letter for a class (see server/game/sim.js snapshot()
@@ -172,6 +187,9 @@ export const SNAP_KEY_TO_MONSTER = Object.fromEntries(Object.entries(MONSTERS).m
 export const GENERATOR_SPAWNS = { [T.GEN_GRUNT]: 'grunt', [T.GEN_GHOST]: 'ghost', [T.GEN_DEMON]: 'demon', [T.GEN_LOBBER]: 'lobber', [T.GEN_SORCERER]: 'sorcerer' };
 export const GENERATOR_SCORE = 100;
 export const TREASURE_SCORE = 100;
+// It tag mode (#13): the tagged player earns a small bonus per kill while carrying the tag, on top
+// of the monster's normal score — see server/game/sim.js killMonster() and Sim#itPid.
+export const IT_KILL_BONUS = 2;
 
 // Generator tiers (see shared/procgen.js and server/game/sim.js loadLevel/stepGenerators): a
 // generator's tier is derived from the level index, not stored per-tile (a 1-char grid has no

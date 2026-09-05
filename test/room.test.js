@@ -699,4 +699,70 @@ test('joinLocal mid-game spawns the local player straight into the sim, and leav
   } finally { room.close(); }
 });
 
+// ---------- It tag mode (#13) ----------
+
+test('itMode is off by default and only the host can turn it on, via setSettings', () => {
+  const room = makeRoom({ id: 'it-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    assert.equal(room.itMode, false);
+    assert.throws(() => room.setSettings('b', { itMode: true }), /host/i);
+    room.setSettings('a', { itMode: true });
+    assert.equal(room.itMode, true);
+    assert.equal(room.info().itMode, true, 'reflected in the room info sent to clients');
+    room.setSettings('a', { itMode: false });
+    assert.equal(room.itMode, false);
+  } finally { room.close(); }
+});
+
+test('starting a room with itMode on and 2+ players tags one of them It', () => {
+  const room = makeRoom({ id: 'it-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setSettings('a', { itMode: true });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    assert.ok(room.sim.itPid === 'a' || room.sim.itPid === 'b', 'one of the two players is tagged It at level start');
+  } finally { room.close(); }
+});
+
+test('itMode has no effect solo — nobody is It with just one player, even with the option on', () => {
+  const room = makeRoom({ id: 'it-3' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.setSettings('a', { itMode: true });
+    room.start('a'); // a lone host may start unready
+    assert.equal(room.sim.itPid, null);
+  } finally { room.close(); }
+});
+
+test('itMode off never tags anyone, even with 2+ players', () => {
+  const room = makeRoom({ id: 'it-4' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    assert.equal(room.sim.itPid, null, 'itMode defaults to off');
+  } finally { room.close(); }
+});
+
+test('a fresh level start re-tags It, via advanceLevel', () => {
+  const room = makeRoom({ id: 'it-5' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setSettings('a', { itMode: true });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    clearTimeout(room.levelChangeTimer); room.levelChangeTimer = null;
+    room.advanceLevel();
+    assert.equal(room.levelIndex, 2);
+    assert.ok(room.sim.itPid === 'a' || room.sim.itPid === 'b', 'the new level assigned a fresh It tag');
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });

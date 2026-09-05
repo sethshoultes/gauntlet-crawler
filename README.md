@@ -75,10 +75,10 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   slots can be filled by separate connections, extra local gamepads on one machine (see "Mobile and gamepad" below), or
   a mix of both.
 - **Pre-game room screen**: ready-up, host-only start (gated on all-ready, or auto-start on a 5s countdown), host settings
-  (campaign vs. a published custom level, private/public), hero switching before start, and host-only kick. A kick sticks
-  for that room's whole lifetime — for logged-in players by account, and for guests via a signed guest id (`gc_guest_id`
-  in `localStorage`) that survives reconnects and reloads. Host migrates to the next player if the host leaves. Late
-  joiners to a room already in progress skip the room screen and jump straight in.
+  (campaign vs. a published custom level, private/public, It tag mode — see below), hero switching before start, and
+  host-only kick. A kick sticks for that room's whole lifetime — for logged-in players by account, and for guests via a
+  signed guest id (`gc_guest_id` in `localStorage`) that survives reconnects and reloads. Host migrates to the next
+  player if the host leaves. Late joiners to a room already in progress skip the room screen and jump straight in.
 - **Reconnect**: a dropped socket keeps its player entity (score/keys/potions/health) for 30s, marked "away" in the HUD; the
   client auto-retries the connection with backoff and resumes the same hero via a per-tab resume token.
 - **Accounts** (username + password, scrypt-hashed) with per-user stats, run history and achievements. Guests can play without saving.
@@ -137,6 +137,25 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   either way the room returns to the lobby to run it again. Runs are recorded to their own `death` leaderboard tab
   on the dashboard, separate from campaign high scores, with two Death-specific achievements (*Wave Rider*, *Staring
   Down Death*).
+- **It tag mode** (#13, arcade parity: Gauntlet II): a host-set room option next to Mode/Private in the pre-game
+  settings, off by default. With it on and 2+ players in the room, one random player is tagged "It" the moment
+  a level starts (pulsing gold ring + a small crown over their hero, "YOU'RE IT!" in their own HUD) — every
+  monster's target search (`server/game/sim.js` `nearestPlayer`) prefers the It player over whoever's actually
+  closest, as long as they're alive and within the monster's usual wake range, falling back to ordinary
+  nearest-player targeting the instant they're out of range or turn invisible (the Invisibility amulet still
+  works exactly as it does for anyone else). The tag passes to a random other living player the moment the
+  current bearer dies or leaves the room; with only one player left nobody is It and monsters behave normally.
+  Killing a monster while tagged earns a small `+2` score bonus on top of the kill's normal value.
+- **Mystery treasure rooms** (#13, arcade parity: Gauntlet II's level-8-style secret vaults): every other bonus
+  treasure room (see below) conceals its exits behind a **hidden exit** (tile `H`) instead of a plain exit — it
+  renders and behaves exactly like a wall until revealed. A **switch** (tile `L`, a walkable floor tile) placed
+  across the room reveals every hidden exit in the level at once when a hero steps on it; collecting every last
+  piece of treasure does the same, so the room is always solvable without the switch too. `shared/level.js`'s
+  `exitReachable` only ever treats a hidden exit as reachable when the level actually has a switch or at least
+  one treasure tile — otherwise it's unopenable and treated exactly like a permanent wall, same as an unmatched
+  pressure-plate wall group. The reveal reuses the tile-change flash from #11 (no separate animation plumbing)
+  plus a "MYSTERY ROOM: find the exit" HUD banner that clears itself the moment the last hidden exit opens; the
+  30s bonus-room timer still auto-completes the level with no bonus if nobody ever finds (or reveals) a way out.
 - **New monster types**: the **Lobber** (tile `4`, generator `l`) keeps 4-7 tiles from its target and lobs an
   arcing shot every ~2s that flies clean over walls, landing on the target's position at launch time and
   damaging anyone within 0.8 tiles — the client draws it with a growing-then-shrinking scale to suggest height.
@@ -159,7 +178,9 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
 - **Bonus treasure rooms**: every 6th level in any non-Death mode is a generated open vault full of treasure
   with no monsters and several exits (`generateTreasureRoom` in `shared/procgen.js`) instead of a regular
   dungeon. A 30s timer runs from the moment it loads; find any exit early or let the timer expire — either
-  way there's no chest intermission afterward. Clearing 5 of them earns the *Bonus Hunter* achievement.
+  way there's no chest intermission afterward. Every other one of these (deterministic per level, so the same
+  seed always plays out the same way) is a **mystery room** instead, with its exits concealed — see "Mystery
+  treasure rooms" above. Clearing 5 of them earns the *Bonus Hunter* achievement.
 - **Amulets and boosts** (`server/game/sim.js` player `amulets`/`runBoosts`): rare arcade-parity pickups
   sprinkled by `shared/procgen.js` (amulets occasionally from level 2 on, boosts much more rarely from
   level 4 on, both scaling with depth). Four **amulets** are temporary, lasting 20 seconds with the
@@ -681,6 +702,7 @@ V speed boost (permanent)   A armor boost (permanent)   B shot-power boost (perm
 ^ timed wall (-> floor after its countdown)   : timed wall (-> exit after its countdown)
 a acid puddle (damages any hero standing on it; monsters immune)   t stun tile (freezes on contact, then a brief immunity window)
 f force field (blocks shots; heroes and monsters walk straight through)
+H hidden exit (solid like a wall until revealed by a switch or full treasure pickup)   L switch (reveals every hidden exit when a hero steps on it)
 ```
 
 The same legend is exported as `LEGEND` from `shared/level.js` for the editor's tile palette and
@@ -892,8 +914,10 @@ Tracked as GitHub issues. Implemented already (see [Features](#features) above):
 palette tint shown in the lobby roster and room list (#8), chests offered to players who join
 mid-intermission (#9), in-game cutscene triggers (#23), the Hero Builder's lobby/simulation
 integration (#24), an AI-generated launch trailer and title backdrop (#21), AI remix/tune/explain
-for existing levels plus AI-written names for procedural levels (#17), and acid puddles/stun
-tiles/force fields from Gauntlet II (#12).
+for existing levels plus AI-written names for procedural levels (#17), and the rest of Gauntlet
+II's arcade parity: amulets and permanent boosts (#10), pressure-plate wall groups and timed walls
+(#11), acid puddles/stun tiles/force fields (#12), and It tag mode plus mystery treasure rooms
+(#13).
 
 Sound synthesis (#20), pre-rendered narrator voice lines (#19), optional opt-in AI narrator
 commentary (#18), the mobile touch layout/gamepad support (#15), and the original-style attract
@@ -904,9 +928,6 @@ five issues are still open on the tracker pending someone closing them out.
 
 Open, not yet implemented:
 
-- **Arcade parity** with the original cabinets: amulets and power-ups (#10), trap tiles that
-  dissolve walls and timed walls (#11), an "It" tag mode and mystery treasure rooms from Gauntlet II
-  (#13).
 - **AI assist**: describe a hero and get a build/sprite suggestion (#16).
 - **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
 

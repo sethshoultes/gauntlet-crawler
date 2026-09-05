@@ -61,6 +61,7 @@ export class Room {
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
     this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (see README's "Level format" section)
     this.treasureTimer = null;    // bonus-level 30s auto-complete timer (README's "Features" section, "Bonus treasure rooms")
+    this.itMode = false;          // It tag mode (#13): host-set room option, off by default — see setSettings()
     this.aiNameCache = new Map(); // #17: n -> {name, description} once prefetchName(n)'s AI call resolves; see levelFor()/applyCachedName()
     this.sim = new Sim(this.levelFor(1), {
       levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign',
@@ -151,6 +152,7 @@ export class Room {
       mode: this.source.type, deathCap, customLevel: this.source.type === 'custom' && this.source.level
         ? { id: this.source.levelId || null, name: this.source.level.name } : null,
       customName: this.source.level?.name || null, public: this.isPublic, hostPid: this.hostPid,
+      itMode: this.itMode,
       roster: [...this.clients.values()].map((c) => ({
         pid: c.pid, name: c.name, cls: c.cls, palette: c.palette, rank: c.rank, title: c.title,
         ready: !!c.ready, away: !!c.away, host: c.pid === this.hostPid,
@@ -377,7 +379,7 @@ export class Room {
     if (typeof prefs.aiNarrator === 'boolean') c.aiNarrator = prefs.aiNarrator;
   }
 
-  setSettings(pid, { mode, levelId, isPublic } = {}) {
+  setSettings(pid, { mode, levelId, isPublic, itMode } = {}) {
     if (pid !== this.hostPid) throw new Error('Only the host can change settings');
     if (this.state !== 'lobby') throw new Error('Cannot change settings after start');
     if (mode === 'campaign') {
@@ -392,6 +394,9 @@ export class Room {
       throw new Error('Unknown mode');
     }
     if (typeof isPublic === 'boolean') this.isPublic = isPublic;
+    // It tag mode (#13): a room option next to Death mode — the host toggles it any time in the
+    // lobby; it only actually assigns a tag once play starts with 2+ players (see beginPlay()).
+    if (typeof itMode === 'boolean') this.itMode = itMode;
     this.sim.mode = this.source.type === 'death' ? 'death' : 'campaign';
     this.sim.loadLevel(this.levelFor(1), 1);
     this.broadcastRoom();
@@ -410,6 +415,10 @@ export class Room {
     this.cancelCountdown();
     this.state = 'playing';
     for (const c of this.clients.values()) this.enterGame(c);
+    // It tag mode (#13): the room's very first level never goes through advanceLevel()'s loadLevel
+    // call (level 1 is already loaded before anyone joins) — assign the tag here instead, right
+    // after every client has a sim entity.
+    this.sim.assignItTag(this.itMode);
     this.broadcastRoom();
     this.broadcast({ t: 'start' });
     this.broadcast(this.sim.levelPacket());
@@ -759,12 +768,17 @@ export class Room {
     this.pendingSkip = 1;
     const treasure = this.isTreasureLevel(this.levelIndex);
     this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex, { treasureRoom: treasure });
+    this.sim.assignItTag(this.itMode); // #13: fresh random It player for the level that's just starting
     this.state = 'playing';
     this.changing = false;
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     this.broadcastRoom();
-    if (treasure) { this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS }); this.startTreasureTimer(); this.maybeNarrate('treasure_enter', {}); }
+    if (treasure) {
+      this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS, mystery: this.sim.mysteryRoom });
+      this.startTreasureTimer();
+      this.maybeNarrate('treasure_enter', {});
+    }
     if (this.source.type === 'death') this.startWaves();
     this.prefetchName(this.levelIndex + 1); // #17: get a head start on the AI name for whatever comes after this one
   }

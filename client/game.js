@@ -347,8 +347,12 @@ function onMessage(m) {
       break;
     case 'bonus':
       G.bonus = { total: m.seconds, startedAt: performance.now() };
-      G.overlay = { kind: 'bonus', title: 'BONUS ROUND!', sub: 'Grab treasure — any exit will do', until: performance.now() + 2500 };
-      log('<span class="n">Bonus treasure room! Grab everything before time runs out.</span>');
+      G.overlay = m.mystery
+        ? { kind: 'bonus', title: 'MYSTERY ROOM!', sub: 'The exit is hidden — find it or the switch', until: performance.now() + 2500 }
+        : { kind: 'bonus', title: 'BONUS ROUND!', sub: 'Grab treasure — any exit will do', until: performance.now() + 2500 };
+      log(m.mystery
+        ? '<span class="n">Mystery treasure room! The exit is hidden — find the switch or clear every treasure tile.</span>'
+        : '<span class="n">Bonus treasure room! Grab everything before time runs out.</span>');
       sfx('level');
       playScene('treasure_room');
       break;
@@ -445,6 +449,9 @@ function onEvent(e) {
     case 'tile':
       if (G.grid) G.grid[e.y][e.x] = e.c;
       if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 });
+      // A hidden exit revealed (#13) turns into a real exit tile in place — same glow a timed exit
+      // wall gets when its own countdown fires (see the 'timedWall' case below).
+      else if (e.c === 'E') G.fx.push({ kind: 'magic', x: e.x + 0.5, y: e.y + 0.5, t: 0, r: 1.4 });
       G.tileChangedAt.set(e.x + ',' + e.y, performance.now()); // brief dissolve/appear flash, see render()
       break;
     case 'plate':
@@ -454,6 +461,19 @@ function onEvent(e) {
     case 'timedWall':
       G.fx.push({ kind: e.becomes === 'E' ? 'magic' : 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0, r: 1.4 });
       sfx(e.becomes === 'E' ? 'level' : 'door');
+      break;
+    case 'reveal':
+      log('<span class="n">The hidden exits are revealed!</span>');
+      sfx('level');
+      break;
+    case 'it':
+      if (mine) {
+        G.overlay = { kind: 'it', title: "YOU'RE IT!", sub: 'Monsters are coming for you', until: performance.now() + 2500 };
+        sfx('level');
+        say('you_are_it', 'You are It!');
+      } else {
+        log(`<span class="n">${esc(name || 'Someone')} is now It!</span>`);
+      }
       break;
     case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx(e.monster ? 'kill_' + e.monster : 'kill'); break;
     case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
@@ -574,6 +594,9 @@ $('#rs-customlevel').onchange = () => {
 $('#rs-private').onchange = () => {
   if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'settings', isPublic: !$('#rs-private').checked }));
 };
+$('#rs-itmode').onchange = () => {
+  if (G.ws && G.ws.readyState === 1) G.ws.send(JSON.stringify({ t: 'settings', itMode: $('#rs-itmode').checked }));
+};
 let customLevelsLoaded = false;
 async function ensureCustomLevels() {
   if (customLevelsLoaded) return;
@@ -602,6 +625,7 @@ function renderRoomScreen(room) {
     $('#rs-death-help').style.display = room.mode === 'death' ? '' : 'none';
     if (room.mode === 'custom' && room.customLevel) $('#rs-customlevel').value = String(room.customLevel.id || '');
     $('#rs-private').checked = !room.public;
+    $('#rs-itmode').checked = !!room.itMode;
   }
   $('#rs-cap').textContent = room.mode === 'death' ? `· cap ${room.deathCap != null ? room.deathCap : '∞'}` : '';
   $('#rs-roster').innerHTML = room.roster.map((p) => `
@@ -686,7 +710,7 @@ cv.addEventListener('click', (ev) => {
 
 function lerpSnap(now) {
   if (!G.cur) return null;
-  if (!G.prev) return { p: G.cur.p, m: G.cur.m, b: G.cur.b, g: G.cur.g };
+  if (!G.prev) return { p: G.cur.p, m: G.cur.m, b: G.cur.b, g: G.cur.g, it: G.cur.it };
   const span = Math.max(1, G.curAt - G.prevAt);
   const t = Math.min(1.2, Math.max(0, (now - G.curAt) / span)); // extrapolate slightly past the latest snapshot
   const lerpList = (prevL, curL, idIdx, xi, yi) => {
@@ -698,7 +722,7 @@ function lerpSnap(now) {
       return out;
     });
   };
-  return { p: lerpList(G.prev.p, G.cur.p, 0, 1, 2), m: lerpList(G.prev.m, G.cur.m, 0, 2, 3), b: lerpList(G.prev.b, G.cur.b, 0, 1, 2), g: G.cur.g };
+  return { p: lerpList(G.prev.p, G.cur.p, 0, 1, 2), m: lerpList(G.prev.m, G.cur.m, 0, 2, 3), b: lerpList(G.prev.b, G.cur.b, 0, 1, 2), g: G.cur.g, it: G.cur.it };
 }
 
 let lastFrame = performance.now();
@@ -820,6 +844,15 @@ function frame(now) {
     drawEntity(heroImg, p[1], p[2], p[3], p[8] ? 0 : bob, true);
     ctx.globalAlpha = 1;
     if (p[11] > 0 && !p[8]) drawStunStars(p[1] * TS, p[2] * TS, now); // stun tile (#12): frozen hero
+    // It tag mode (#13): a pulsing gold ring plus a small crown glyph over whoever's currently It.
+    if (snap.it === p[0] && !p[8]) {
+      const px = p[1] * TS, py = p[2] * TS;
+      const pulse = 1 + Math.sin(now / 180) * 0.12;
+      ctx.strokeStyle = '#f2c400'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, TS * 0.62 * pulse, 0, Math.PI * 2); ctx.stroke();
+      ctx.font = '12px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = '#f2c400';
+      ctx.fillText('👑', px, py - TS / 2 - 12);
+    }
     // name tag
     ctx.font = 'bold 10px monospace'; ctx.textAlign = 'center'; ctx.fillStyle = color;
     ctx.fillText((info?.name || '').toUpperCase(), p[1] * TS, p[2] * TS - TS / 2 - 3);
@@ -865,6 +898,20 @@ function frame(now) {
     const remain = Math.max(0, G.bonus.total * 1000 - (now - G.bonus.startedAt));
     ctx.fillStyle = '#f2c400'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center';
     ctx.fillText(`BONUS: ${Math.ceil(remain / 1000)}s`, VIEW_W / 2, 20);
+  }
+  // Mystery treasure rooms (#13): keep the "find the exit" reminder up for as long as any hidden
+  // exit tile is still on the grid — once revealHiddenExits() flips them to real exits (via the
+  // usual 'tile' events), G.grid no longer contains 'H' and this just stops drawing on its own.
+  if (G.level?.mysteryRoom && G.grid?.some((row) => row.includes('H'))) {
+    ctx.fillStyle = '#5cd6ff'; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('MYSTERY ROOM: find the exit', VIEW_W / 2, G.bonus ? 38 : 20);
+  }
+  // It tag mode (#13): a persistent reminder for whoever's currently tagged, on top of the
+  // one-shot overlay/crown — pulses slowly so it reads at a glance without being distracting.
+  if (mine && !mine[8] && snap.it === G.pid) {
+    ctx.fillStyle = Math.floor(now / 400) % 2 ? '#f2c400' : '#ffe27a';
+    ctx.font = 'bold 16px monospace'; ctx.textAlign = 'center';
+    ctx.fillText("YOU'RE IT!", VIEW_W / 2, VIEW_H - 14);
   }
   if (G.intermission) drawIntermission(now);
   updateHudValues(G.cur);
@@ -997,6 +1044,7 @@ function updateHudValues(s) {
     const el = document.querySelector(`.pp[data-pid="${p[0]}"]`); if (!el) continue;
     el.querySelector('.hp').textContent = p[4]; el.querySelector('.sc').textContent = p[7]; el.querySelector('.k').textContent = p[5]; el.querySelector('.po').textContent = p[6];
     el.classList.toggle('low', p[4] < LOW_HEALTH && !p[8]); el.classList.toggle('dead', !!p[8]);
+    el.classList.toggle('it', s.it === p[0] && !p[8]); // It tag mode (#13)
     // Acid puddle (#12): tint the HUD card while standing on one — read straight off the tile grid
     // rather than a snapshot flag, since the client already tracks it for rendering.
     const onAcid = !p[8] && G.grid?.[Math.floor(p[2])]?.[Math.floor(p[1])] === 'a';
