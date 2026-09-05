@@ -167,6 +167,144 @@ test('necromancer\'s wider potion radius reaches monsters a normal potion would 
   assert.equal(sim.monsters.size, 0, "necromancer's wider potion radius reached the distant ghost");
 });
 
+test('lobber arc shot flies over a wall and damages the target on landing', () => {
+  const events = [];
+  const sim = new Sim(ARENA, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 8.5; p.y = 10.5; // behind the wall at column 7, inside the little room with food/potion
+  const m = sim.spawnMonster('lobber', 3.5, 10.5); // outside the walled room, on the other side of the wall
+  // The lobber should hold its distance rather than walking through/around the wall to melee.
+  run(sim, 25); // ~1.25s: its first shot (fired ~1s in) should be in flight now
+  assert.equal(sim.monsters.has(m.id), true, 'lobber is still alive, not adjacent to melee');
+  const arc = [...sim.shots.values()].find((s) => s.arc);
+  assert.ok(arc, 'the lobber fired an arcing shot within a couple of seconds');
+  assert.equal(arc.tx, p.x); assert.equal(arc.ty, p.y);
+  const before = p.hp;
+  run(sim, 20); // its 0.9s flight time has now elapsed
+  assert.equal([...sim.shots.values()].some((s) => s.arc), false, 'the arc shot landed and was removed');
+  assert.ok(p.hp < before, 'the landing shot damaged the target through the wall');
+});
+
+test('sorcerer cannot be hit by a shot or potion while blinked invisible', () => {
+  const sim = new Sim(ARENA);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 2.5; p.y = 2.5; p.dir = 2; p.potions = 1;
+  const m = sim.spawnMonster('sorcerer', 6.5, 2.5);
+  m.visible = false; m.blinkTimer = 10; // force (and hold) invisible for this test
+  sim.setInput('a', { dx: 0, dy: 0, fire: true });
+  run(sim, 20); // several shots would have crossed its position by now
+  assert.equal(sim.monsters.has(m.id), true, 'shots pass through an invisible sorcerer');
+  sim.setInput('a', { fire: false });
+  sim.setInput('a', { potion: true });
+  run(sim, 1);
+  assert.equal(sim.monsters.has(m.id), true, 'a potion cannot hit an invisible sorcerer either');
+  m.visible = true; m.blinkTimer = 10;
+  p.x = 2.5; p.y = 2.5; p.dir = 2; m.x = 6.5; m.y = 2.5;
+  sim.setInput('a', { fire: true });
+  run(sim, 20);
+  assert.equal(sim.monsters.has(m.id), false, 'once visible again, a shot kills it normally');
+});
+
+test('thief steals a potion, flees, and drops it when killed', () => {
+  const events = [];
+  const sim = new Sim(ARENA, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 5.5; p.y = 5.5; p.potions = 1;
+  const m = sim.spawnMonster('thief', 5.6, 5.5);
+  run(sim, 5);
+  assert.equal(p.potions, 0, 'the thief stole the potion on contact');
+  assert.equal(m.stolen, 'potion');
+  assert.ok(events.some((e) => e.type === 'steal' && e.item === 'potion'));
+  // Kill it while it's fleeing with the loot — it should drop a potion tile where it died.
+  m.hp = 1;
+  const tx = Math.floor(m.x), ty = Math.floor(m.y);
+  sim.grid[ty][tx] = '.';
+  sim.killMonster(m, p);
+  assert.equal(sim.grid[ty][tx], 'P', 'the stolen potion is dropped as a tile on death');
+});
+
+test('a transporter teleports a player to the other pad, with a cooldown against ping-pong', () => {
+  const TP = {
+    name: 'tp',
+    rows: [
+      '################',
+      '#S.............#',
+      '#..............#',
+      '#..X...........#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '#............E.#',
+      '#............X.#',
+      '#..............#',
+      '#..............#',
+      '#..............#',
+      '################',
+    ],
+  };
+  const events = [];
+  const sim = new Sim(TP, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  p.x = 3.5; p.y = 3.5;
+  run(sim, 1);
+  assert.ok(p.x > 10 || p.y > 9, 'teleported to the other pad');
+  assert.ok(events.some((e) => e.type === 'teleport' && e.pid === 'a'));
+  const afterFirst = { x: p.x, y: p.y };
+  run(sim, 1); // still standing on the destination pad — cooldown must block an immediate bounce-back
+  assert.equal(p.x, afterFirst.x); assert.equal(p.y, afterFirst.y);
+});
+
+test('poison food costs health (floored at 1) and cider heals', () => {
+  const sim = new Sim(ARENA);
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  sim.grid[3][3] = '!';
+  p.x = 3.5; p.y = 3.5; p.hp = 50;
+  run(sim, 1);
+  assert.equal(p.hp, 1, 'poison food costs 100 health but floors at 1');
+  sim.grid[3][4] = 'C';
+  p.hp = 500;
+  p.x = 4.5; p.y = 3.5;
+  run(sim, 1);
+  assert.ok(p.hp > 545 && p.hp <= 550, `cider heals ~50: ${p.hp}`);
+});
+
+test('shooting poison food is harmless (no food_shot event); shooting cider counts as shooting food', () => {
+  const events = [];
+  const sim = new Sim(ARENA, { onEvent: (e) => events.push(e) });
+  const p = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  sim.grid[2][6] = '!';
+  p.x = 2.5; p.y = 2.5; p.dir = 2;
+  sim.setInput('a', { fire: true });
+  run(sim, 12);
+  assert.equal(sim.grid[2][6], '.', 'the poison food was destroyed');
+  assert.equal(events.some((e) => e.type === 'food_shot'), false, 'no penalty for shooting the poison');
+  events.length = 0;
+  sim.setInput('a', { fire: false });
+  sim.grid[2][6] = 'C';
+  sim.setInput('a', { fire: true });
+  run(sim, 12);
+  assert.ok(events.some((e) => e.type === 'food_shot'), 'shooting cider is treated like shooting food');
+});
+
+test('players block each other: a move that would overlap another player within 0.7 tiles is cancelled on that axis', () => {
+  const sim = new Sim(ARENA);
+  const a = sim.addPlayer('a', { name: 'A', cls: 'warrior' });
+  const b = sim.addPlayer('b', { name: 'B', cls: 'warrior' });
+  a.x = 5; a.y = 5; b.x = 5.5; b.y = 5;
+  sim.moveEntity(a, 0.3, 0, 'player'); // would land a.x=5.3, within 0.7 of b.x=5.5
+  assert.equal(a.x, 5, 'the move into another player is cancelled');
+  sim.moveEntity(a, 0, 1, 'player'); // orthogonal move, no other player nearby on that axis
+  assert.equal(a.y, 6);
+  // Player shots still pass through teammates: standing shoulder to shoulder does not block fire.
+  a.x = 5; a.y = 5; a.dir = 2; b.x = 6; b.y = 5;
+  sim.setInput('a', { dx: 0, dy: 0, fire: true });
+  run(sim, 1);
+  assert.ok(b.hp > b.maxHealth - 1, "a teammate's shot never damages another player (only the 1-tick health drain applies)");
+});
+
 test('snapshot is compact and level packet round-trips', () => {
   const sim = new Sim(ARENA);
   sim.addPlayer('a', { name: 'A', cls: 'valkyrie' });

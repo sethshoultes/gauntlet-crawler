@@ -408,4 +408,84 @@ test('a timer callback (e.g. the countdown tick) that throws is contained, not f
   } finally { room.close(); }
 });
 
+test('a skip-exit (e.skip) advances the level by 4 instead of 1', () => {
+  const room = makeRoom({ id: 'skip-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5, skip: 4 });
+    room.startIntermission();
+    room.finishIntermission();
+    assert.equal(room.levelIndex, 5, 'level 1 + a skip of 4 = level 5');
+  } finally { room.close(); }
+});
+
+test('a regular exit still advances the level by 1', () => {
+  const room = makeRoom({ id: 'skip-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    room.startIntermission();
+    room.finishIntermission();
+    assert.equal(room.levelIndex, 2);
+  } finally { room.close(); }
+});
+
+test('every 6th campaign level (after 5 regular ones) is a bonus treasure room, skipping the chest intermission', () => {
+  const room = makeRoom({ id: 'treasure-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    assert.equal(room.isTreasureLevel(6), true);
+    assert.equal(room.isTreasureLevel(5), false);
+    assert.equal(room.isTreasureLevel(12), true);
+
+    room.levelIndex = 5;
+    room.sim.loadLevel(room.levelFor(5), 5);
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    room.startIntermission();
+    room.finishIntermission(); // -> level 6, a treasure room
+
+    assert.equal(room.levelIndex, 6);
+    assert.equal(room.sim.treasureRoom, true, 'level 6 loaded as a treasure room');
+    assert.equal(room.state, 'playing');
+    assert.ok(room.treasureTimer, 'the 30s bonus timer was armed');
+
+    // Clearing the treasure room (finding an exit) skips straight to level 7 with no intermission.
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 3 });
+    assert.equal(room.state, 'playing', 'the level-clear celebration delay has not fired yet');
+    clearTimeout(room.levelChangeTimer); room.levelChangeTimer = null;
+    room.advanceLevel();
+    assert.equal(room.levelIndex, 7);
+    assert.equal(room.state, 'playing', 'went straight back into play, no intermission');
+    assert.equal(room.sim.treasureRoom, false);
+  } finally { room.close(); }
+});
+
+test("the treasure room's timer auto-completes the level with no bonus if nobody finds an exit in time", () => {
+  const room = makeRoom({ id: 'treasure-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.levelIndex = 6;
+    room.sim.loadLevel(room.levelFor(6), 6, { treasureRoom: true });
+    room.state = 'playing';
+    room.startTreasureTimer();
+    assert.ok(room.treasureTimer);
+
+    room.finishTreasureRoom(); // simulates the 30s timeout firing
+    assert.equal(room.levelIndex, 7);
+    assert.equal(room.state, 'playing');
+    assert.equal(room.treasureTimer, null);
+  } finally { room.close(); }
+});
+
+test('Death mode never gets a treasure room, however the levelIndex lines up', () => {
+  const room = new Room({ id: 'no-treasure-death', name: 'D', seed: 'nd1', source: { type: 'death' }, isPublic: true, onEmpty: () => {} });
+  try {
+    for (const n of [6, 12, 30, 60]) assert.equal(room.isTreasureLevel(n), false, `level ${n} in Death mode is never a treasure room`);
+  } finally { room.close(); }
+});
+
 process.on('exit', () => { try { rmSync(process.env.DATA_DIR, { recursive: true, force: true }); } catch {} });

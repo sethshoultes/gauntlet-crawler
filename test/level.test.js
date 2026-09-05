@@ -39,6 +39,26 @@ test('detects unreachable exit and doors without keys', () => {
   assert.deepEqual(validateLevel({ rows: withKey }), []);
 });
 
+test('the new monster/item glyphs are accepted, and the skip-exit (8) counts as an exit', () => {
+  const rows = LEVEL1.rows.slice();
+  // Antechamber row 6 has a stretch of floor around the '2' grunt; swap in the new glyphs.
+  rows[1] = rows[1].slice(0, 20) + '4' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + '5' + rows[2].slice(21);
+  rows[4] = rows[4].slice(0, 20) + '6' + rows[4].slice(21);
+  rows[6] = rows[6].slice(0, 20) + 'X' + rows[6].slice(21);
+  rows[8] = rows[8].slice(0, 20) + '!' + rows[8].slice(21);
+  rows[10] = rows[10].slice(0, 20) + 'C' + rows[10].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+
+  // '8' (the skip-exit variant) is accepted as a tile and satisfies the exit requirement on its own.
+  const withSkipExit = LEVEL1.rows.slice();
+  const exitRow = withSkipExit.findIndex((r) => r.includes('E'));
+  withSkipExit[exitRow] = withSkipExit[exitRow].replace('E', '8');
+  assert.deepEqual(validateLevel({ rows: withSkipExit }), []);
+  const parsed = parseLevel({ rows: withSkipExit });
+  assert.equal(parsed.exits.length, 1, "'8' is recognized as an exit tile");
+});
+
 test('repairLevel fixes borders, missing start/exit and connectivity', () => {
   const broken = { name: 'x', rows: ['..........', '..####....', '..#..#....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
   const fixed = repairLevel(broken);

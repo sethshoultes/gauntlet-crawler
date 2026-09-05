@@ -116,6 +116,36 @@ Optional environment variables:
   either way the room returns to the lobby to run it again. Runs are recorded to their own `death` leaderboard tab
   on the dashboard, separate from campaign high scores, with two Death-specific achievements (*Wave Rider*, *Staring
   Down Death*).
+- **New monster types**: the **Lobber** (tile `4`, generator `l`) keeps 4-7 tiles from its target and lobs an
+  arcing shot every ~2s that flies clean over walls, landing on the target's position at launch time and
+  damaging anyone within 0.8 tiles — the client draws it with a growing-then-shrinking scale to suggest height.
+  The **Sorcerer** (tile `5`, generator `s`) fights like a grunt but blinks — visible 1.5s, invisible 1.0s —
+  and can't be hit by a shot or potion while invisible (drawn at 20% alpha). The **Thief** (tile `6`, no
+  generator) runs down whichever player is carrying a key or potion, steals one on contact, then flees; shoot
+  it and it drops the stolen item on the spot, or it despawns with the loot once 15+ tiles from everyone
+  (*Stop, Thief!* achievement).
+- **Transporters** (tile `X`): step on one and it teleports you to the nearest other transporter in the level
+  (randomly among ties), with a 1s cooldown so you can't instantly ping-pong back — monsters never use them.
+  Twenty-five uses earns the *Teleporter* achievement. **Poison food** (tile `!`) looks just like food but
+  costs 100 health (floored at 1) instead of healing — shooting it is harmless. **Cider** (tile `C`) is a
+  simple +50 health drink; shooting it counts as "shooting the food."
+- **Generator tiers**: a generator's tier (1-3) is derived from the level index (`1 + floor((level-1)/6)`,
+  capped at 3), raising its own hp (3/5/7), the hp bonus it grants monsters it spawns (+0/+1/+2), and the
+  score it's worth when destroyed (×1/×1.5/×2) — shown via the existing tinted `gen1`/`gen2`/`gen3` sprites.
+- **Skip exit** (tile `8`): a rare exit variant (procgen places one ~8% of the time on levels 3+, always in a
+  room far from the start) that jumps the whole party ahead 4 levels instead of 1 — Death mode's rank-gated
+  cap still applies to the level you land on.
+- **Bonus treasure rooms**: every 6th level in any non-Death mode is a generated open vault full of treasure
+  with no monsters and several exits (`generateTreasureRoom` in `shared/procgen.js`) instead of a regular
+  dungeon. A 30s timer runs from the moment it loads; find any exit early or let the timer expire — either
+  way there's no chest intermission afterward. Clearing 5 of them earns the *Bonus Hunter* achievement.
+- **Players block each other**: bumping into a teammate cancels that axis of movement (soft collision within
+  0.7 tiles) so the party can't stack on top of one another — player shots still pass straight through
+  teammates, only movement is blocked.
+- **More narrator lines**: "Save keys for later levels" on your 3rd key of a level, "*Hero*, use magic!" when
+  low on health with potions in reserve, "I've not seen such bravery" clearing a level with zero deaths and
+  30+ kills, a more urgent "*Hero* is about to die" under 100 health, and "Remember, don't shoot food" the
+  second time you shoot food in a level.
 
 ## Settings
 
@@ -181,9 +211,10 @@ both poll it instead of the old `/api/ai/status`.
 Levels are arrays of equal-length strings. Border must be walls; a start `S` and exit `E` are required.
 
 ```
-# wall   . floor   D door   K key   F food   P potion   T treasure   E exit   S start
-g grunt generator   h ghost generator   m demon generator
-1 ghost   2 grunt   3 demon   Z Death   W secret wall
+# wall   . floor   D door   K key   F food   ! poison food (-100 hp)   C cider (+50 hp)
+P potion   T treasure   E exit   8 skip-exit (+4 levels)   S start   X transporter
+g grunt generator   h ghost generator   m demon generator   l lobber generator   s sorcerer generator
+1 ghost   2 grunt   3 demon   4 lobber   5 sorcerer   6 thief (no generator)   Z Death   W secret wall
 ```
 
 ## Architecture

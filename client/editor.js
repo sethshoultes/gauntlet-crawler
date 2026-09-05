@@ -10,7 +10,11 @@ const ED = { w: 32, h: 24, grid: [], name: 'My Dungeon', desc: '', id: null, sou
 const CELL = 20;
 const cv = $('#ecv'); const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = false;
 
-const MON_SPRITE = { [T.GHOST]: 'ghost', [T.GRUNT]: 'grunt', [T.DEMON]: 'demon', [T.DEATH]: 'death' };
+const MON_SPRITE = {
+  [T.GHOST]: 'ghost', [T.GRUNT]: 'grunt', [T.DEMON]: 'demon', [T.DEATH]: 'death',
+  [T.LOBBER]: 'lobber', [T.SORCERER]: 'sorcerer', [T.THIEF]: 'thief',
+};
+const GEN_TILES = new Set([T.GEN_GRUNT, T.GEN_GHOST, T.GEN_DEMON, T.GEN_LOBBER, T.GEN_SORCERER]);
 
 function blank(w, h) {
   const g = [];
@@ -35,7 +39,7 @@ function draw() {
   for (let y = 0; y < ED.h; y++) for (let x = 0; x < ED.w; x++) {
     const c = ED.grid[y][x];
     ctx.drawImage(sprite('floor'), x * CELL, y * CELL, CELL, CELL);
-    if (c === T.GEN_GRUNT || c === T.GEN_GHOST || c === T.GEN_DEMON) ctx.drawImage(sprite('gen3', GEN_TINT[c]), x * CELL, y * CELL, CELL, CELL);
+    if (GEN_TILES.has(c)) ctx.drawImage(sprite('gen3', GEN_TINT[c]), x * CELL, y * CELL, CELL, CELL);
     else if (MON_SPRITE[c]) ctx.drawImage(sprite(MON_SPRITE[c]), x * CELL, y * CELL, CELL, CELL);
     else if (c === T.START) { ctx.drawImage(sprite('hero', '#e03c31'), x * CELL, y * CELL, CELL, CELL); }
     else if (c !== T.FLOOR) ctx.drawImage(sprite(TILE_SPRITE[c] || 'floor'), x * CELL, y * CELL, CELL, CELL);
@@ -47,7 +51,9 @@ function draw() {
 }
 function validate() {
   const problems = validateLevel(current());
-  $('#status').innerHTML = problems.length ? `<span class="problems">⚠ ${esc(problems[0])}</span>` : `<span class="ok">✓ Playable — ${ED.w}×${ED.h}, ${count(T.START)} starts, ${count(T.EXIT)} exits, ${count(T.GEN_GRUNT) + count(T.GEN_GHOST) + count(T.GEN_DEMON)} generators, ${count(T.FOOD)} food, ${count(T.TREASURE)} treasure</span>`;
+  const genCount = count(T.GEN_GRUNT) + count(T.GEN_GHOST) + count(T.GEN_DEMON) + count(T.GEN_LOBBER) + count(T.GEN_SORCERER);
+  const exitCount = count(T.EXIT) + count(T.EXIT_SKIP);
+  $('#status').innerHTML = problems.length ? `<span class="problems">⚠ ${esc(problems[0])}</span>` : `<span class="ok">✓ Playable — ${ED.w}×${ED.h}, ${count(T.START)} starts, ${exitCount} exits, ${genCount} generators, ${count(T.FOOD)} food, ${count(T.TREASURE)} treasure</span>`;
   return problems;
 }
 function count(c) { let n = 0; for (const r of ED.grid) for (const x of r) if (x === c) n++; return n; }
@@ -63,7 +69,7 @@ for (const [c, label] of LEGEND) {
   const b = document.createElement('button'); b.dataset.c = c; b.title = label;
   const cc = document.createElement('canvas'); cc.width = 16; cc.height = 16; cc.className = 'pixel';
   const g = cc.getContext('2d');
-  if (c === T.GEN_GRUNT || c === T.GEN_GHOST || c === T.GEN_DEMON) g.drawImage(sprite('gen3', GEN_TINT[c]), 0, 0);
+  if (GEN_TILES.has(c)) g.drawImage(sprite('gen3', GEN_TINT[c]), 0, 0);
   else if (MON_SPRITE[c]) g.drawImage(sprite(MON_SPRITE[c]), 0, 0);
   else if (c === T.START) g.drawImage(sprite('hero', '#e03c31'), 0, 0);
   else g.drawImage(sprite(TILE_SPRITE[c] || 'floor'), 0, 0);

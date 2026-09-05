@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';
-import { generateLevel } from '../../shared/procgen.js';
+import { generateLevel, generateTreasureRoom } from '../../shared/procgen.js';
 import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
@@ -20,6 +20,7 @@ const WAVE_BANNER_SECONDS = 3;   // "WAVE N" banner shown before a wave's monste
 const WAVE_TIMEOUT_MS = 40000;  // a wave advances automatically after this even if not fully cleared
 const WIPE_GRACE_MS = 10000;    // Death mode: end the run if everyone stays dead this long, uncontested
 const WAVE_SPAWN_MIN_DIST = 6;  // tiles a wave spawn must be from every player
+const TREASURE_ROOM_SECONDS = 30; // bonus level timer (#8) — auto-completes with no bonus at 0
 
 export class Room {
   constructor({ id, name, seed, source = { type: 'campaign' }, isPublic = true, onEmpty }) {
@@ -47,6 +48,8 @@ export class Room {
     this.waveBannerTimer = null;  // "WAVE N" banner delay before monsters actually spawn
     this.waveTimer = null;        // forces the wave to advance after WAVE_TIMEOUT_MS
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
+    this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (#7)
+    this.treasureTimer = null;    // bonus-level 30s auto-complete timer (#8)
     this.sim = new Sim(this.levelFor(1), { levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign' });
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
     this.secondsTimer = setInterval(this.guard('creditTime', () => this.creditTime()), 30000);
@@ -65,12 +68,17 @@ export class Room {
 
   levelFor(n) {
     if (this.source.type === 'death') return generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) });
+    if (this.isTreasureLevel(n)) return generateTreasureRoom({ seed: this.seed, level: n });
     if (n === 1) {
       if (this.source.type === 'custom' && this.source.level) return this.source.level;
       return LEVEL1;
     }
     return generateLevel({ seed: this.seed, level: n });
   }
+
+  /** Bonus level (#8): every 6th level (i.e. after every 5 regular levels) in any non-Death mode
+   *  is a generated treasure room instead — see shared/procgen.js generateTreasureRoom(). */
+  isTreasureLevel(n) { return this.source.type !== 'death' && n > 1 && n % 6 === 0; }
 
   /** Death mode generator bias: arena layout, and monster mix shifting ghost -> grunt -> demon as
    *  the party goes deeper, with a Death appearing every 5th level. */
@@ -436,7 +444,7 @@ export class Room {
     const uidOf = c?.user?.id || null;
     const bump = (k, n = 1) => { if (uidOf && c) this.unlock(c, stats.bump(uidOf, k, n)); };
     switch (e.type) {
-      case 'kill': bump('kills'); bump(`kills_${e.monster}`); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5); break;
+      case 'kill': bump('kills'); bump(`kills_${e.monster}`); if (e.monster === 'thief') bump('thief_kills'); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5); break;
       case 'generator': bump('generators'); this.awardXp(c, uidOf, XP_GENERATOR); break;
       case 'food': bump('food'); if (e.lowHealth) bump('food_low'); break;
       case 'food_shot': bump('food_shot'); break;
@@ -446,6 +454,7 @@ export class Room {
       case 'potion': if (!e.weak) bump('potions'); break;
       case 'death': bump('deaths'); if (c) c.streak = 0; break;
       case 'coin': bump('coins'); break;
+      case 'teleport': bump('teleports'); break;
       case 'exit': this.onLevelComplete(e); break;
     }
   }
@@ -453,10 +462,17 @@ export class Room {
   onLevelComplete(e) {
     if (this.changing) return;
     this.changing = true;
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
+    const wasTreasure = this.sim.treasureRoom;
+    const skipAmt = e.skip === 4 ? 4 : 1; // exit variant '8' jumps the party ahead 4 levels (#7)
+    this.pendingSkip = skipAmt;
     const n = this.clients.size;
+    let totalKills = 0, anyDeaths = false;
     for (const c of this.clients.values()) {
       const p = this.sim.players.get(c.pid);
       if (!p) continue;
+      totalKills += p.levelKills || 0;
+      if (p.levelDeaths > 0) anyDeaths = true;
       if (p.levelDeaths === 0) c.streak++; else c.streak = 0;
       if (!c.user) continue;
       const u = c.user.id;
@@ -466,13 +482,14 @@ export class Room {
       const depthKey = this.source.type === 'death' ? 'deepest_death_level' : 'deepest_level';
       const fresh = [
         ...stats.bump(u, 'levels_cleared'),
-        ...stats.raise(u, depthKey, this.levelIndex + 1),
+        ...stats.raise(u, depthKey, this.levelIndex + skipAmt),
         ...(e.levelTime < SPEEDRUN_SECONDS ? stats.bump(u, 'speed_clears') : []),
         ...(p.levelKills === 0 ? stats.bump(u, 'pacifist_clears') : []),
         ...(n === MAX_PLAYERS ? stats.bump(u, 'squad_clears') : []),
         ...(n === 1 ? stats.bump(u, 'solo_clears') : []),
         ...stats.raise(u, 'no_death_clears', c.streak),
         ...stats.raise(u, 'best_score', p.score),
+        ...(wasTreasure ? stats.bump(u, 'treasure_rooms_cleared') : []),
       ];
       this.unlock(c, fresh);
     }
@@ -485,13 +502,18 @@ export class Room {
       }
     }
     const who = this.clients.get(e.pid);
-    this.broadcast({ t: 'levelclear', by: who?.name || '?', level: this.levelIndex, time: Math.round(e.levelTime), next: this.levelIndex + 1 });
-    // Death mode: clearing the rank-gated cap level ends the run (victory) instead of continuing
-    // into another intermission/level — skip the chest pick entirely.
-    const atCap = this.source.type === 'death' && this.levelIndex >= this.computeDeathCap();
+    this.broadcast({
+      t: 'levelclear', by: who?.name || '?', level: this.levelIndex, time: Math.round(e.levelTime),
+      next: this.levelIndex + skipAmt, kills: totalKills, deaths: anyDeaths ? 1 : 0,
+    });
+    // Death mode: clearing (or skip-jumping past) the rank-gated cap level ends the run (victory)
+    // instead of continuing into another intermission/level — skip the chest pick entirely.
+    const atCap = this.source.type === 'death' && (this.levelIndex + skipAmt) > this.computeDeathCap();
     this.levelChangeTimer = setTimeout(this.guard('level change', () => {
       this.levelChangeTimer = null;
-      if (atCap) this.endRun('cap'); else this.startIntermission();
+      if (atCap) this.endRun('cap');
+      else if (wasTreasure) this.advanceLevel();
+      else this.startIntermission();
     }), LEVEL_CHANGE_DELAY_MS);
   }
 
@@ -586,14 +608,42 @@ export class Room {
     }
     this.broadcast({ t: 'chestsdone' });
     this.chestOffers = new Map(); this.chestPicks = new Map();
-    this.levelIndex++;
-    this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex);
+    this.advanceLevel();
+  }
+
+  /** Load the next level (honoring a pending skip-exit jump — #7) and, if it's a bonus treasure
+   *  room (#8), start its 30s timer. Shared by the normal post-intermission path and the
+   *  no-intermission path a treasure room takes straight from onLevelComplete(). */
+  advanceLevel() {
+    this.levelIndex += this.pendingSkip || 1;
+    this.pendingSkip = 1;
+    const treasure = this.isTreasureLevel(this.levelIndex);
+    this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex, { treasureRoom: treasure });
     this.state = 'playing';
     this.changing = false;
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     this.broadcastRoom();
+    if (treasure) { this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS }); this.startTreasureTimer(); }
     if (this.source.type === 'death') this.startWaves();
+  }
+
+  /** Arm (or re-arm) the bonus-level auto-complete timer. */
+  startTreasureTimer() {
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
+    this.treasureTimer = setTimeout(this.guard('finishTreasureRoom', () => this.finishTreasureRoom()), TREASURE_ROOM_SECONDS * 1000);
+  }
+
+  /** The bonus level's timer ran out with nobody having found an exit: move on with no bonus,
+   *  and — since a treasure room never offers chests — skip the intermission entirely. */
+  finishTreasureRoom() {
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
+    if (this.state !== 'playing' || this.changing || !this.sim.treasureRoom) return;
+    this.changing = true;
+    for (const c of this.clients.values()) if (c.user) this.unlock(c, stats.bump(c.user.id, 'treasure_rooms_cleared'));
+    this.broadcast({ t: 'notice', text: 'Time is up in the treasure vault!' });
+    this.pendingSkip = 1;
+    this.advanceLevel();
   }
 
   // ---------- Death mode: timed waves, rank-gated cap, wipe/cap run-ending ----------
@@ -690,6 +740,7 @@ export class Room {
   endRun(reason) {
     if (this.state !== 'playing') return;
     this.clearWaveTimers();
+    if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
     this.waveMonsterIds = null;
     this.allDeadSince = null;
     const cap = this.computeDeathCap();
@@ -736,6 +787,7 @@ export class Room {
     if (this.levelChangeTimer) clearTimeout(this.levelChangeTimer);
     if (this.intermissionTimer) clearInterval(this.intermissionTimer);
     if (this.intermissionEndTimer) clearTimeout(this.intermissionEndTimer);
+    if (this.treasureTimer) clearTimeout(this.treasureTimer);
     this.clearWaveTimers();
     for (const c of this.clients.values()) { if (c.awayTimer) clearTimeout(c.awayTimer); this.send(c, { t: 'kicked', reason: 'Room closed' }); }
     this.onEmpty?.(this);

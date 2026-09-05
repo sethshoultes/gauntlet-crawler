@@ -37,6 +37,9 @@ export const ACHIEVEMENTS = [
   { id: 'cursed',           name: 'Cursed',                 icon: '💀', stat: 'cursed_chests',      threshold: 5,    desc: 'Open 5 cursed chests.' },
   { id: 'wave_rider',       name: 'Wave Rider',             icon: '🌊', stat: 'waves_cleared',      threshold: 50,   desc: 'Clear 50 Death mode waves.' },
   { id: 'death_10',         name: 'Staring Down Death',     icon: '☠️', stat: 'deepest_death_level', threshold: 10,   desc: 'Reach level 10 in Death mode.' },
+  { id: 'stop_thief',       name: 'Stop, Thief!',           icon: '👮', stat: 'thief_kills',        threshold: 5,    desc: 'Kill 5 thieves before they escape with your loot.' },
+  { id: 'teleporter',       name: 'Teleporter',             icon: '🌀', stat: 'teleports',          threshold: 25,   desc: 'Use 25 transporters.' },
+  { id: 'bonus_hunter',     name: 'Bonus Hunter',           icon: '💎', stat: 'treasure_rooms_cleared', threshold: 5, desc: 'Clear 5 bonus treasure rooms.' },
 ];
 
 export const ACHIEVEMENT_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));

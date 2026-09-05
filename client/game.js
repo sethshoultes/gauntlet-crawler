@@ -126,6 +126,9 @@ const G = {
   inRoom: false, reconnecting: false, reconnectAttempts: 0, reconnectTimer: null,
   intermission: null, // { seconds, startedAt, totalMs, chests, picks:Map<pid,chest>, myPick, rects[] }
   sealed: false, // Death mode: exit tile is impassable-for-completion until all of a level's waves clear
+  bonus: null, // { total, startedAt } — treasure-room countdown (see 'bonus' message)
+  keyCount: 0, foodShotCount: 0, // per-level narrator counters
+  lastMagicNag: 0, lastDying: 0, // narrator rate-limit timestamps
 };
 // exposed for manual/E2E debugging only — not used by the game itself
 window.__gc = {
@@ -218,10 +221,17 @@ function onMessage(m) {
       break;
     case 'level':
       G.level = m; G.grid = m.rows.map((r) => r.split(''));
-      G.prev = G.cur = null; G.fx = []; G.sealed = !!m.sealed;
+      G.prev = G.cur = null; G.fx = []; G.sealed = !!m.sealed; G.bonus = null;
+      G.keyCount = 0; G.foodShotCount = 0;
       G.overlay = { kind: 'level', title: `LEVEL ${m.index}`, sub: m.name, until: performance.now() + 2500 };
       log(`<span class="n">Level ${m.index}: ${esc(m.name)}</span> <span class="muted">${esc(m.description || '')}</span>`);
       if (m.index > 1) say(`Let's see how you do in level ${m.index}`);
+      sfx('level');
+      break;
+    case 'bonus':
+      G.bonus = { total: m.seconds, startedAt: performance.now() };
+      G.overlay = { kind: 'bonus', title: 'BONUS ROUND!', sub: 'Grab treasure — any exit will do', until: performance.now() + 2500 };
+      log('<span class="n">Bonus treasure room! Grab everything before time runs out.</span>');
       sfx('level');
       break;
     case 'wave':
@@ -267,6 +277,7 @@ function onMessage(m) {
       break;
     case 'levelclear':
       G.overlay = { kind: 'clear', title: 'LEVEL CLEARED', sub: `${m.by} found the exit in ${m.time}s`, until: performance.now() + 2500 };
+      if (!m.deaths && m.kills >= 30) say("I've not seen such bravery");
       sfx('clear'); break;
     case 'chests':
       G.intermission = {
@@ -301,9 +312,21 @@ function onEvent(e) {
     case 'tile': if (G.grid) G.grid[e.y][e.x] = e.c; if (e.c === '.') G.fx.push({ kind: 'puff', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); break;
     case 'kill': G.fx.push({ kind: 'die', x: e.x, y: e.y, t: 0, m: e.monster }); if (mine) sfx('kill'); break;
     case 'generator': G.fx.push({ kind: 'boom', x: e.x + 0.5, y: e.y + 0.5, t: 0 }); sfx('boom'); if (mine) G.shake = 0.3; break;
-    case 'pickup': if (mine) { sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : e.item === 'F' ? 'eat' : 'pick'); } break;
+    case 'pickup':
+      if (mine) {
+        sfx(e.item === 'T' ? 'coin' : e.item === 'K' ? 'key' : (e.item === 'F' || e.item === 'C') ? 'eat' : 'pick');
+        if (e.item === 'K') { G.keyCount++; if (G.keyCount === 3) say('Save keys for later levels'); }
+      }
+      break;
     case 'food': if (mine && e.lowHealth) say(`${CLASSES[cls]?.name} was about to die… saved by food`); break;
-    case 'food_shot': log(`<span class="n">${esc(name)} shot the food!</span>`); if (mine) { say("Don't shoot the food!"); sfx('bad'); } break;
+    case 'poison': log(`<span class="n">${esc(name)} ate poisoned food!</span>`); if (mine) { sfx('bad'); say('That was poisoned!'); } break;
+    case 'steal': log(`<span class="n">A thief stole ${e.item === 'potion' ? 'a potion' : 'a key'} from ${esc(name)}!</span>`); if (mine) sfx('bad'); break;
+    case 'teleport': if (mine) sfx('magic'); break;
+    case 'lob_land': G.fx.push({ kind: 'boom', x: e.x, y: e.y, t: 0 }); if (Math.random() < 0.7) sfx('boom'); break;
+    case 'food_shot':
+      log(`<span class="n">${esc(name)} shot the food!</span>`);
+      if (mine) { G.foodShotCount++; sfx('bad'); say(G.foodShotCount === 2 ? "Remember, don't shoot food" : "Don't shoot the food!"); }
+      break;
     case 'door': sfx('door'); break;
     case 'secret': log(`<span class="n">${esc(name)} found a secret wall</span>`); sfx('door'); break;
     case 'potion': G.fx.push({ kind: 'magic', x: e.x, y: e.y, r: e.radius, t: 0 }); sfx('magic'); G.shake = 0.4; break;
@@ -540,10 +563,17 @@ function frame(now) {
     let name = TILE_SPRITE[c];
     if (!name) name = 'floor';
     if (name !== 'wall' && name !== 'floor' && name !== 'trap') ctx.drawImage(sprite('floor'), x * TS, y * TS, TS, TS);
-    if (c === 'g' || c === 'h' || c === 'm') {
+    if (c === 'g' || c === 'h' || c === 'm' || c === 'l' || c === 's') {
       const g = snap.g.find((gg) => gg[0] === x && gg[1] === y);
       const hp = g ? g[2] : 3;
       ctx.drawImage(sprite('gen' + Math.max(1, Math.min(3, hp)), GEN_TINT[c]), x * TS, y * TS, TS, TS);
+      continue;
+    }
+    if (c === 'X') {
+      // transporter: pulse in size to draw the eye
+      const pulse = 0.82 + 0.18 * Math.sin(now / 220 + x * 3 + y);
+      const cx = x * TS + TS / 2, cy = y * TS + TS / 2;
+      ctx.drawImage(sprite(name), cx - (TS * pulse) / 2, cy - (TS * pulse) / 2, TS * pulse, TS * pulse);
       continue;
     }
     ctx.drawImage(sprite(name), x * TS, y * TS, TS, TS);
@@ -560,16 +590,25 @@ function frame(now) {
     const name = SHOT_SPRITE[b[4]] || 'fireball';
     const px = b[1] * TS, py = b[2] * TS;
     ctx.save(); ctx.translate(px, py);
-    if (name === 'axe') ctx.rotate(now / 60); else ctx.rotate((b[3] - 2) * Math.PI / 4);
-    ctx.drawImage(sprite(name), -TS / 2, -TS / 2, TS, TS);
+    if (b[4] === 'a' && b[5] != null) {
+      // lobber's arcing shot: grows then shrinks across its flight to suggest height
+      const prog = b[5]; const scale = 1 + Math.sin(prog * Math.PI) * 0.9;
+      ctx.drawImage(sprite(name), (-TS * scale) / 2, (-TS * scale) / 2, TS * scale, TS * scale);
+    } else {
+      if (name === 'axe') ctx.rotate(now / 60); else ctx.rotate((b[3] - 2) * Math.PI / 4);
+      ctx.drawImage(sprite(name), -TS / 2, -TS / 2, TS, TS);
+    }
     ctx.restore();
   }
   // monsters
-  const MNAME = { g: 'ghost', r: 'grunt', d: 'demon', e: 'death' };
+  const MNAME = { g: 'ghost', r: 'grunt', d: 'demon', e: 'death', l: 'lobber', s: 'sorcerer', t: 'thief' };
   for (const m of snap.m) {
     const name = MNAME[m[1]] || 'ghost';
     const bob = name === 'ghost' ? Math.sin(now / 150 + m[0]) * 2 : (Math.floor(now / 200 + m[0]) % 2) * 1;
+    const invisible = m[5] === 1;
+    if (invisible) ctx.globalAlpha = 0.2;
     drawEntity(sprite(name), m[2], m[3], m[4], bob);
+    if (invisible) ctx.globalAlpha = 1;
   }
   // players
   for (const p of snap.p) {
@@ -612,8 +651,16 @@ function frame(now) {
     ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, VIEW_H - 90, VIEW_W, 90);
     ctx.fillStyle = '#e03c31'; ctx.font = 'bold 26px monospace'; ctx.textAlign = 'center'; ctx.fillText('YOU HAVE DIED', VIEW_W / 2, VIEW_H - 52);
     if (Math.floor(now / 500) % 2) { ctx.fillStyle = '#f2c400'; ctx.font = '14px monospace'; ctx.fillText('INSERT COIN — press ENTER to continue', VIEW_W / 2, VIEW_H - 24); }
-  } else if (mine && mine[4] < LOW_HEALTH && now - G.lastFood > 12000) {
-    G.lastFood = now; say(`${CLASSES[G.players.get(G.pid)?.cls]?.name || 'Hero'} needs food badly`);
+  } else if (mine && !mine[8]) {
+    const heroName = CLASSES[G.players.get(G.pid)?.cls]?.name || 'Hero';
+    if (mine[4] < 100 && now - G.lastDying > 8000) { G.lastDying = now; say(`${heroName} is about to die`); }
+    else if (mine[4] < LOW_HEALTH && now - G.lastFood > 12000) { G.lastFood = now; say(`${heroName} needs food badly`); }
+    else if (mine[4] < 300 && mine[6] > 0 && now - G.lastMagicNag > 15000) { G.lastMagicNag = now; say(`${heroName}, use magic!`); }
+  }
+  if (G.bonus) {
+    const remain = Math.max(0, G.bonus.total * 1000 - (now - G.bonus.startedAt));
+    ctx.fillStyle = '#f2c400'; ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(`BONUS: ${Math.ceil(remain / 1000)}s`, VIEW_W / 2, 20);
   }
   if (G.intermission) drawIntermission(now);
   updateHudValues(G.cur);

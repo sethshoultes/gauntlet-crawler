@@ -1,4 +1,4 @@
-import { T, ALL_TILES, SOLID_TILES } from './constants.js';
+import { T, ALL_TILES, SOLID_TILES, EXIT_TILES } from './constants.js';
 
 export const MIN_SIZE = 12;
 export const MAX_SIZE = 64;
@@ -21,7 +21,7 @@ export function parseLevel(raw) {
   const exits = [];
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     if (rows[y][x] === T.START) starts.push([x, y]);
-    if (rows[y][x] === T.EXIT) exits.push([x, y]);
+    if (EXIT_TILES.has(rows[y][x])) exits.push([x, y]);
   }
   if (starts.length === 0) throw new Error('level has no start (S) tile');
   if (exits.length === 0) throw new Error('level has no exit (E) tile');
@@ -57,7 +57,7 @@ export function exitReachable(lvl) {
   seen[starts[0][1] * w + starts[0][0]] = 1;
   while (q.length) {
     const [x, y] = q.shift();
-    if (rows[y][x] === T.EXIT) return true;
+    if (EXIT_TILES.has(rows[y][x])) return true;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
@@ -75,7 +75,7 @@ export function exitReachable(lvl) {
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */
 export function repairLevel(raw) {
-  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW]/g, '.'));
+  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8]/g, '.'));
   rows = rows.filter((r) => r.length > 0);
   let w = Math.max(...rows.map((r) => r.length), MIN_SIZE);
   w = Math.min(w, MAX_SIZE);
@@ -115,7 +115,12 @@ export function isSolid(c) { return SOLID_TILES.has(c); }
 
 export const LEGEND = [
   [T.WALL, 'Wall'], [T.FLOOR, 'Floor'], [T.DOOR, 'Door (needs key)'], [T.KEY, 'Key'], [T.FOOD, 'Food (+100 health)'],
-  [T.POTION, 'Magic potion'], [T.TREASURE, 'Treasure'], [T.EXIT, 'Exit'], [T.START, 'Player start'],
+  [T.POISON_FOOD, 'Poison food (-100 health, looks like food)'], [T.CIDER, 'Cider (+50 health)'],
+  [T.POTION, 'Magic potion'], [T.TREASURE, 'Treasure'], [T.EXIT, 'Exit'], [T.EXIT_SKIP, 'Skip exit (jumps ahead 4 levels)'],
+  [T.START, 'Player start'], [T.TRANSPORTER, 'Transporter (teleports to another one)'],
   [T.GEN_GRUNT, 'Grunt generator'], [T.GEN_GHOST, 'Ghost generator'], [T.GEN_DEMON, 'Demon generator'],
-  [T.GHOST, 'Ghost'], [T.GRUNT, 'Grunt'], [T.DEMON, 'Demon'], [T.DEATH, 'Death'], [T.TRAP, 'Secret wall (crumbles when a player touches it)'],
+  [T.GEN_LOBBER, 'Lobber generator'], [T.GEN_SORCERER, 'Sorcerer generator'],
+  [T.GHOST, 'Ghost'], [T.GRUNT, 'Grunt'], [T.DEMON, 'Demon'], [T.DEATH, 'Death'],
+  [T.LOBBER, 'Lobber'], [T.SORCERER, 'Sorcerer'], [T.THIEF, 'Thief'],
+  [T.TRAP, 'Secret wall (crumbles when a player touches it)'],
 ];

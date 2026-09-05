@@ -63,7 +63,11 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
     if (g[sy + dy]?.[sx + dx] === T.FLOOR) g[sy + dy][sx + dx] = T.START;
   }
   if (g[sy][sx] !== T.START) g[sy][sx] = T.START;
-  g[exitRoom.cy][exitRoom.cx] = T.EXIT;
+  // Skip exit (#7): on deeper levels, a small chance the exit becomes a variant that jumps the
+  // party ahead 4 levels instead of 1 (see server/game/room.js onLevelComplete). exitRoom is
+  // already the farthest-apart room from the start, satisfying "in a room far from the start".
+  const skipExit = diff >= 3 && rng.chance(0.08);
+  g[exitRoom.cy][exitRoom.cx] = skipExit ? T.EXIT_SKIP : T.EXIT;
 
   // 4. Doors guarding the exit room + keys elsewhere
   const doorCount = diff >= 3 ? rng.int(1, 2) : rng.int(0, 1);
@@ -90,23 +94,41 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   place(T.FOOD, foodN);
   place(T.TREASURE, treasureN);
   place(T.POTION, rng.int(1, 1 + Math.floor(diff / 3)));
+  // Poison food (looks like food, costs health) and cider (+50 health) — rare, more common when
+  // the prompt calls for them.
+  const poisonN = clamp((bias.poison ? rng.int(1, 2) : 0) + (diff >= 5 && rng.chance(0.2 + diff * 0.01) ? 1 : 0), 0, 3);
+  const ciderN = clamp((bias.cider ? rng.int(1, 2) : 0) + (rng.chance(0.25) ? 1 : 0), 0, 3);
+  place(T.POISON_FOOD, poisonN);
+  place(T.CIDER, ciderN);
+  // Transporter pair (#4): teleports the party between two spots. Two X tiles must be placed
+  // together, or not at all.
+  if (diff >= 2 && rng.chance(0.15 + diff * 0.005 + (bias.teleport ? 0.3 : 0)) && cells.length >= 2) {
+    place(T.TRANSPORTER, 2);
+  }
 
   // 6. Generators and monsters — an arena packs in noticeably more generators than a normal dungeon
   const monsterScale = 1 + (bias.monsters ?? 0) * 0.5;
   const genN = clamp(Math.round((2 + diff * 0.6) * monsterScale * (arena ? 1.8 : 1)), 1, arena ? 26 : 14);
   const genPool = [];
   const wGhost = 3 + (bias.ghost ?? 0) * 4, wGrunt = 3 + (bias.grunt ?? 0) * 4, wDemon = Math.max(0, diff - 2) * 0.8 + (bias.demon ?? 0) * 4;
-  for (let i = 0; i < genN; i++) {
-    const r = rng.next() * (wGhost + wGrunt + wDemon);
-    genPool.push(r < wGhost ? T.GEN_GHOST : r < wGhost + wGrunt ? T.GEN_GRUNT : T.GEN_DEMON);
-  }
+  const wLobber = diff >= 3 ? 2 + (bias.lobber ?? 0) * 4 : 0;
+  const wSorcerer = diff >= 2 ? 2 + (bias.sorcerer ?? 0) * 4 : 0;
+  const genWeights = [[T.GEN_GHOST, wGhost], [T.GEN_GRUNT, wGrunt], [T.GEN_DEMON, wDemon], [T.GEN_LOBBER, wLobber], [T.GEN_SORCERER, wSorcerer]];
+  const monsterWeights = [[T.GHOST, wGhost], [T.GRUNT, wGrunt], [T.DEMON, wDemon], [T.LOBBER, wLobber], [T.SORCERER, wSorcerer]];
+  const weightedTile = (weights) => {
+    const total = weights.reduce((s, [, w]) => s + w, 0);
+    let r = rng.next() * total;
+    for (const [tile, w] of weights) { r -= w; if (r <= 0) return tile; }
+    return weights[weights.length - 1][0];
+  };
+  for (let i = 0; i < genN; i++) genPool.push(weightedTile(genWeights));
   for (const c of genPool) place(c, 1);
   const looseN = clamp(Math.round((3 + diff * 1.2) * monsterScale), 2, 30);
-  for (let i = 0; i < looseN; i++) {
-    const r = rng.next() * (wGhost + wGrunt + wDemon);
-    place(r < wGhost ? T.GHOST : r < wGhost + wGrunt ? T.GRUNT : T.DEMON, 1);
-  }
+  for (let i = 0; i < looseN; i++) place(weightedTile(monsterWeights), 1);
   if ((diff >= 6 && rng.chance(0.15 + diff * 0.01)) || bias.death) place(T.DEATH, 1);
+  // Thief: loose only, never from a generator. Rare, more likely when asked for or deeper.
+  const thiefChance = (bias.thief ? 0.35 : 0) + (diff >= 4 ? 0.1 + diff * 0.005 : 0);
+  if (rng.chance(clamp(thiefChance, 0, 0.6))) place(T.THIEF, 1);
 
   // 7. Secret walls: turn a few dead-end wall tiles next to floors into W
   if (diff >= 2) {
@@ -144,7 +166,37 @@ export function biasFromPrompt(prompt = '') {
     grunt: has('grunt', 'orc', 'brute', 'warband') ? 1 : 0,
     demon: has('demon', 'hell', 'inferno', 'fire', 'lava') ? 1 : 0,
     death: has('death', 'reaper', 'grim') ? 1 : 0,
+    lobber: has('lobber', 'lob', 'catapult', 'mortar') ? 1 : 0,
+    sorcerer: has('sorcerer', 'sorcery', 'wizard', 'mage', 'witch') ? 1 : 0,
+    thief: has('thief', 'steal', 'rogue', 'bandit') ? 1 : 0,
+    teleport: has('teleport', 'transporter', 'portal', 'warp') ? 1 : 0,
+    poison: has('poison', 'toxic', 'venom', 'venomous') ? 1 : 0,
+    cider: has('cider', 'ale', 'mead', 'tavern', 'drink') ? 1 : 0,
   };
+}
+
+/** Bonus level (#8): an open room full of treasure, no monsters, several exits. See
+ *  server/game/room.js — after every 5th campaign level, levelFor() returns this instead of a
+ *  regular generated level; Sim.loadLevel({treasureRoom:true}) starts a 30s auto-complete timer. */
+export function generateTreasureRoom({ seed, level = 1 } = {}) {
+  const rng = makeRng(hashSeed(`treasure:${seed}:${level}`));
+  const w = 22, h = 16;
+  const g = Array.from({ length: h }, () => Array(w).fill(T.TREASURE));
+  for (let x = 0; x < w; x++) { g[0][x] = T.WALL; g[h - 1][x] = T.WALL; }
+  for (let y = 0; y < h; y++) { g[y][0] = T.WALL; g[y][w - 1] = T.WALL; }
+  const midY = h >> 1;
+  g[midY][1] = T.START; g[midY][2] = T.START;
+  g[midY - 1][1] = T.START; g[midY + 1][1] = T.START;
+  const exitSpots = rng.shuffle([[w - 2, 2], [w - 2, midY], [w - 2, h - 3], [w >> 1, h - 2], [w >> 1, 2]]).slice(0, rng.int(3, 4));
+  for (const [ex, ey] of exitSpots) g[ey][ex] = T.EXIT;
+  let lvl = {
+    name: 'Treasure Vault',
+    description: `Grab everything before the ${30}s timer runs out — any exit will do.`,
+    rows: g.map((r) => r.join('')),
+  };
+  if (!exitReachable(parseLevel(lvl))) lvl = repairLevel(lvl);
+  if (validateLevel(lvl).length) lvl = repairLevel(lvl);
+  return lvl;
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
