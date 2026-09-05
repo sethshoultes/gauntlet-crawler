@@ -5,6 +5,8 @@ services:
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GAUNTLET_AI_MODEL: ${GAUNTLET_AI_MODEL:-claude-opus-5}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
     volumes:
       - gauntlet-data:/data
     expose:

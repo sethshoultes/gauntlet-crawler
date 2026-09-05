@@ -11,9 +11,12 @@
     "smoke": "node test/smoke.mjs",
     "e2e": "node test/e2e.mjs"
   },
-  "engines": { "node": ">=22.5" },
+  "engines": {
+    "node": ">=22.5"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",
+    "@sentry/node": "10.73.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

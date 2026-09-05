@@ -28,6 +28,7 @@ test('GET /api/health has the documented shape and needs no auth', async () => {
     assert.equal(typeof body.rooms, 'number');
     assert.equal(typeof body.players, 'number');
     assert.equal(typeof body.version, 'string');
+    assert.equal(body.sentry, false, 'SENTRY_DSN is unset in tests, so this must report disabled');
   });
 });
 

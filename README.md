@@ -426,6 +426,35 @@ tab of `/admin.html`.
 monitoring and container health checks — `deploy/deploy.sh` and the `Dockerfile`'s `HEALTHCHECK`
 both poll it.
 
+### Error reporting
+
+Optional forwarding to [Sentry](https://sentry.io) (or any Sentry-compatible DSN endpoint) sits
+behind `SENTRY_DSN` (`server/sentry.js`). Unset (the default), `@sentry/node` is never imported and
+nothing changes: the first-party `errors` table above remains the only sink. Set it, and:
+
+- **Setup**: set `SENTRY_DSN` to your project's DSN (`deploy/.env.example` has a template; the
+  `docker-compose.yml` `app` service passes both `SENTRY_DSN` and the optional `SENTRY_ENVIRONMENT`
+  through). No code change or restart-time flag needed beyond that — `server/log.js` `error()` and
+  `POST /api/client-errors` pick it up automatically.
+- **What's sent**: every `level: 'error'` line already destined for the `errors` table (server-side
+  failures, plus browser errors reported via `window.onerror`/`unhandledrejection` in
+  `client/common.js`) is *also* forwarded as one Sentry event, tagged `source: 'server'` or
+  `source: 'client'`. The first-party table write always happens first and is unaffected by
+  whether Sentry forwarding succeeds, fails, or is disabled.
+- **Scrubbing**: forwarded events never include Authorization headers, session tokens, cookies,
+  passwords, or raw IP addresses — any field whose key matches `/token|authorization|cookie
+  |password|ip/i`, at any depth, is stripped before the event is queued (`scrub()`/`beforeSend` in
+  `server/sentry.js`, unit-tested in `test/sentry.test.js`). A client error's User-Agent is reduced
+  to a coarse browser family (`Chrome`/`Firefox`/`Safari`/`Edge`/`Other`) rather than sent raw, and
+  no username or user identity is attached to the event.
+- **No source maps**: there's no build step, so stack traces already reference the exact files
+  served over HTTP — source maps don't apply here.
+- **Client-side**: no browser Sentry SDK is loaded from a CDN, even when `GET /api/health` reports
+  `sentry: true` — this app is meant to keep working fully offline/first-party, and that would add
+  a third-party script origin plus its own network calls straight from the browser. The existing
+  `POST /api/client-errors` beacon (`client/common.js`) is unchanged; the *server* decides whether
+  to additionally forward each one to Sentry.
+
 **WebSocket protocol hardening**: the `/ws` server caps incoming message size (`maxPayload: 16KB`
 — every legitimate message on this protocol is tiny, and chat text alone is already capped at 200
 chars server-side) so a single hostile client can't force a huge allocation per message. Every
@@ -515,6 +544,8 @@ Optional environment variables:
 | `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
 | `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Takes precedence over any previously-persisted salt when set; auto-generated and persisted if unset — see [Privacy](#privacy) |
+| `SENTRY_DSN` | Enables forwarding server and client errors to Sentry (or a compatible DSN endpoint). Unset means Sentry is never imported and the first-party `errors` table is the only sink — see [Error reporting](#error-reporting) |
+| `SENTRY_ENVIRONMENT` | Environment name tagged on forwarded Sentry events (default `production`). No effect when `SENTRY_DSN` is unset |
 | `GAUNTLET_DEBUG` | Set to `1` to arm test-only hooks (below). Never set this in production |
 
 **Debug hooks** (only reachable when `GAUNTLET_DEBUG=1`, otherwise a plain 404/no-op — these are

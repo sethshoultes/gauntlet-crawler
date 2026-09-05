@@ -20,6 +20,7 @@ import * as admin from './admin.js';
 import * as account from './account.js';
 import * as telemetry from './telemetry.js';
 import * as log from './log.js';
+import { enabled as sentryEnabled } from './sentry.js';
 import { heartbeat } from './ws-heartbeat.js';
 import * as heroes from './heroes.js';
 
@@ -112,6 +113,9 @@ async function api(req, res, url) {
     return json(res, 200, {
       ok: true, uptime: process.uptime(), rooms: rooms.length,
       players: rooms.reduce((n, r) => n + r.playerCount, 0), version: PKG.version,
+      // Informational only -- the client keeps using the same POST /api/client-errors beacon
+      // either way (see client/common.js); this just lets an operator confirm SENTRY_DSN took.
+      sentry: sentryEnabled(),
     });
   }
 

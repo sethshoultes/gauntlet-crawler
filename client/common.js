@@ -52,6 +52,13 @@ export function track(kind, data) {
 }
 
 // ---- client-side error reporting (server/log.js `errors` table) ----
+// Deliberately no browser Sentry SDK loaded from a CDN here, even when GET /api/health reports
+// `sentry: true` (see server/index.js / server/sentry.js) -- this app has no build step and is
+// meant to keep working fully offline/first-party, and a browser SDK would mean an extra
+// third-party script origin plus its own network calls straight from the client. Instead the
+// existing beacon below (POST /api/client-errors, unchanged) is the only path; the *server*
+// decides whether to additionally forward it to Sentry (server/log.js `error()` -> server/sentry.js
+// `captureError()`), tagged `source: 'client'`.
 const seenClientErrors = new Set();
 function reportClientError(message, stack) {
   const key = String(message || 'Error').slice(0, 300);
