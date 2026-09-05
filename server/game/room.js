@@ -99,7 +99,7 @@ export class Room {
         ? { id: this.source.levelId || null, name: this.source.level.name } : null,
       customName: this.source.level?.name || null, public: this.isPublic, hostPid: this.hostPid,
       roster: [...this.clients.values()].map((c) => ({
-        pid: c.pid, name: c.name, cls: c.cls, rank: c.rank, title: c.title,
+        pid: c.pid, name: c.name, cls: c.cls, palette: c.palette, rank: c.rank, title: c.title,
         ready: !!c.ready, away: !!c.away, host: c.pid === this.hostPid,
       })),
     };
@@ -163,13 +163,21 @@ export class Room {
   }
 
   // ---------- joining / reconnecting ----------
-  join(ws, { pid, user, name, cls, resume, palette }) {
+  /** Guest identity token: 16 random bytes as lowercase hex (32 chars). Issued once per guest on
+   *  their first join and echoed back on every later one so a host kick can durably block them —
+   *  this is the only thing it is ever used for; it grants no other trust. */
+  isValidGuestId(id) { return typeof id === 'string' && /^[0-9a-f]{32}$/.test(id); }
+
+  join(ws, { pid, user, name, cls, resume, palette, guestId }) {
     if (resume) {
       const c = this.resume(ws, resume);
       if (c) return c;
     }
     if (this.full) throw new Error('Room is full');
     if (user && this.kickedIds.has('u' + user.id)) throw new Error('You were removed from this room');
+    const requestedGuestId = this.isValidGuestId(guestId) ? guestId : null;
+    if (!user && requestedGuestId && this.kickedIds.has('g' + requestedGuestId)) throw new Error('You were removed from this room');
+    const finalGuestId = user ? null : (requestedGuestId || crypto.randomBytes(16).toString('hex'));
     let rank = null, title = null, perks = null;
     if (user) {
       rank = rankForXp(stats.getStats(user.id).xp || 0);
@@ -178,16 +186,17 @@ export class Room {
     }
     const picked = this.pickHero(user, cls, palette);
     const c = {
-      ws, pid, user, name, cls: picked.cls, palette: picked.palette, joinedAt: Date.now(), streak: 0, rank, title, perks,
+      ws, pid, user, name, cls: picked.cls, palette: picked.palette, guestId: finalGuestId, joinedAt: Date.now(), streak: 0, rank, title, perks,
       ready: false, away: false, awaySince: null, awayTimer: null, resume: crypto.randomBytes(8).toString('hex'),
     };
     this.clients.set(pid, c);
     if (!this.hostPid) this.hostPid = pid;
     this.emptySince = null;
     if (this.state !== 'lobby') this.enterGame(c);
-    this.send(c, { t: 'welcome', pid, resume: c.resume, room: this.info() });
+    this.send(c, { t: 'welcome', pid, resume: c.resume, guestId: c.guestId || undefined, room: this.info() });
     if (picked.error) this.send(c, { t: 'error', error: picked.error });
     if (this.state !== 'lobby') this.send(c, this.sim.levelPacket());
+    if (this.state === 'intermission') this.offerChestsTo(c);
     this.broadcastRoom();
     if (this.state !== 'lobby') this.broadcast(this.playersPacket());
     this.broadcast({ t: 'notice', text: `${name} the ${cap(picked.cls)} enters the dungeon` });
@@ -201,7 +210,7 @@ export class Room {
       if (c.away && c.resume === token) {
         if (c.awayTimer) { clearTimeout(c.awayTimer); c.awayTimer = null; }
         c.ws = ws; c.away = false; c.awaySince = null;
-        this.send(c, { t: 'welcome', pid: c.pid, resume: c.resume, room: this.info(), resumed: true });
+        this.send(c, { t: 'welcome', pid: c.pid, resume: c.resume, guestId: c.guestId || undefined, room: this.info(), resumed: true });
         if (this.state !== 'lobby') this.send(c, this.sim.levelPacket());
         if (this.state === 'intermission' && !this.chestPicks.has(c.pid)) {
           const chests = this.chestOffers.get(c.pid);
@@ -326,6 +335,7 @@ export class Room {
     const c = this.clients.get(targetPid);
     if (!c) return;
     if (c.user) this.kickedIds.add('u' + c.user.id);
+    else if (c.guestId) this.kickedIds.add('g' + c.guestId);
     this.send(c, { t: 'kicked', reason: 'Removed by the host' });
     this.leave(targetPid);
   }
@@ -486,6 +496,18 @@ export class Room {
   }
 
   // ---------- chest intermission ----------
+  /** Roll and send one player's hidden chest offer from the same seeded scheme (room seed +
+   *  level index + pid) — used both to open the intermission for everyone already in the room
+   *  and for a player who joins/resumes mid-intermission (#9, see join()/resume() above). Requires
+   *  a sim entity to exist for them (enterGame() must already have run). */
+  offerChestsTo(c) {
+    if (!this.sim.players.has(c.pid)) return;
+    const rng = makeRng(`${this.seed}|${this.levelIndex}|${c.pid}`);
+    const chests = rollChests(rng, this.levelIndex);
+    this.chestOffers.set(c.pid, chests);
+    this.send(c, { t: 'chests', seconds: this.intermissionSeconds, chests: chests.map((ch) => ({ id: ch.id, label: '???', icon: '📦' })) });
+  }
+
   /** Roll three hidden chest offers per player and open the pick window. */
   startIntermission() {
     if (this.levelChangeTimer) { clearTimeout(this.levelChangeTimer); this.levelChangeTimer = null; }
@@ -493,16 +515,9 @@ export class Room {
     this.intermissionEnding = false;
     this.chestOffers = new Map();
     this.chestPicks = new Map();
-    for (const c of this.clients.values()) {
-      const p = this.sim.players.get(c.pid);
-      if (!p) continue;
-      const rng = makeRng(`${this.seed}|${this.levelIndex}|${c.pid}`);
-      const chests = rollChests(rng, this.levelIndex);
-      this.chestOffers.set(c.pid, chests);
-      this.send(c, { t: 'chests', seconds: INTERMISSION_SECONDS, chests: chests.map((ch) => ({ id: ch.id, label: '???', icon: '📦' })) });
-    }
-    this.broadcastRoom();
     this.intermissionSeconds = INTERMISSION_SECONDS;
+    for (const c of this.clients.values()) this.offerChestsTo(c);
+    this.broadcastRoom();
     this.intermissionTimer = setInterval(this.guard('intermission tick', () => {
       this.intermissionSeconds--;
       if (this.intermissionSeconds <= 0) {

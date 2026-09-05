@@ -230,7 +230,7 @@ wss.on('connection', (ws, req) => {
             if (resumed) { pid = resumed.pid; room = target; break; }
           }
           if (!target) target = msg.create ? lobby.create({ name: msg.roomName, isPublic: msg.public !== false }) : lobby.quick();
-          target.join(ws, { pid, user, name, cls, palette: msg.palette || null });
+          target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null });
           room = target;
           break;
         }

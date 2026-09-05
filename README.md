@@ -66,8 +66,10 @@ Optional environment variables:
 - **Authoritative server simulation** at 20 Hz over WebSockets; clients send input, receive compact snapshots and interpolate.
 - **Rooms** of up to four players, public room list, quick play, deep links (`/?room=ID`), in-game chat.
 - **Pre-game room screen**: ready-up, host-only start (gated on all-ready, or auto-start on a 5s countdown), host settings
-  (campaign vs. a published custom level, private/public), hero switching before start, and host-only kick. Host migrates
-  to the next player if the host leaves. Late joiners to a room already in progress skip the room screen and jump straight in.
+  (campaign vs. a published custom level, private/public), hero switching before start, and host-only kick. A kick sticks
+  for that room's whole lifetime — for logged-in players by account, and for guests via a signed guest id (`gc_guest_id`
+  in `localStorage`) that survives reconnects and reloads. Host migrates to the next player if the host leaves. Late
+  joiners to a room already in progress skip the room screen and jump straight in.
 - **Reconnect**: a dropped socket keeps its player entity (score/keys/potions/health) for 30s, marked "away" in the HUD; the
   client auto-retries the connection with backoff and resumes the same hero via a per-tab resume token.
 - **Accounts** (username + password, scrypt-hashed) with per-user stats, run history and achievements. Guests can play without saving.
@@ -87,14 +89,17 @@ Optional environment variables:
   offered three hidden chests rolled from a seeded RNG (potions, keys, health, temporary next-level-only boosts like
   speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
   round ends early once all connected players have chosen (or auto-picks at the timeout), and boosts stack with hero
-  perks for the following level, shown as small icons in the HUD, before clearing.
+  perks for the following level, shown as small icons in the HUD, before clearing. A player who joins (or resumes)
+  mid-intermission gets their own offer rolled immediately with the remaining countdown, and is covered by both the
+  early-finish check and the timeout auto-pick.
 - **Character unlocks** (`shared/unlocks.js`): 8 alternate palettes (a "classic" recolor per class at rank 2, plus
   harder-earned skins gated on a specific achievement or deeper rank) and 3 locked hero archetypes — **Paladin**
   (heavy armor, unlocks at rank 5), **Ranger** (fast, rapid-fire, unlocks after playing Elf and earning *Ghostbuster*),
   and **Necromancer** (frail but magic-heavy with wider potion blasts, unlocks via *Reaper Reaped* or rank 8).
   Requirements are evaluated server-side from real stats/achievements/rank; a locked hero or palette request silently
   falls back to Warrior/default with an error toast. The hero picker greys out locked cards with their requirement
-  text and shows palette swatches under unlocked classes; other players in the room see your chosen skin. Newly
+  text and shows palette swatches under unlocked classes; other players see your chosen skin, tinted with your
+  palette everywhere your name appears — the HUD, the room-screen roster, and the public room list. Newly
   opened unlocks push an in-game toast the moment an achievement or rank-up earns them, and the dashboard lists the
   whole catalogue with locked/unlocked state.
 - **Death mode** (`bias.arena` in `shared/procgen.js`): an endless wave-survival mode. Every level is a generated

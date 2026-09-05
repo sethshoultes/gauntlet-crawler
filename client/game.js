@@ -4,6 +4,12 @@ import { CLASSES, CLASS_IDS, LOW_HEALTH, DIRS } from '/shared/constants.js';
 import { PALETTES, requirementText } from '/shared/unlocks.js';
 import { BOOST_ICONS } from '/shared/chests.js';
 const RESUME_KEY = 'gc_resume';
+const GUEST_KEY = 'gc_guest_id';
+// Durable guest identity (#7): minted by the server on our first join and echoed back in every
+// `welcome`. We resend it on every later join so a host kick can block us across reconnects and
+// even after sessionStorage's resume token has expired — it carries no other trust.
+let guestId = null;
+try { guestId = localStorage.getItem(GUEST_KEY) || null; } catch {}
 
 const $ = (s) => document.querySelector(s);
 const SCALE = 2;                 // 8px art -> 16px tiles
@@ -86,7 +92,7 @@ async function loadRooms() {
   const box = $('#rooms');
   if (!rooms.length) { box.innerHTML = '<span class="muted">No open dungeons. Start one!</span>'; return; }
   box.innerHTML = rooms.map((r) => `<div class="r"><div><b>${esc(r.name)}</b> <span class="tag">${r.mode === 'death' ? `Death mode · cap ${r.deathCap != null ? r.deathCap : '∞'}` : r.source === 'custom' ? 'custom: ' + esc(r.customName || '') : 'campaign'}</span> <span class="tag">${r.state === 'lobby' ? 'In lobby' : 'Level ' + r.level}</span><br>
-    <span class="muted" style="font-size:12px">${esc(r.levelName)} · ${r.roster.map((p) => `<span class="cls-${p.cls}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
+    <span class="muted" style="font-size:12px">${esc(r.levelName)} · ${r.roster.map((p) => `<span style="color:${playerColor(p)}">${esc(p.name)}${p.title ? ` <span class="muted">(${esc(p.title)})</span>` : ''}</span>`).join(', ') || 'empty'}</span></div>
     <button data-join="${r.id}" ${r.players >= r.max ? 'disabled' : ''}>${r.players}/${r.max} Join</button></div>`).join('');
   box.querySelectorAll('[data-join]').forEach((b) => b.onclick = () => joinGame({ roomId: b.dataset.join }));
 }
@@ -140,7 +146,7 @@ function joinGame(opts) {
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
   ws.onopen = () => {
-    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, ...opts }));
+    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, guestId, ...opts }));
   };
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
@@ -163,7 +169,7 @@ function attemptReconnect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null, guestId }));
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
   ws.onerror = () => {};
@@ -187,6 +193,7 @@ function onMessage(m) {
   switch (m.t) {
     case 'welcome':
       G.pid = m.pid; G.room = m.room; G.inRoom = true; G.reconnecting = false; G.reconnectAttempts = 0;
+      if (m.guestId && m.guestId !== guestId) { guestId = m.guestId; try { localStorage.setItem(GUEST_KEY, guestId); } catch {} }
       saveResume(m.room, m.pid, m.resume);
       $('#lobby').style.display = 'none'; $('#session').classList.add('on');
       if (m.room.state === 'lobby') {
@@ -401,7 +408,7 @@ function renderRoomScreen(room) {
   $('#rs-cap').textContent = room.mode === 'death' ? `· cap ${room.deathCap != null ? room.deathCap : '∞'}` : '';
   $('#rs-roster').innerHTML = room.roster.map((p) => `
     <div class="row2 ${p.away ? 'away' : ''}">
-      <div class="who"><span class="nm cls-${p.cls}">${esc(p.name)}${p.pid === G.pid ? ' (you)' : ''}</span> ${p.title ? `<span class="muted" style="font-size:11px">${esc(p.title)}</span>` : ''}</div>
+      <div class="who"><span class="nm" style="color:${playerColor(p)}">${esc(p.name)}${p.pid === G.pid ? ' (you)' : ''}</span> ${p.title ? `<span class="muted" style="font-size:11px">${esc(p.title)}</span>` : ''}</div>
       ${p.host ? '<span class="badge host">HOST</span>' : ''}
       ${p.away ? '<span class="badge away">AWAY</span>' : `<span class="badge ${p.ready ? 'ready' : ''}">${p.ready ? 'READY' : 'not ready'}</span>`}
       ${isHost && p.pid !== G.pid ? `<button data-kick="${p.pid}" style="font-size:11px;padding:2px 6px">Kick</button>` : ''}

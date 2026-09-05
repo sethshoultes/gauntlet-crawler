@@ -231,6 +231,44 @@ test('intermission timeout auto-picks for anyone who has not chosen, including a
   } finally { room.close(); }
 });
 
+test('a player who joins mid-intermission gets a chest offer, counts toward "all picked", and the timeout auto-picks them too (#9)', () => {
+  const room = makeRoom({ id: 'intermission-late' });
+  try {
+    const wsA = fakeWs();
+    room.join(wsA, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a'); // solo host
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 12 });
+    room.startIntermission();
+    assert.equal(room.intermissionSeconds, 15);
+    room.intermissionSeconds = 9; // simulate a few seconds having ticked by
+
+    const wsB = fakeWs();
+    const late = room.join(wsB, { pid: 'b', user: null, name: 'Bob', cls: 'elf' });
+    assert.ok(late, 'a late joiner is accepted mid-intermission');
+    assert.equal(room.chestOffers.get('b')?.length, 3, 'the late joiner rolled their own three-chest offer');
+    const chestsMsg = wsB.sent.find((m) => m.t === 'chests');
+    assert.ok(chestsMsg, 'the late joiner receives a chests message');
+    assert.equal(chestsMsg.seconds, 9, 'the remaining countdown, not a fresh 15s, is sent');
+    assert.ok(chestsMsg.chests.every((c) => c.label === '???'), 'contents stay hidden until picked, same as everyone else');
+
+    // Ann already picked long ago in a real game, but here neither has — checkIntermissionDone
+    // must not fire early just because Bob is present without a pick yet.
+    assert.equal(room.intermissionEnding, false, 'still waiting on both players');
+
+    room.pick('a', room.chestOffers.get('a')[0].id);
+    assert.equal(room.intermissionEnding, false, 'Bob (the late joiner) still has not picked');
+
+    // Timeout auto-pick must cover the late joiner exactly like everyone else.
+    room.autoPickRemaining();
+    assert.ok(room.chestPicks.has('b'), 'the late joiner is auto-picked at timeout, not skipped');
+    assert.equal(room.intermissionEnding, true);
+
+    room.finishIntermission();
+    assert.equal(room.state, 'playing');
+    assert.ok(room.sim.players.has('b'), 'the late joiner is still in the sim after the level advances');
+  } finally { room.close(); }
+});
+
 test('a locked hero request falls back to warrior and the player is told why', () => {
   const room = makeRoom({ id: 'locked-1' });
   try {
@@ -290,6 +328,43 @@ test('kick removes the player and records a fresh sim state should they somehow 
     room.kick('a', 'b');
     assert.equal(room.clients.has('b'), false);
     assert.equal(room.clients.size, 1);
+  } finally { room.close(); }
+});
+
+test('a fresh guest gets a minted guestId back in welcome, and a kicked guest is durably refused (#7)', () => {
+  const room = makeRoom({ id: 'guestkick-1' });
+  try {
+    room.join(fakeWs(), { pid: 'host', user: null, name: 'Host', cls: 'warrior' });
+    const wsGuest = fakeWs();
+    const guest = room.join(wsGuest, { pid: 'g1', user: null, name: 'Guest', cls: 'elf' });
+    assert.match(guest.guestId, /^[0-9a-f]{32}$/, 'a hex guestId of the expected length was minted');
+    const welcomeMsg = wsGuest.sent.find((m) => m.t === 'welcome');
+    assert.equal(welcomeMsg.guestId, guest.guestId, 'the guestId is echoed back in welcome');
+
+    room.kick('host', 'g1');
+    assert.equal(room.clients.has('g1'), false);
+
+    // The same guest reloads the invite link (no resume token survives a kick) but their client
+    // resends the stored guestId on the fresh join — they must be refused, not let back in.
+    const wsRejoin = fakeWs();
+    assert.throws(
+      () => room.join(wsRejoin, { pid: 'g2', user: null, name: 'Guest', cls: 'elf', guestId: guest.guestId }),
+      /removed/i,
+      'a kicked guestId stays refused across a fresh join',
+    );
+
+    // A different, never-kicked guest is unaffected.
+    const wsOther = fakeWs();
+    assert.doesNotThrow(() => room.join(wsOther, { pid: 'g3', user: null, name: 'Other', cls: 'valkyrie' }));
+  } finally { room.close(); }
+});
+
+test('a malformed guestId is never trusted for a kick check — a fresh one is minted instead (#7)', () => {
+  const room = makeRoom({ id: 'guestkick-2' });
+  try {
+    const ws = fakeWs();
+    const c = room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior', guestId: 'not-hex-and-wrong-length!' });
+    assert.match(c.guestId, /^[0-9a-f]{32}$/, 'an invalid guestId format is replaced, never used as-is');
   } finally { room.close(); }
 });
 
