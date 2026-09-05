@@ -82,6 +82,12 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   test-play instantly, save, publish to the community list, and play other people's levels.
 - **AI generator**: describe a dungeon, pick difficulty and size. With an Anthropic key the server asks Claude for a level
   as structured JSON, validates and auto-repairs it, and falls back to the procedural generator if anything is off.
+  `POST /api/levels/generate` validates input and rate-limits as normal, then starts generation in the background and
+  replies `202 {"jobId": "<id>", "status": "pending"}` immediately; the client polls `GET /api/levels/generate/:jobId` every couple
+  of seconds until it reports `{"status": "done", "level": {...}, "source": "ai"|"procedural", "problems": [], "note": "...", "unlocked": []}` (or `{"status": "error", "error": "..."}`) —
+  jobs are scoped to the caller who started them and expire 10 minutes after finishing. Pass `?wait=1` on the POST to
+  get the old synchronous response back instead, for tests and scripts. This exists because production sits behind
+  Cloudflare, which kills any proxied request running past 100 seconds, and Claude generation can take close to that long.
 - **Chest intermission** (`shared/chests.js`): after clearing a level, a 15s pick window opens where every player is
   offered three hidden chests rolled from a seeded RNG (potions, keys, health, temporary next-level-only boosts like
   speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
@@ -224,7 +230,8 @@ and in-room hero pickers both list `GET /api/heroes/mine` under a "Custom" tab, 
 
 See the Features list above — `/editor.html` (paint/flood-fill/resize/import-export/validate/publish)
 and the "Generate with AI" prompt (Claude with a procedural fallback) are covered there. The AI side
-lives in `server/ai/levelgen.js`; the shared validate/repair logic both sides rely on lives in
+lives in `server/ai/levelgen.js`; the async job queue backing the `/api/levels/generate*` endpoints
+lives in `server/ai/jobs.js`; the shared validate/repair logic both sides rely on lives in
 `shared/level.js`.
 
 ### Cutscenes and attract mode
@@ -458,6 +465,7 @@ server/            Node HTTP + WebSocket server
   game/room.js     a running dungeon: tick loop, level progression, stats and achievement hooks
   game/lobby.js    room registry, quick play
   ai/levelgen.js   Claude-backed level generation with validation/repair and procedural fallback
+  ai/jobs.js       in-memory job store backing the async /api/levels/generate* endpoints
   db.js            node:sqlite connection + schema migrations
   auth.js          registration, login/logout, bearer-token sessions
   stats.js         per-user stat counters + achievement unlocking
@@ -512,6 +520,7 @@ Optional environment variables:
 | `PORT` | HTTP/WebSocket port (default 3000) |
 | `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
 | `ANTHROPIC_API_KEY` | Enables the AI level builder. Without it, "Generate with AI" falls back to the procedural generator steered by your prompt |
+| `TRUST_PROXY` | Set to `1` when running behind Cloudflare/nginx so rate limits and per-caller job scoping use `cf-connecting-ip` / `x-forwarded-for` instead of the proxy's address. Leave unset when clients connect directly (headers could be spoofed) |
 | `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
 | `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Takes precedence over any previously-persisted salt when set; auto-generated and persisted if unset — see [Privacy](#privacy) |

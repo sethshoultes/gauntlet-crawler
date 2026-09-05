@@ -57,14 +57,17 @@ export async function generateFromPrompt({ prompt, difficulty = 3, size = 'mediu
     try {
       const response = await anthropic.messages.create({
         model: MODEL,
-        max_tokens: 16000,
+        max_tokens: 8000,
         system: SYSTEM,
         messages: [{
           role: 'user',
           content: `Design a level. Difficulty ${difficulty}/10. Size: ${size}.\nDesigner's request: ${cleanPrompt || 'Surprise me.'}`,
         }],
-        output_config: { format: { type: 'json_schema', schema: SCHEMA } },
-      });
+        // The response is a bounded JSON map (at most ~64x64 rows); deep reasoning isn't needed
+        // and the default effort took ~100s, which is longer than Cloudflare's proxy timeout in
+        // front of production. `medium` is markedly faster while still validating cleanly.
+        output_config: { format: { type: 'json_schema', schema: SCHEMA }, effort: 'medium' },
+      }, { timeout: 150_000 }); // client-side cap: a hung request falls back to the procedural generator below instead of leaking a job forever
       if (response.stop_reason === 'refusal') {
         return fallback(cleanPrompt, difficulty, size, 'The AI declined this request, so a procedural level was generated instead.');
       }
