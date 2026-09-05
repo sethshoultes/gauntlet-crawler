@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';
 import { generateLevel, generateTreasureRoom } from '../../shared/procgen.js';
-import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T } from '../../shared/constants.js';
+import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T, LOW_HEALTH } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
 import { rollChests, applyChest } from '../../shared/chests.js';
@@ -13,6 +13,8 @@ import { isClassUnlocked, isPaletteUnlocked, unlockedFor, requirementText, PALET
 import * as stats from '../stats.js';
 import { db } from '../db.js';
 import { resolveCustomHero } from '../heroes.js';
+import { aiAvailable as aiNarratorAvailable, lineFor as narratorLineFor } from '../ai/narrator.js';
+import { detectNearDeathSave, checkKillStreak, canNarrateNow } from './narrator-events.js';
 
 const CUSTOM_CLS_RE = /^custom:(\d+)$/;
 
@@ -27,6 +29,7 @@ const WAVE_TIMEOUT_MS = 40000;  // a wave advances automatically after this even
 const WIPE_GRACE_MS = 10000;    // Death mode: end the run if everyone stays dead this long, uncontested
 const WAVE_SPAWN_MIN_DIST = 6;  // tiles a wave spawn must be from every player
 const TREASURE_ROOM_SECONDS = 30; // bonus level timer (README's "Features" section, "Bonus treasure rooms") — auto-completes with no bonus at 0
+const AI_NARRATOR_MIN_GAP_MS = 20000; // at most one spoken AI narrator line per room per this window (#18)
 
 export class Room {
   constructor({ id, name, seed, source = { type: 'campaign' }, isPublic = true, onEmpty }) {
@@ -64,6 +67,7 @@ export class Room {
     this.secondsTimer = setInterval(this.guard('creditTime', () => this.creditTime()), 30000);
     this.changing = false;
     this.emptySince = null;
+    this.lastAiNarratorAt = 0; // AI narrator commentary (#18) room-wide rate limit, see maybeNarrate()
   }
 
   /** Wrap a timer callback so an uncaught exception inside it is logged and contained instead of
@@ -195,7 +199,7 @@ export class Room {
    *  this is the only thing it is ever used for; it grants no other trust. */
   isValidGuestId(id) { return typeof id === 'string' && /^[0-9a-f]{32}$/.test(id); }
 
-  join(ws, { pid, user, name, cls, resume, palette, guestId }) {
+  join(ws, { pid, user, name, cls, resume, palette, guestId, aiNarrator }) {
     if (resume) {
       const c = this.resume(ws, resume);
       if (c) return c;
@@ -216,6 +220,10 @@ export class Room {
       ws, pid, user, name, cls: picked.cls, palette: picked.palette, classDef: picked.classDef || null, custom: picked.custom || null,
       guestId: finalGuestId, joinedAt: Date.now(), streak: 0, rank, title, perks,
       ready: false, away: false, awaySince: null, awayTimer: null, resume: crypto.randomBytes(8).toString('hex'),
+      // AI narrator commentary (#18): strictly opt-in, off unless the client's join message asks
+      // for it. killStreak/killStreakAnnounced/lastHp track the kill-streak and near-death
+      // detectors (server/game/narrator-events.js) between ticks/events for this client only.
+      aiNarrator: !!aiNarrator, killStreak: 0, killStreakAnnounced: 0, lastHp: null,
     };
     this.clients.set(pid, c);
     if (!this.hostPid) this.hostPid = pid;
@@ -301,6 +309,16 @@ export class Room {
     this.broadcastRoom();
   }
 
+  /** A connected client updating its own opt-in prefs the room needs to know about (currently
+   *  just aiNarrator, #18) via a {t:'prefs'} message — lets a client flip this without a full
+   *  rejoin. Unknown/malformed fields are silently ignored rather than rejected: this is a
+   *  best-effort preference sync, not a validated settings form. */
+  setPrefs(pid, prefs) {
+    const c = this.clients.get(pid);
+    if (!c || !prefs) return;
+    if (typeof prefs.aiNarrator === 'boolean') c.aiNarrator = prefs.aiNarrator;
+  }
+
   setSettings(pid, { mode, levelId, isPublic } = {}) {
     if (pid !== this.hostPid) throw new Error('Only the host can change settings');
     if (this.state !== 'lobby') throw new Error('Cannot change settings after start');
@@ -339,6 +357,9 @@ export class Room {
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     if (this.source.type === 'death') this.startWaves();
+    // Party composition intro (#18): only the genuine start of a fresh run, not a Death mode wave
+    // restart or a mid-lobby settings change — those never touch levelIndex back to 1.
+    if (this.levelIndex === 1) this.maybeNarrate('party', { classes: [...this.clients.values()].map((c) => c.custom ? 'custom' : c.cls) });
   }
 
   checkAutoStart() {
@@ -479,7 +500,18 @@ export class Room {
     const uidOf = c?.user?.id || null;
     const bump = (k, n = 1) => { if (uidOf && c) this.unlock(c, stats.bump(uidOf, k, n)); };
     switch (e.type) {
-      case 'kill': bump('kills'); bump(`kills_${e.monster}`); if (e.monster === 'thief') bump('thief_kills'); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5); break;
+      case 'kill': {
+        bump('kills'); bump(`kills_${e.monster}`); if (e.monster === 'thief') bump('thief_kills'); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5);
+        // Kill streak narrator lines (#18): consecutive kills without dying (see the 'death' case
+        // below, which resets both counters) — checkKillStreak only returns a threshold the first
+        // time it's crossed, so a single big kill flurry announces just its highest new rung.
+        if (c) {
+          c.killStreak = (c.killStreak || 0) + 1;
+          const threshold = checkKillStreak(c.killStreak, c.killStreakAnnounced || 0);
+          if (threshold) { c.killStreakAnnounced = threshold; this.maybeNarrate('kill_streak', { threshold }); }
+        }
+        break;
+      }
       case 'generator': bump('generators'); this.awardXp(c, uidOf, XP_GENERATOR); break;
       case 'food': bump('food'); if (e.lowHealth) bump('food_low'); break;
       case 'food_shot': bump('food_shot'); break;
@@ -487,7 +519,7 @@ export class Room {
       case 'door': bump('doors'); break;
       case 'secret': bump('secrets'); break;
       case 'potion': if (!e.weak) bump('potions'); break;
-      case 'death': bump('deaths'); if (c) c.streak = 0; break;
+      case 'death': bump('deaths'); if (c) { c.streak = 0; c.killStreak = 0; c.killStreakAnnounced = 0; } break;
       case 'coin': bump('coins'); break;
       case 'teleport': bump('teleports'); break;
       case 'exit': this.onLevelComplete(e); break;
@@ -499,6 +531,7 @@ export class Room {
     this.changing = true;
     if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
     const wasTreasure = this.sim.treasureRoom;
+    if (wasTreasure) this.maybeNarrate('treasure_clear', {}); // reached the exit, not just timed out (see finishTreasureRoom())
     const skipAmt = e.skip === 4 ? 4 : 1; // exit variant '8' jumps the party ahead 4 levels (see README's "Level format" section)
     this.pendingSkip = skipAmt;
     const n = this.clients.size;
@@ -659,8 +692,25 @@ export class Room {
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     this.broadcastRoom();
-    if (treasure) { this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS }); this.startTreasureTimer(); }
+    if (treasure) { this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS }); this.startTreasureTimer(); this.maybeNarrate('treasure_enter', {}); }
     if (this.source.type === 'death') this.startWaves();
+  }
+
+  /** Fire a best-effort AI narrator line (#18, server/ai/narrator.js) for `eventType`/`context`.
+   *  A no-op unless AI credentials are configured, at least one connected client has opted in
+   *  (aiNarrator), and this room's rate limit allows it right now. The rate-limit slot is reserved
+   *  synchronously (before the generation promise settles) so two events in the same tick can't
+   *  both slip through, and the generation itself is never awaited — this is called from the game
+   *  tick path and must return immediately either way. */
+  maybeNarrate(eventType, context) {
+    if (!aiNarratorAvailable()) return;
+    if (![...this.clients.values()].some((c) => c.aiNarrator)) return;
+    const nowMs = Date.now();
+    if (!canNarrateNow(nowMs, this.lastAiNarratorAt, AI_NARRATOR_MIN_GAP_MS)) return;
+    this.lastAiNarratorAt = nowMs;
+    narratorLineFor(eventType, context)
+      .then((line) => { if (line) this.broadcast({ t: 'say', text: line }); })
+      .catch((e) => console.warn(`[room ${this.id}] narrator generation failed:`, e.message));
   }
 
   /** Arm (or re-arm) the bonus-level auto-complete timer. */
@@ -808,6 +858,14 @@ export class Room {
       if (this.state !== 'playing') return; // lobby: frozen, nothing to simulate yet
       this.sim.step(DT);
       if (this.source.type === 'death') { this.checkWaveAdvance(false); this.checkWipe(); }
+      // Near-death save narrator line (#18): compare each connected player's hp this tick against
+      // its value last tick (health drain/food/potions/hits all just ran in sim.step() above).
+      for (const c of this.clients.values()) {
+        const p = this.sim.players.get(c.pid);
+        if (!p) continue;
+        if (detectNearDeathSave(c.lastHp, p.hp, LOW_HEALTH)) this.maybeNarrate('near_death', {});
+        c.lastHp = p.hp;
+      }
       const snap = this.sim.snapshot();
       if (this.pendingEvents.length) { snap.e = this.pendingEvents; this.pendingEvents = []; }
       this.broadcast(snap);

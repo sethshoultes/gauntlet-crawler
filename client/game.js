@@ -221,6 +221,7 @@ const G = {
   ws: null, pid: null, room: null, level: null, grid: null, players: new Map(), // id -> {name, cls}
   prev: null, cur: null, prevAt: 0, curAt: 0, tiles: {}, fx: [], notices: [],
   input: { dx: 0, dy: 0, fire: false }, lastSent: '', camX: 0, camY: 0, overlay: null, muted: localStorage.getItem('gc_mute') === '1', narrate: localStorage.getItem('gc_narrate') !== '0',
+  aiNarrator: localStorage.getItem('gc_ai_narrator') === '1', // opt-in AI narrator commentary (#18); off unless explicitly turned on
   followId: null, lastFood: 0, shake: 0,
   inRoom: false, reconnecting: false, reconnectAttempts: 0, reconnectTimer: null,
   intermission: null, // { seconds, startedAt, totalMs, chests, picks:Map<pid,chest>, myPick, rects[] }
@@ -248,7 +249,7 @@ function joinGame(opts) {
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
   ws.onopen = () => {
-    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, guestId, ...opts }));
+    ws.send(JSON.stringify({ t: 'join', token: token(), name: $('#gname').value.trim() || 'Guest', cls: selectedClass, palette: selectedPalette || null, guestId, aiNarrator: G.aiNarrator, ...opts }));
   };
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
@@ -271,7 +272,7 @@ function attemptReconnect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   G.ws = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null, guestId }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', token: token(), roomId: saved.roomId, resume: saved.resume, name: saved.name, cls: saved.cls, palette: saved.palette || null, guestId, aiNarrator: G.aiNarrator }));
   ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
   ws.onclose = () => { if (G.ws === ws) { G.ws = null; G.inRoom ? scheduleReconnect() : leaveGame('Disconnected from server'); } };
   ws.onerror = () => {};
@@ -371,6 +372,14 @@ function onMessage(m) {
       if (m.e) for (const e of m.e) onEvent(e);
       break;
     case 'notice': log(`<span class="n">${esc(m.text)}</span>`); break;
+    // AI narrator commentary (#18): free-text line from server/ai/narrator.js, delivered through
+    // the same say() gate (narrator on/off, mute, volume — see client/voice.js) as the fixed
+    // arcade lines below, plus this preference: never spoken unless the player opted in. The id
+    // passed to say() is deliberately unique per line (never a fixed string literal, so it's
+    // exempt from test/voice.test.js's voice-lines.json coverage check, and — more importantly —
+    // can never collide with a pre-rendered clip): this text is generated fresh per event and
+    // must always fall through to speechSynthesis, never get silently replaced by a stale clip.
+    case 'say': if (G.aiNarrator) { log(`<span class="n">${esc(m.text)}</span>`); say(`ai_${Date.now()}`, m.text); } break;
     case 'chat': log(`<span class="c"><b>${esc(m.from)}:</b> ${esc(m.text)}</span>`); break;
     case 'ach': toast(`${m.ach.icon} Achievement: ${m.ach.name}`, m.ach.desc); sfx('ach'); break;
     case 'rankup': toast(`⭐ Rank Up!`, `You are now Rank ${m.rank}: ${m.title}`); sfx('ach'); break;

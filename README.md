@@ -82,6 +82,9 @@ Requires Node.js 22.5+ (uses the built-in `node:sqlite`). Data lives in `./data/
   test-play instantly, save, publish to the community list, and play other people's levels.
 - **AI generator**: describe a dungeon, pick difficulty and size. With an Anthropic key the server asks Claude for a level
   as structured JSON, validates and auto-repairs it, and falls back to the procedural generator if anything is off.
+- **AI Narrator** (opt-in, off by default — see [AI Narrator](#ai-narrator-18) below): occasional Claude-generated
+  commentary for party intros, near-death saves, kill streaks, and treasure vaults, cached per event and delivered
+  through the same narrator voice channel as the fixed lines.
 - **Chest intermission** (`shared/chests.js`): after clearing a level, a 15s pick window opens where every player is
   offered three hidden chests rolled from a seeded RNG (potions, keys, health, temporary next-level-only boosts like
   speed/shot damage/armor/rapid fire, a score bonus, or a rare ~10% cursed chest). Picks reveal live to everyone, the
@@ -387,24 +390,57 @@ mixer volume from Settings.
 missing from `voice-lines.json`. See [Development](#development) below for how to generate real
 clips with `tools/generate-voice.mjs`.
 
+### AI Narrator (#18)
+
+An **optional, opt-in** layer on top of the fixed [Narrator voice](#narrator-voice) above:
+occasional Claude-generated commentary lines for a handful of run events — a fresh party's arrival
+at level 1, a near-death save (health climbing back out of the danger zone after dipping below it),
+kill-streak milestones (10/25/50 kills in a row without dying), and entering/clearing a bonus
+treasure vault. **Off by default.** Toggle it on `/settings.html` (works for guests too, stored in
+`localStorage` — see [Settings](#settings) below); the toggle is disabled with an explanatory note
+whenever the server has no AI credentials configured (`GET /api/ai/status` reports this as
+`narrator: false`).
+
+`server/ai/narrator.js` mirrors `server/ai/levelgen.js`'s Anthropic-SDK/`json_schema` pattern: `{
+line }` structured output, at most ~12 words, in the arcade-narrator voice. There is no procedural
+fallback — a missing API key, a refusal, or an error simply means no line is spoken that time.
+Every event type + a coarse context key (e.g. `party|warrior,valkyrie`, `kill_streak|10`) is
+generated **at most once ever**: a capped (200-entry) in-memory `Map` cache is backed by a
+`narrator_lines` sqlite table (`server/db.js`) so a restart doesn't re-spend a generation for a key
+already answered. Generation is always fire-and-forget from `server/game/room.js`'s `maybeNarrate()`
+— never awaited on the 20Hz tick path — and a room speaks at most one AI line every 20 seconds, and
+only once at least one connected player has opted in. The near-death and kill-streak triggers are
+pure, unit-tested functions in `server/game/narrator-events.js`.
+
+Lines are delivered through the exact same channel as the fixed lines — a `{t:'say', text}`
+WebSocket message the client speaks via `client/voice.js`'s `say(id, text)` (a per-line-unique id,
+so it can never be pre-rendered like the fixed ids and always falls through to `speechSynthesis`),
+gated on the `aiNarrator` preference and honoring the same narrator on/off, mute, and volume
+settings as every other narrator line.
+
+**Privacy**: only coarse event context ever reaches the API — hero class names and integers like a
+kill-streak threshold — never a player's username, chat text, or anything else about them.
+
 ### Settings
 
 `/settings.html` (linked from the nav once you're logged in): change your password (rotates every
 other session's token so a stolen token elsewhere stops working, while keeping you signed in),
-adjust preferences — a **master/SFX/narrator-voice volume mixer**, narrator on/off, **cutscenes
-on/off**, colour-blind palette, reduced motion, and key bindings — saved server-side to a `prefs`
-table and synced to any device you log into, download a JSON export of everything the server
-knows about your account, or permanently delete your account (password-confirmed; cascades to
-your sessions, stats, achievements, run history and levels, unpublishing anything you'd shared).
+adjust preferences — a **master/SFX/narrator-voice volume mixer**, narrator on/off, the opt-in
+[AI Narrator](#ai-narrator-18) toggle, **cutscenes on/off**, colour-blind palette, reduced motion,
+and key bindings — saved server-side to a `prefs` table and synced to any device you log into,
+download a JSON export of everything the server knows about your account, or permanently delete
+your account (password-confirmed; cascades to your sessions, stats, achievements, run history and
+levels, unpublishing anything you'd shared). The AI Narrator toggle itself is shown even to guests
+(logged out), since it works without an account.
 Every preference is merged into the same `localStorage` keys the game already reads directly
-(`gc_mute`, `gc_narrate`, `gc_cutscenes`, `gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`) the moment
-you log in or save, so `client/game.js`, `client/audio.js` and `client/voice.js` pick them up on
-their next load with no page reload needed once you navigate — and guests get the same
-mixer/cutscenes-toggle behavior from those same `localStorage` keys, just without server-side sync
-across devices. `server/account.js`'s `PREF_KEYS` whitelist names the exact same preference keys
-(`soundVolume`, `sfxVolume`, `voiceVolume`, `narrator`, `cutscenes`, `colorBlindPalette`,
-`reducedMotion`, `keyBindings`) that `client/settings.js` sends and `client/common.js` mirrors
-into `localStorage`.
+(`gc_mute`, `gc_narrate`, `gc_ai_narrator`, `gc_cutscenes`, `gc_vol_master`, `gc_vol_sfx`,
+`gc_vol_voice`) the moment you log in or save, so `client/game.js`, `client/audio.js` and
+`client/voice.js` pick them up on their next load with no page reload needed once you navigate —
+and guests get the same mixer/cutscenes-toggle/AI-narrator behavior from those same `localStorage`
+keys, just without server-side sync across devices. `server/account.js`'s `PREF_KEYS` whitelist
+names the exact same preference keys (`soundVolume`, `sfxVolume`, `voiceVolume`, `narrator`,
+`aiNarrator`, `cutscenes`, `colorBlindPalette`, `reducedMotion`, `keyBindings`) that
+`client/settings.js` sends and `client/common.js` mirrors into `localStorage`.
 
 ### Admin dashboard
 
@@ -560,8 +596,8 @@ Optional environment variables:
 |---|---|
 | `PORT` | HTTP/WebSocket port (default 3000) |
 | `DATA_DIR` / `DB_PATH` | Where the SQLite database is stored |
-| `ANTHROPIC_API_KEY` | Enables the AI level builder and the Hero Builder's AI Assist. Without it, "Generate with AI" falls back to the procedural generator, and AI Assist suggests a preset hero, both still steered by your prompt |
-| `GAUNTLET_AI_MODEL` | Claude model id for level generation and Hero Builder AI Assist (default `claude-opus-5`) |
+| `ANTHROPIC_API_KEY` | Enables the AI level builder, the Hero Builder's AI Assist, and the opt-in [AI Narrator](#ai-narrator-18). Without it: "Generate with AI" falls back to the procedural generator, AI Assist suggests a preset hero (both still steered by your prompt), and AI Narrator silently produces no lines (the toggle is disabled client-side too) |
+| `GAUNTLET_AI_MODEL` | Claude model id for level generation, Hero Builder AI Assist, and AI Narrator commentary (default `claude-opus-5`) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
 | `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Takes precedence over any previously-persisted salt when set; auto-generated and persisted if unset — see [Privacy](#privacy) |
 | `SENTRY_DSN` | Enables forwarding server and client errors to Sentry (or a compatible DSN endpoint). Unset means Sentry is never imported and the first-party `errors` table is the only sink — see [Error reporting](#error-reporting) |
@@ -695,9 +731,10 @@ palette tint shown in the lobby roster and room list (#8), chests offered to pla
 mid-intermission (#9), in-game cutscene triggers (#23), the Hero Builder's lobby/simulation
 integration (#24), and an AI-generated launch trailer and title backdrop (#21).
 
-Sound synthesis (#20) and pre-rendered narrator voice lines (#19) are also implemented (see
-[Sound](#sound) and [Narrator voice](#narrator-voice) above) even though both issues are still open
-on the tracker pending someone closing them out.
+Sound synthesis (#20), pre-rendered narrator voice lines (#19), and optional opt-in AI narrator
+commentary (#18) are also implemented (see [Sound](#sound), [Narrator voice](#narrator-voice), and
+[AI Narrator](#ai-narrator-18) above) even though all three issues are still open on the tracker
+pending someone closing them out.
 
 Open, not yet implemented:
 
@@ -707,7 +744,7 @@ Open, not yet implemented:
 - **Presentation**: an original-style attract mode and high-score name entry (#14).
 - **Mobile**: a full touch layout and gamepad support (#15).
 - **AI assist**: describe a hero and get a build/sprite suggestion (#16), remix and tune an
-  existing level with AI (#17), optional opt-in AI narrator commentary (#18).
+  existing level with AI (#17).
 - **Ops**: optional Sentry (or compatible) error reporting alongside the built-in error log (#22).
 
 Not affiliated with Atari. Gauntlet is a trademark of its respective owners; this is a fan tribute built from scratch.

@@ -121,4 +121,18 @@ CREATE INDEX IF NOT EXISTS heroes_owner ON heroes(owner_id);
 CREATE INDEX IF NOT EXISTS heroes_pub ON heroes(published, clones DESC);
 `);
 
+// AI narrator commentary (#18, server/ai/narrator.js): generated lines are cached in-process (a
+// capped Map) but also persisted here so a restart doesn't re-spend a generation for a cache key
+// already answered once. `cache_key` is `${eventType}|${coarse context key}` (e.g.
+// "party|warrior,valkyrie", "kill_streak|10") — coarse and non-identifying by construction, never
+// a username or chat text (see README.md's AI Narrator section).
+db.exec(`
+CREATE TABLE IF NOT EXISTS narrator_lines (
+  cache_key TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  line TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`);
+
 export const now = () => Math.floor(Date.now() / 1000);

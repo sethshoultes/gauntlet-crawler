@@ -11,6 +11,7 @@ import * as auth from './auth.js';
 import * as stats from './stats.js';
 import { Lobby } from './game/lobby.js';
 import { generateFromPrompt, aiAvailable } from './ai/levelgen.js';
+import { aiAvailable as aiNarratorAvailable } from './ai/narrator.js';
 import { validateLevel, parseLevel } from '../shared/level.js';
 import { CLASSES } from '../shared/constants.js';
 import { generateLevel } from '../shared/procgen.js';
@@ -175,7 +176,7 @@ async function api(req, res, url) {
   }
   if (m === 'GET' && url.pathname === '/api/leaderboard') return json(res, 200, stats.leaderboard(20));
   if (m === 'GET' && url.pathname === '/api/rooms') return json(res, 200, { rooms: lobby.list() });
-  if (m === 'GET' && url.pathname === '/api/ai/status') return json(res, 200, { available: aiAvailable() });
+  if (m === 'GET' && url.pathname === '/api/ai/status') return json(res, 200, { available: aiAvailable(), narrator: aiNarratorAvailable() });
 
   // ----- levels -----
   if (m === 'GET' && url.pathname === '/api/levels') {
@@ -297,7 +298,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ---------- WebSocket game protocol ----------
-// Every legitimate message on this protocol (input/chat/join/hero/settings/pick/...) is tiny
+// Every legitimate message on this protocol (input/chat/join/hero/settings/prefs/pick/...) is tiny
 // (chat text alone is capped at 200 chars server-side); `ws`'s default maxPayload is 100MiB, so
 // without an explicit cap a single client could force a huge allocation per message.
 const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 16 * 1024 });
@@ -337,7 +338,7 @@ wss.on('connection', (ws, req) => {
           // join() may reject the requested guestId (already kicked, malformed, etc.) and mint a
           // fresh one instead -- record the final id it actually assigned (null for logged-in
           // users), not the one the client asked for, so telemetry stays attributable.
-          const joined = target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null });
+          const joined = target.join(ws, { pid, user, name, cls, palette: msg.palette || null, guestId: msg.guestId || null, aiNarrator: !!msg.aiNarrator });
           room = target;
           telemetry.recordEvent({ kind: 'join', userId: user?.id || null, guestId: joined?.guestId || null, ip, data: { roomId: target.id } });
           // Analytics boundary: wrap this room's broadcast (once) purely to observe a 'gameover'
@@ -363,6 +364,7 @@ wss.on('connection', (ws, req) => {
         case 'ready': if (room) room.setReady(pid, !!msg.ready); break;
         case 'hero': if (room) room.setHero(pid, msg.cls, msg.palette || null); break;
         case 'settings': if (room) room.setSettings(pid, msg); break;
+        case 'prefs': if (room) room.setPrefs(pid, msg); break;
         case 'start':
           if (room) {
             const uid = room.clients.get(pid)?.user?.id || null;

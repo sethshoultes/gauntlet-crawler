@@ -98,6 +98,9 @@ export async function loadPrefs() {
     if ('voiceVolume' in prefs) localStorage.setItem('gc_vol_voice', String(pct(prefs.voiceVolume)));
     if ('narrator' in prefs) localStorage.setItem('gc_narrate', prefs.narrator === false ? '0' : '1');
     if ('cutscenes' in prefs) localStorage.setItem('gc_cutscenes', prefs.cutscenes === false ? '0' : '1');
+    // aiNarrator (#18) is opt-in and defaults false, the opposite polarity of narrator/cutscenes
+    // above (which default true) — only an explicit `true` turns it on.
+    if ('aiNarrator' in prefs) localStorage.setItem('gc_ai_narrator', prefs.aiNarrator === true ? '1' : '0');
   } catch {}
   return prefs;
 }

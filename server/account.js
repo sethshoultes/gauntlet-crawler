@@ -82,7 +82,9 @@ export function getPrefs(userId) {
 // Whitelisted so an arbitrary blob can't grow unbounded or smuggle unrelated data in.
 // soundVolume doubles as the "master" bus for backward compatibility with existing saved prefs;
 // sfxVolume/voiceVolume are the other two mixer buses (see client/audio.js / client/voice.js).
-const PREF_KEYS = ['soundVolume', 'sfxVolume', 'voiceVolume', 'narrator', 'keyBindings', 'colorBlindPalette', 'reducedMotion', 'cutscenes'];
+// aiNarrator (#18) is the opt-in "AI Narrator" toggle — off by default unlike `narrator`
+// (the fixed arcade lines), so its validator/default treats absence/false the same way.
+const PREF_KEYS = ['soundVolume', 'sfxVolume', 'voiceVolume', 'narrator', 'aiNarrator', 'keyBindings', 'colorBlindPalette', 'reducedMotion', 'cutscenes'];
 
 // Per-field shape for each whitelisted key: volumes are finite numbers in 0..100 (percent), the boolean
 // toggles are strict booleans, and keyBindings is a small flat map of short strings (action name
@@ -109,6 +111,7 @@ const PREF_VALIDATORS = {
   sfxVolume: isVolume,
   voiceVolume: isVolume,
   narrator: isBool,
+  aiNarrator: isBool,
   colorBlindPalette: isBool,
   reducedMotion: isBool,
   cutscenes: isBool,
