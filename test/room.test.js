@@ -158,6 +158,12 @@ test('level clear enters intermission, offers chests, and a pick moves everyone 
     assert.ok(chestsMsg, 'client receives a chests offer');
     assert.equal(chestsMsg.chests.length, 3);
     assert.ok(chestsMsg.chests.every((c) => c.label === '???' && c.icon === '📦'), 'contents are hidden until picked');
+    for (const c of chestsMsg.chests) {
+      assert.deepEqual(Object.keys(c).sort(), ['icon', 'id', 'label'], 'the outgoing chests message reveals nothing but id/label/icon');
+      assert.equal(c.kind, undefined, 'kind must never leave the server before a pick');
+      assert.equal(c.value, undefined, 'value must never leave the server before a pick');
+      assert.equal(c.cursed, undefined, 'cursed must never leave the server before a pick');
+    }
 
     const offeredId = room.chestOffers.get('a')[0].id;
     room.pick('a', offeredId);

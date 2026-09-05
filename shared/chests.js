@@ -61,20 +61,24 @@ function label(kind, value) {
 
 // `index` is this chest's position within the offer being rolled — combined with a roll drawn
 // from the same seeded `rng`, it makes the id both deterministic (same seed -> same ids) and
-// unique within one offer, without any module-level counter.
+// unique within one offer, without any module-level counter. The id is intentionally opaque: it
+// never includes `kind` (or anything derived from it), since the server hands this id to clients
+// during the intermission — while the label is still '???' — and a kind-bearing id would let
+// clients infer a chest's contents before it's picked. See offerChestsTo/startIntermission in
+// server/game/room.js and the `chests` message it sends.
 function makeChest(rng, levelIndex, index) {
   const cursed = rng.chance(CURSED_WEIGHT);
   const scale = 1 + Math.min(0.6, Math.max(0, levelIndex - 1) * 0.03); // minor amounts creep up with depth
-  const idTag = rng.int(0, 1e9).toString(36);
+  const id = `${rng.int(0, 2 ** 31).toString(36)}-${index}`;
   if (cursed) {
     const def = rng.pick(CURSED_POOL);
     const value = def.kind === 'curse_health' ? Math.round(def.base * scale) : def.base;
-    return { id: `${def.kind}-${index}-${idTag}`, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: true };
+    return { id, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: true };
   }
   const def = weightedPick(rng, CHEST_POOL);
   const scalable = def.kind.startsWith('food') || def.kind === 'score_bonus';
   const value = scalable ? Math.round(def.base * scale) : def.base;
-  return { id: `${def.kind}-${index}-${idTag}`, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: false };
+  return { id, kind: def.kind, label: label(def.kind, value), icon: def.icon, value, cursed: false };
 }
 
 /** Roll `count` chest offers for one player. Each call advances `rng`, so pass a fresh RNG seeded

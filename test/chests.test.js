@@ -60,6 +60,33 @@ test('chest ids are reproducible from the seed, not from a global counter', () =
   assert.deepEqual(a.map((c) => c.id), aAgain.map((c) => c.id), 'ids are unaffected by unrelated prior rolls');
 });
 
+// Kind identifiers from shared/chests.js's CHEST_POOL/CURSED_POOL. Not exported (deliberately —
+// see makeChest's comment), so mirrored here to assert none of them leak into an id. If a kind is
+// added/renamed in shared/chests.js without updating this list, the substring check below is what
+// should catch a regression, so keep it in sync.
+const CHEST_KIND_NAMES = [
+  'potion1', 'potion2', 'key', 'food_basket', 'food_feast', 'boost_speed', 'boost_shot',
+  'boost_armor', 'boost_rapid', 'score_bonus', 'curse_drain', 'curse_spawn', 'curse_health',
+];
+
+test('chest ids are opaque: no kind name (or fragment of one) appears in any rolled id', () => {
+  for (let i = 0; i < 200; i++) {
+    const chests = rollChests(makeRng(`opaque-check-${i}`), 1 + (i % 30));
+    for (const chest of chests) {
+      for (const kindName of CHEST_KIND_NAMES) {
+        assert.ok(!chest.id.includes(kindName), `id "${chest.id}" must not reveal kind "${kindName}" (actual kind: ${chest.kind})`);
+      }
+    }
+  }
+});
+
+test('chest ids stay deterministic per seed and unique per offer after the opacity fix', () => {
+  const a = rollChests(makeRng('opaque-det|3|p1'), 3);
+  const b = rollChests(makeRng('opaque-det|3|p1'), 3);
+  assert.deepEqual(a.map((c) => c.id), b.map((c) => c.id), 'same seed -> identical ids');
+  assert.equal(new Set(a.map((c) => c.id)).size, a.length, 'ids unique within one offer');
+});
+
 test('cursed chest weight is roughly the configured 10% over many rolls', () => {
   const rng = makeRng('cursed-weight-check');
   let cursed = 0, total = 0;

@@ -1,6 +1,6 @@
 // Player dashboard (/dashboard.html): career stats, rank/XP progress, achievements, recent runs,
 // your published levels, and the leaderboard tabs.
-import { api, me, renderNav, authModal, esc, fmtTime, ago } from './common.js';
+import { api, me, renderNav, authModal, esc, cssToken, fmtTime, ago } from './common.js';
 import { CLASSES } from '/shared/constants.js';
 import { progressionFor } from '/shared/progression.js';
 
@@ -63,7 +63,7 @@ async function main() {
       <div class="d">${it.unlocked ? 'Unlocked' : esc(it.requirement)}</div>
     </div></div>`).join('');
     const runs = m.runs || [];
-    $('#runs').innerHTML = `<tr><th>Hero</th><th>Score</th><th>Level</th><th>Kills</th><th>Time</th><th>When</th></tr>` + (runs.length ? runs.map((r) => `<tr><td class="cls-${esc(r.class)}">${esc(CLASSES[r.class]?.name || r.class)}</td><td>${r.score.toLocaleString()}</td><td>${r.level_reached}</td><td>${r.kills}</td><td>${fmtTime(r.seconds)}</td><td class="muted">${ago(r.ended_at)}</td></tr>`).join('') : '<tr><td colspan="6" class="muted">No runs yet. Go play!</td></tr>');
+    $('#runs').innerHTML = `<tr><th>Hero</th><th>Score</th><th>Level</th><th>Kills</th><th>Time</th><th>When</th></tr>` + (runs.length ? runs.map((r) => `<tr><td class="cls-${cssToken(r.class)}">${esc(CLASSES[r.class]?.name || r.class)}</td><td>${r.score.toLocaleString()}</td><td>${r.level_reached}</td><td>${r.kills}</td><td>${fmtTime(r.seconds)}</td><td class="muted">${ago(r.ended_at)}</td></tr>`).join('') : '<tr><td colspan="6" class="muted">No runs yet. Go play!</td></tr>');
     const { levels } = await api('/api/levels/mine').catch(() => ({ levels: [] }));
     $('#mylevels').innerHTML = `<tr><th>Name</th><th>Source</th><th>Status</th><th>Plays</th></tr>` + (levels.length ? levels.map((l) => `<tr><td><a href="/editor.html#edit=${l.id}">${esc(l.name)}</a></td><td><span class="tag">${l.source}</span></td><td>${l.published ? 'Published' : 'Draft'}</td><td>${l.plays}</td></tr>`).join('') : '<tr><td colspan="4" class="muted">None yet.</td></tr>');
   }
@@ -73,7 +73,7 @@ async function main() {
     const rows = lb[t] || [];
     const head = { scores: ['#', 'Hero', 'Class', 'Score', 'Level', 'Kills', 'When'], death: ['#', 'Hero', 'Class', 'Score', 'Level', 'Kills', 'When'], rank: ['#', 'Hero', 'XP', 'Rank'], depth: ['#', 'Hero', 'Deepest level'], kills: ['#', 'Hero', 'Kills'], achievements: ['#', 'Hero', 'Achievements'] }[t];
     const body = rows.map((r, i) => {
-      const cells = (t === 'scores' || t === 'death') ? [i + 1, esc(r.username), `<span class="cls-${esc(r.class)}">${esc(CLASSES[r.class]?.name || r.class)}</span>`, r.score.toLocaleString(), r.level_reached, r.kills, `<span class="muted">${ago(r.ended_at)}</span>`]
+      const cells = (t === 'scores' || t === 'death') ? [i + 1, esc(r.username), `<span class="cls-${cssToken(r.class)}">${esc(CLASSES[r.class]?.name || r.class)}</span>`, r.score.toLocaleString(), r.level_reached, r.kills, `<span class="muted">${ago(r.ended_at)}</span>`]
         : t === 'rank' ? [i + 1, esc(r.username), r.xp.toLocaleString(), `Rank ${progressionFor(r.xp).rank} · ${progressionFor(r.xp).title}`]
         : t === 'depth' ? [i + 1, esc(r.username), r.deepest] : t === 'kills' ? [i + 1, esc(r.username), r.kills.toLocaleString()] : [i + 1, esc(r.username), r.n];
       return `<tr>${cells.map((c) => `<td>${c}</td>`).join('')}</tr>`;

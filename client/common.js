@@ -161,5 +161,12 @@ export function authModal() {
 }
 
 export function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+// `esc()` HTML-escapes for use in text/attribute *values*, but a value dropped straight into a
+// `class="..."` attribute (e.g. `cls-${value}`) needs to be a safe CSS class *token*, not merely
+// HTML-safe — a class like `custom:123` (Hero Builder custom heroes, see shared/hero-builder.js)
+// contains `:`, which is harmless in HTML but not a valid/selectable class-name character. Replace
+// anything outside the safe token charset so the resulting class always matches a plain CSS
+// selector 1:1 with no escaping needed.
+export function cssToken(s) { return String(s).replace(/[^A-Za-z0-9_-]/g, '_'); }
 export function fmtTime(s) { s = Math.round(s); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
 export function ago(ts) { const d = Math.floor(Date.now() / 1000 - ts); if (d < 60) return `${d}s ago`; if (d < 3600) return `${Math.floor(d / 60)}m ago`; if (d < 86400) return `${Math.floor(d / 3600)}h ago`; return `${Math.floor(d / 86400)}d ago`; }
