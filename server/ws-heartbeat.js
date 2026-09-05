@@ -4,8 +4,14 @@
 // sweep on the first dead client and leave the rest never pinged).
 export function heartbeat(clients) {
   for (const ws of clients) {
-    if (!ws.isAlive) { ws.terminate(); continue; }
-    ws.isAlive = false;
-    ws.ping();
+    // A socket can transition to CLOSING/CLOSED between the liveness check above and the
+    // terminate()/ping() call below, which can make either throw. This runs inside a bare
+    // setInterval (server/index.js), so an uncaught throw here would take down the whole
+    // process — catch per-client so one bad socket can't abort the sweep for the rest.
+    try {
+      if (!ws.isAlive) { ws.terminate(); continue; }
+      ws.isAlive = false;
+      ws.ping();
+    } catch { /* keep sweeping the rest of the clients */ }
   }
 }

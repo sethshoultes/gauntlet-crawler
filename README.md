@@ -508,7 +508,7 @@ Optional environment variables:
 | `ANTHROPIC_API_KEY` | Enables the AI level builder. Without it, "Generate with AI" falls back to the procedural generator steered by your prompt |
 | `GAUNTLET_AI_MODEL` | Claude model id for level generation (default `claude-opus-5`) |
 | `GAUNTLET_ADMINS` | Comma-separated usernames granted access to `/admin.html`. Unset means only the first registered account (user id 1) is an admin — see [Admin dashboard](#admin-dashboard) |
-| `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Auto-generated and persisted if unset — see [Privacy](#privacy) |
+| `GAUNTLET_SALT` | Salt used to hash IPs before they're stored for analytics. Takes precedence over any previously-persisted salt when set; auto-generated and persisted if unset — see [Privacy](#privacy) |
 | `GAUNTLET_DEBUG` | Set to `1` to arm test-only hooks (below). Never set this in production |
 
 **Debug hooks** (only reachable when `GAUNTLET_DEBUG=1`, otherwise a plain 404/no-op — these are
@@ -603,11 +603,13 @@ docker compose down                # stop everything (volumes persist)
 ## Privacy
 
 **Raw IP addresses are never written to the database.** Every event's IP (used only for coarse,
-aggregate analytics and rate limiting) is SHA-256 hashed together with a server-side salt
-(`GAUNTLET_SALT`, or one generated once and kept in a `meta` table) before it's stored, so the same
-visitor hashes consistently across requests without the address itself ever being recoverable from
-the data. Guests are otherwise counted by a random per-browser id that resets if they clear site
-data — never anything more identifying than that.
+aggregate analytics and rate limiting) is SHA-256 hashed together with a server-side salt before
+it's stored, so the same visitor hashes consistently across requests without the address itself
+ever being recoverable from the data. The salt is `GAUNTLET_SALT` when that env var is set
+(taking precedence over, and persisting over, any salt a previous run stored) — otherwise it's
+read back from a `meta` table, or generated once and persisted there on first run — so hashes
+stay stable across restarts either way. Guests are otherwise counted by a random per-browser id
+that resets if they clear site data — never anything more identifying than that.
 
 **What's stored** in the first-party `events` table (`server/telemetry.js`): a timestamp, an event
 kind (page view, join/leave/start/game-over, client error, etc.), an optional user id or guest id,

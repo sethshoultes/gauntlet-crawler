@@ -49,16 +49,26 @@ export function deleteAccount(userId, password) {
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   if (!row) throw httpError(404, 'User not found');
   if (!passwordMatches(row, password)) throw httpError(400, 'Password is incorrect');
-  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM stats WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM achievements WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM runs WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM levels WHERE owner_id = ?').run(userId);
-  db.prepare('DELETE FROM heroes WHERE owner_id = ?').run(userId);
-  db.prepare('DELETE FROM prefs WHERE user_id = ?').run(userId);
-  db.prepare('UPDATE events SET user_id = NULL WHERE user_id = ?').run(userId);
-  db.prepare('UPDATE errors SET user_id = NULL WHERE user_id = ?').run(userId);
-  db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  // Wrap the whole cascade in one transaction: if any statement throws partway through (a
+  // constraint error, a crash-prone edge case, whatever), the account must not end up
+  // half-deleted (e.g. levels gone but the user row and sessions still there).
+  db.exec('BEGIN');
+  try {
+    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM stats WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM achievements WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM runs WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM levels WHERE owner_id = ?').run(userId);
+    db.prepare('DELETE FROM heroes WHERE owner_id = ?').run(userId);
+    db.prepare('DELETE FROM prefs WHERE user_id = ?').run(userId);
+    db.prepare('UPDATE events SET user_id = NULL WHERE user_id = ?').run(userId);
+    db.prepare('UPDATE errors SET user_id = NULL WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+    db.exec('COMMIT');
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch {}
+    throw e;
+  }
   return { ok: true };
 }
 

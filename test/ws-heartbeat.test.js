@@ -35,3 +35,16 @@ test('heartbeat handles an all-dead set without throwing', () => {
 test('heartbeat handles an empty client set', () => {
   assert.doesNotThrow(() => heartbeat([]));
 });
+
+test('a client whose ping()/terminate() throws does not abort the sweep for the rest', () => {
+  const throwsOnPing = fakeSocket(true);
+  throwsOnPing.ping = () => { throw new Error('socket already closing'); };
+  const throwsOnTerminate = fakeSocket(false);
+  throwsOnTerminate.terminate = () => { throw new Error('socket already closed'); };
+  const aliveAfter = fakeSocket(true);
+
+  assert.doesNotThrow(() => heartbeat([throwsOnPing, throwsOnTerminate, aliveAfter]));
+
+  assert.equal(aliveAfter.pinged, true, 'a client after one whose ping() throws is still pinged');
+  assert.equal(aliveAfter.isAlive, false, 'a client after one whose ping() throws still gets isAlive reset');
+});

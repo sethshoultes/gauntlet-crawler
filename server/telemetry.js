@@ -4,17 +4,27 @@
 //  2. the browser posts small beacons to POST /api/telemetry (see client/common.js `track()`),
 //     which server/index.js forwards here via recordClient() after its own rate limiting.
 //
-// Privacy: raw IPs are never stored. Every event's IP is SHA-256 hashed together with a salt
-// that is either read from GAUNTLET_SALT or generated once and persisted in the `meta` table, so
-// hashes stay stable across restarts without ever writing the real salt to disk in the clear...
-// (well, it *is* in the sqlite file, same trust boundary as password hashes) but never logged.
+// Privacy: raw IPs are never stored. Every event's IP is SHA-256 hashed together with a salt:
+// an explicitly configured GAUNTLET_SALT always takes precedence (and is persisted to the
+// `meta` table so a later restart without the env var set still sees the same value); otherwise
+// the salt is read back from `meta`, or generated once and persisted there on first run. Either
+// way hashes stay stable across restarts without ever writing the real salt to disk in the
+// clear... (well, it *is* in the sqlite file, same trust boundary as password hashes) but never
+// logged.
 import crypto from 'node:crypto';
 import { db, now } from './db.js';
 
 function loadOrCreateSalt() {
+  const envSalt = process.env.GAUNTLET_SALT;
+  if (envSalt) {
+    // Persist it: if GAUNTLET_SALT is unset on some later restart, the stored value (this same
+    // salt) is what gets used, so hashes stay stable either way.
+    db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run('telemetry_salt', envSalt);
+    return envSalt;
+  }
   const row = db.prepare("SELECT value FROM meta WHERE key = 'telemetry_salt'").get();
   if (row) return row.value;
-  const salt = process.env.GAUNTLET_SALT || crypto.randomBytes(24).toString('hex');
+  const salt = crypto.randomBytes(24).toString('hex');
   db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run('telemetry_salt', salt);
   return salt;
 }
