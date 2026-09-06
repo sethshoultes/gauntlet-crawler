@@ -266,17 +266,30 @@ async function main() {
       await loadFixture({}, { exit: [5, 1], treasureRoom: true });
       await logIncludes(pageD, 'Bonus treasure room');
       const before = (await readSelfHud(pageD)).level;
-      await pressFor(pageD, 'd', 700); // straight onto the exit
-      const deadline = Date.now() + 6000;
+      // Walk onto the exit deterministically: re-issue short 'd' bursts, checking the spy's
+      // authoritative position between each one, rather than trusting one fixed-duration press to
+      // land exactly on the tile -- a slow CI runner can jitter the hero short of (or past) it.
+      await walkUntilTile(pageD, spy, heroPid, 'd', 5, { targetY: 1, maxSteps: 90 }); // ~15s deadline
+
       let sawChestPrompt = false;
+      // Generous: the level-clear flow plays a banner/cutscene beat before it advances (see
+      // scenario 12's own note on this), which can run long on a slow CI runner.
+      const deadline = Date.now() + 20_000;
+      let hud = null;
       while (Date.now() < deadline) {
         const text = await pageD.locator('#log').textContent();
         if (text.includes('Choose a chest')) sawChestPrompt = true;
-        const hud = await readSelfHud(pageD).catch(() => null);
+        // Keep the last successful reading: a single failed read mid-transition must not erase it
+        // and turn a genuine "did not advance" into a misleading "could not read the HUD".
+        const reading = await readSelfHud(pageD).catch(() => null);
+        if (reading) hud = reading;
         if (hud && hud.level !== before) break;
         await pageD.waitForTimeout(200);
       }
-      const after = (await readSelfHud(pageD)).level;
+      const after = hud?.level;
+      // Distinguish "the HUD could not be read at all" from "the level really did not advance", so
+      // a failure here names the actual problem.
+      if (after == null) throw new Error(`could not read the self HUD after clearing the treasure room's exit (last level seen: "${before}")`);
       if (after === before) throw new Error(`expected clearing a treasure room's exit to advance the level (stuck at "${before}")`);
       if (sawChestPrompt) knownBug('11. Treasure room: bonus banner, any exit clears without a chest pick', 'a treasure room offered a chest pick — it should skip the intermission entirely (see Room#onLevelComplete\'s wasTreasure branch)');
     });

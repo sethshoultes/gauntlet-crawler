@@ -27,7 +27,17 @@ const HB = {
   brush: '2', mirror: false, scale: 4, flip: false,
 };
 // exposed for manual/E2E debugging only — not used by the Hero Builder itself (see client/game.js's window.__gc for the same pattern)
-window.__hb = { pixels: () => HB.pixels.slice() };
+// `ready` resolves once boot() has picked a branch (guest/locked/unlocked) and, when unlocked,
+// has already reset the form via newHero() — see boot()'s `finally`. An E2E harness that fills
+// #hname/paints pixels right after seeing `#builder:not([hidden])` is trusting that boot() never
+// awaits between unhiding #builder and calling newHero() (true today, but an easy invariant for a
+// future edit to break); awaiting this promise instead depends on nothing but boot()'s own
+// contract, so it stays correct even if that internal ordering changes.
+// Settles exactly once: resolves when boot() finished picking its branch, rejects with boot()'s
+// error if it threw first, so a harness awaiting `ready` fails with the real cause instead of
+// racing ahead on a half-initialised page.
+let settleHbReady;
+window.__hb = { pixels: () => HB.pixels.slice(), ready: new Promise((res, rej) => { settleHbReady = { res, rej }; }) };
 
 function requirementText(requires) {
   if (!requires) return 'Unlocked';
@@ -328,33 +338,40 @@ async function loadGallery() {
 
 // ---------- boot ----------
 async function boot() {
-  const m = await me();
-  if (!m.user) {
-    $('#guest').hidden = false; $('#locked').hidden = true; $('#builder').hidden = true;
-    loadGallery();
-    return;
-  }
-  let budget;
-  try { budget = await api('/api/heroes/budget'); }
-  catch { budget = { rank: 1, unlocked: false, budget: 0, weapons: [], traits: [] }; }
-  HB.rank = budget.rank; HB.budget = budget.budget; HB.unlockedWeapons = budget.weapons; HB.unlockedTraits = budget.traits;
+  try {
+    const m = await me();
+    if (!m.user) {
+      $('#guest').hidden = false; $('#locked').hidden = true; $('#builder').hidden = true;
+      loadGallery();
+      return;
+    }
+    let budget;
+    try { budget = await api('/api/heroes/budget'); }
+    catch { budget = { rank: 1, unlocked: false, budget: 0, weapons: [], traits: [] }; }
+    HB.rank = budget.rank; HB.budget = budget.budget; HB.unlockedWeapons = budget.weapons; HB.unlockedTraits = budget.traits;
 
-  if (!budget.unlocked) {
-    $('#guest').hidden = true; $('#locked').hidden = false; $('#builder').hidden = true;
-    $('#locked-rank').textContent = `You are rank ${budget.rank} (${rankTitle(budget.rank)}). Reach rank 3 (${rankTitle(3)}) to unlock it.`;
-    loadGallery();
-    return;
-  }
+    if (!budget.unlocked) {
+      $('#guest').hidden = true; $('#locked').hidden = false; $('#builder').hidden = true;
+      $('#locked-rank').textContent = `You are rank ${budget.rank} (${rankTitle(budget.rank)}). Reach rank 3 (${rankTitle(3)}) to unlock it.`;
+      loadGallery();
+      return;
+    }
 
-  $('#guest').hidden = true; $('#locked').hidden = true; $('#builder').hidden = false;
-  api('/api/ai/status').catch(() => ({ available: false })).then((st) => {
-    if (!st.available) $('#ai-note').textContent = 'No AI key configured on this server: "Generate" will suggest a preset build instead.';
-  });
-  refreshTools();
-  drawGrid(); updatePreview();
-  renderWeapons(); renderTraits();
-  newHero();
-  loadMine(); loadGallery();
+    $('#guest').hidden = true; $('#locked').hidden = true; $('#builder').hidden = false;
+    api('/api/ai/status').catch(() => ({ available: false })).then((st) => {
+      if (!st.available) $('#ai-note').textContent = 'No AI key configured on this server: "Generate" will suggest a preset build instead.';
+    });
+    refreshTools();
+    drawGrid(); updatePreview();
+    renderWeapons(); renderTraits();
+    newHero();
+    loadMine(); loadGallery();
+  } catch (e) {
+    settleHbReady?.rej(e); settleHbReady = null;
+    throw e;
+  } finally {
+    settleHbReady?.res(); settleHbReady = null; // no-op after a rejection, and on the re-boot after login
+  }
 }
 $('#guest-login').onclick = () => authModal().then((ok) => ok && boot());
 
