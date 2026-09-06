@@ -65,7 +65,7 @@ async function crushToOgg(inputPath, outputPath) {
     const p = spawn('ffmpeg', ['-y', '-i', inputPath, '-ar', '8000', '-ac', '1', ...enc, outputPath], { stdio: ['ignore', 'ignore', 'pipe'] });
     p.stderr.on('data', (d) => { err += d; });
     p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.trim().split('\n').pop()}`))));
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}:\n${err.trim().split('\n').slice(-10).join('\n')}`))));
   });
 }
 

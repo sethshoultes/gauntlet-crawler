@@ -87,3 +87,12 @@ test('every client/audio/voice/manifest.json key exists in client/voice-lines.js
   const missing = Object.keys(manifest).filter((id) => !(id in lines));
   assert.deepEqual(missing, [], `manifest key(s) missing from voice-lines.json: ${missing.join(', ')}`);
 });
+
+test('every committed .ogg clip is listed in the manifest (a stray clip would be silently unplayable)', async () => {
+  const dir = path.join(ROOT, 'client', 'audio', 'voice');
+  const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'));
+  const clips = (await fs.readdir(dir)).filter((f) => f.endsWith('.ogg')).map((f) => f.slice(0, -4));
+  for (const id of clips) {
+    assert.ok(Object.hasOwn(manifest, id), `client/audio/voice/${id}.ogg is committed but missing from manifest.json`);
+  }
+});
