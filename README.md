@@ -573,10 +573,10 @@ HUD layout, safe areas, orientation, fullscreen and wake lock.
 
 ### Sound
 
-Every sound effect has a pre-rendered **arcade clip**, with a synthesized Web Audio fallback for
-anywhere a clip hasn't been generated. `client/audio.js` is the whole engine: `initAudio()` arms
-the context to resume on the first click/keypress (autoplay policy) and kicks off a one-time fetch
-of `client/audio/sfx/manifest.json`; `sfx(name)` plays one named effect (a pre-rendered clip, lazily
+Every sound effect has a synthesized Web Audio fallback, and most also have a pre-rendered
+**arcade clip**. `client/audio.js` is the whole engine: `initAudio()` arms the context to resume
+on the first click/keypress (autoplay policy) and kicks off a one-time fetch of
+`/audio/sfx/manifest.json`; `sfx(name)` plays one named effect (a pre-rendered clip, lazily
 fetched and `decodeAudioData()`-decoded into an `AudioBuffer` the first time that id is requested,
 then cached and replayed instantly from then on), or falls straight through to the WebAudio synth
 switch when no clip exists yet; `setMuted(bool)` backs the `M` key. The synth path's square/
@@ -603,10 +603,12 @@ manifest entry's file exists, is non-empty, and is a real Ogg container. See
 [Development](#development) below for how to (re)generate clips with `tools/generate-sfx.mjs` —
 the same ElevenLabs pipeline as the narrator voice below, factored into a shared
 `tools/lib/ffmpeg.mjs` (ffmpeg-presence and Ogg-encoder detection) used by both scripts. Sound
-generation bills roughly 200 characters per clip; the full 42-clip catalogue (`magic` is a
-zero-cost alias of `potion` — the two share a synth case in `client/audio.js`, so it reuses
-`potion`'s clip instead of spending quota twice) fits comfortably in a creator-tier account's
-quota and totals under 400 KB on disk.
+generation bills roughly 200 characters per clip; the 42 clips shipped and committed under
+`client/audio/sfx/` (`magic` is a zero-cost alias of `potion` — the two share a synth case in
+`client/audio.js`, so it reuses `potion`'s clip instead of spending quota twice) fit comfortably in
+a creator-tier account's quota and total under 400 KB on disk. `sfx-lines.json` also lists a
+handful of newer effect ids (`amulet`, `boost`, `stun`, `spark`) with no clip generated yet, so they
+still fall back to the synth engine until someone runs `tools/generate-sfx.mjs` for them.
 
 The **master / SFX / narrator-voice** mixer lives in Settings (see below) and persists to
 `localStorage` (`gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`, `gc_mute`) so it works for guests
@@ -1209,7 +1211,9 @@ and voice line original to this project (see [Sound](#sound) and [Narrator voice
 above) — no assets from the original game are used. Pre-rendered sound effects and narrator voice
 clips are generated with [ElevenLabs](https://elevenlabs.io) (sound-generation and text-to-speech,
 respectively); generating either catalogue from scratch costs a small amount of ElevenLabs quota
-(see [Development](#development) above), which is why the sfx clips are committed to the repo —
-a fresh checkout needs no ElevenLabs account to hear real arcade sounds — while narrator voice
-clips stay git-ignored and generated on demand, falling back to the browser's `speechSynthesis`
-until someone runs `tools/generate-voice.mjs`.
+(see [Development](#development) above), which is why both the sfx clips and the 13 shipped
+narrator voice clips are committed to the repo — a fresh checkout needs no ElevenLabs account to
+hear real arcade sounds and narration. Only the intermediate raw ElevenLabs output (`.mp3`/
+`.raw.mp3`) is git-ignored; any narrator line or effect id with no committed clip yet falls back to
+the browser's `speechSynthesis` or the synth engine respectively until someone runs
+`tools/generate-voice.mjs` / `tools/generate-sfx.mjs` for it.
