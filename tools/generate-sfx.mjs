@@ -85,7 +85,7 @@ async function main() {
   const requested = process.argv.slice(2);
   const ids = requested.length ? requested : Object.keys(lines);
   for (const id of ids) {
-    if (!(id in lines)) { console.error(`Unknown sfx id: ${id} (not in client/sfx-lines.json)`); process.exitCode = 1; return; }
+    if (!Object.prototype.hasOwnProperty.call(lines, id)) { console.error(`Unknown sfx id: ${id} (not in client/sfx-lines.json)`); process.exitCode = 1; return; }
   }
 
   const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -146,7 +146,7 @@ async function writeManifest() {
     } catch { /* no clip yet */ }
   }
   for (const [id, entry] of Object.entries(lines)) {
-    if (entry.alias && manifest[entry.alias]) manifest[id] = { ...manifest[entry.alias] };
+    if (entry.alias && Object.prototype.hasOwnProperty.call(manifest, entry.alias)) manifest[id] = { ...manifest[entry.alias] };
   }
   await fs.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + '\n');
   console.log(`Wrote ${MANIFEST_PATH} (${Object.keys(manifest).length}/${Object.keys(lines).length} effects have clips).`);
