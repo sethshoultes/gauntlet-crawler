@@ -603,17 +603,18 @@ always used) when there's no clip yet. `client/game.js` calls `say(id, text)` wi
 every narrator line (`welcome`, `needs_food`, `about_to_die`, `saved_by_food`, `poisoned`,
 `dont_shoot_food`, `dont_shoot_food_again`, `save_keys`, `use_magic`, `bravery`, `level_n`,
 `wave_n`, `died`, `amulet_invis`, `amulet_reflect`, `amulet_repulse`, `amulet_super`,
-`boost_pickup`, plus `cutscene` for cutscene captions) instead of hard-coding the line's text —
+`boost_pickup`, `you_are_it`, plus `cutscene` for cutscene captions) instead of hard-coding the line's text —
 `text` is still passed through as the speechSynthesis fallback and as the source for generating a
 clip, but a pre-rendered clip is looked up by id alone. Every line runs through the narrator-voice
 mixer volume from Settings.
 
 `client/voice-lines.json` is the source of truth mapping every id to its line's text, and
 `client/audio/voice/manifest.json` lists which ids currently have a rendered clip — the repo ships
-13 pre-rendered clips (every narrator line except the per-scene `cutscene` caption), committed
-alongside their `.ogg` files under `client/audio/voice/`. `speechSynthesis` is only used as a
-fallback: for the `cutscene` id (its caption text is unique per scene, so it's never pre-rendered)
-or if a shipped clip ever fails to load. `test/voice.test.js` greps `client/game.js` for every
+13 pre-rendered clips, committed alongside their `.ogg` files under `client/audio/voice/`.
+`speechSynthesis` is still the fallback for the remaining stable ids with no clip yet
+(`amulet_invis`, `amulet_reflect`, `amulet_repulse`, `amulet_super`, `boost_pickup`, `you_are_it`),
+for the `cutscene` id (its caption text is unique per scene, so it's never pre-rendered), or if a
+shipped clip ever fails to load. `test/voice.test.js` greps `client/game.js` for every
 `say(id, ...)` call and fails if an id is missing from `voice-lines.json`, and also asserts every
 `manifest.json` key has a committed, non-empty `.ogg` clip (starting with the `OggS` magic bytes)
 and a matching `voice-lines.json` entry. See [Development](#development) below for how to
