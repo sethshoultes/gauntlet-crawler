@@ -15,7 +15,7 @@
 // for whatever clips already exist on disk from a previous run. Every id keeps using
 // client/audio.js's synthesized fallback until it has a usable clip.
 //
-// If neither ELEVENLABS_API_KEY nor ELEVENLABS_API is set, this prints setup instructions and
+// If ELEVENLABS_API_KEY is not set, this prints setup instructions and
 // exits 0 (not an error) -- the game already falls back to the WebAudio synth for any effect with
 // no pre-rendered clip, so a fresh checkout works fine without ever running this script.
 //
@@ -61,7 +61,7 @@ async function processToOgg(inputPath, outputPath, encoderArgs) {
 }
 
 function printInstructions() {
-  console.log(`No ELEVENLABS_API_KEY (or ELEVENLABS_API) set — skipping sound-effect generation.
+  console.log(`No ELEVENLABS_API_KEY set — skipping sound-effect generation.
 
 client/audio.js already falls back to its synthesized WebAudio sound engine for any effect with
 no pre-rendered clip, so this is optional. To generate real clips:
@@ -88,7 +88,7 @@ async function main() {
     if (!(id in lines)) { console.error(`Unknown sfx id: ${id} (not in client/sfx-lines.json)`); process.exitCode = 1; return; }
   }
 
-  const apiKey = process.env.ELEVENLABS_API_KEY || process.env.ELEVENLABS_API;
+  const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) { printInstructions(); return; }
 
   const ffmpegPresent = await hasFfmpeg();
