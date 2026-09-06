@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateLevel, biasFromPrompt, generateTreasureRoom } from '../shared/procgen.js';
-import { validateLevel } from '../shared/level.js';
+import { parseLevel, validateLevel, exitReachable } from '../shared/level.js';
 
 test('procedural levels are valid across a wide difficulty range', () => {
   for (let level = 2; level <= 80; level += 3) {
@@ -10,6 +10,27 @@ test('procedural levels are valid across a wide difficulty range', () => {
       assert.deepEqual(validateLevel(lvl), [], `seed ${seed} level ${level}`);
     }
   }
+});
+
+// #48: exitReachable() is now key-aware (a door only opens if a key is actually reachable without
+// crossing it — see shared/level.js), which also means a key placed *inside* the exit room it
+// unlocks (the original LEVEL1 bug, reproduced generically here) is now structurally impossible:
+// generateLevel excludes the exit room's interior from key placement. Fuzz a wide seed/depth range
+// to make sure that holds — every generated level must both pass validateLevel (which already
+// checks exitReachable) and pass exitReachable directly, so a regression here fails loudly rather
+// than only showing up as a "not reachable" string buried in validateLevel's problem list.
+test('generated levels are solvable under the key-aware reachability check across many seeds/depths', () => {
+  let checked = 0;
+  for (let seed = 0; seed < 300; seed++) {
+    for (let depth = 1; depth <= 30; depth++) {
+      const lvl = generateLevel({ seed: `fuzz-${seed}`, level: depth });
+      const parsed = parseLevel(lvl);
+      assert.ok(exitReachable(parsed), `seed fuzz-${seed} level ${depth}: exit must be reachable`);
+      assert.deepEqual(validateLevel(lvl), [], `seed fuzz-${seed} level ${depth}`);
+      checked++;
+    }
+  }
+  assert.equal(checked, 300 * 30);
 });
 
 test('generation is deterministic for a seed/level pair', () => {

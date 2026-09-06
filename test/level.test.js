@@ -39,6 +39,139 @@ test('detects unreachable exit and doors without keys', () => {
   assert.deepEqual(validateLevel({ rows: withKey }), []);
 });
 
+// #48: exitReachable() used to treat every door as passable the instant a key existed *anywhere*
+// in the level. These minimal grids pin the key-aware replacement — doors are search state, and
+// opening a door cluster (see server/game/sim.js dissolveGroup) actually spends one of the keys
+// collected in the region reachable so far.
+test('a key sealed with no gap in its vault is never reachable, so the exit is not either', () => {
+  const rows = [
+    '############',
+    '#S.........#',
+    '#....####..#',
+    '#....#K.#..#',
+    '#....####..#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(!exitReachable(parseLevel({ rows })), 'the only key is walled off with no gap, so the door can never open');
+});
+
+test('a key reachable only through the one door it opens is useless — the exit stays sealed', () => {
+  const rows = [
+    '############',
+    '#S.........#',
+    '#..........#',
+    '######D#####',
+    '#....K.....#',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(!exitReachable(parseLevel({ rows })), 'the key sits behind the very door it would open');
+});
+
+test('one key and one door guarding the exit: reachable', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })));
+});
+
+test('a decoy door: the key must be spent on the door that actually leads to the exit', () => {
+  // Start room has two doors: one (left) leads to a dead-end vault, the other (right) leads to the
+  // exit. Only one key exists, reachable before either door. The search must find the branch where
+  // the single key is spent on the *right* door, even though the left one is tried too.
+  const rows = [
+    '################',
+    '#S.....K.......#',
+    '######D#D#######',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.....E.#',
+    '################',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })), 'search must try opening the door that actually reaches the exit');
+});
+
+test('two doors in series but only one key: sealed', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(!exitReachable(parseLevel({ rows })), 'one key can only open one of the two doors gating the exit');
+});
+
+test('two doors in series with two keys: reachable', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '######D#####',
+    '#....K.....#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })));
+});
+
+test('a 2-tile connected door cluster costs a single key, same as dissolveGroup', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '#####DD#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })), 'the whole DD cluster opens for one key, like Sim#dissolveGroup');
+});
+
 test('the new monster/item glyphs are accepted, and the skip-exit (8) counts as an exit', () => {
   const rows = LEVEL1.rows.slice();
   // Antechamber row 6 has a stretch of floor around the '2' grunt; swap in the new glyphs.
@@ -186,4 +319,56 @@ test("repairLevel's connectivity carve never overwrites a hidden exit tile (#27 
 test('the missing-exit error names every exit-like tile, including the hidden exit (#13)', () => {
   const rows = Array.from({ length: 12 }, (_, y) => (y === 0 || y === 11 ? '############' : y === 1 ? '#S.........#' : '#..........#'));
   assert.throws(() => parseLevel({ rows }), /E, 8, or H/);
+});
+
+// A grid with far more door clusters than the exact search is allowed to enumerate (see
+// MAX_EXACT_DOOR_GROUPS in shared/level.js): a corridor of 30 single doors in series with a pocket
+// of keys before them. The optimistic fallback must still say "solvable", quickly, and its mirror
+// with no keys at all must still say "not solvable".
+function manyDoorsLevel({ keys, keyBehindFirstDoor = false }) {
+  const w = 64; // parseLevel's MAX_SIZE: '#S' + 30 x '.D' + 'E#' fills it exactly
+  const wall = '#'.repeat(w);
+  // Optionally the only key sits past the second door (column 6, clear of the key pocket's
+  // columns 1-4 below): unreachable with every door shut, so even the optimistic check must
+  // reject it.
+  const doorRow = '#S' + '.D.D' + (keyBehindFirstDoor ? 'KD' : '.D') + '.D'.repeat(27) + 'E#';
+  // A 4x8 pocket of keys (32, enough for the 30 doors) hanging below the start, walled off from
+  // the corridor everywhere else so the doors cannot simply be walked around.
+  const pocketRow = '#' + (keys ? 'KKKK' : '....') + '#'.repeat(w - 6) + '#';
+  const rows = [wall, wall, doorRow];
+  while (rows.length < 11) rows.push(pocketRow);
+  rows.push(wall); // 12 rows: parseLevel's MIN_SIZE
+  return { name: 'many doors', rows };
+}
+
+// The per-test timeout (not a wall-clock assertion) is what guards against the exact search being
+// used here by mistake: 2^30 door states would never finish inside it.
+test('exitReachable stays bounded on a level with dozens of door clusters (optimistic all-open check)', { timeout: 5000 }, () => {
+  const lvl = parseLevel(manyDoorsLevel({ keys: true }));
+  assert.equal(lvl.rows[2].split('D').length - 1, 30, 'fixture has 30 door tiles');
+  assert.equal(exitReachable(lvl), true);
+  assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false }))), false, 'no key anywhere');
+  assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false, keyBehindFirstDoor: true }))), false, 'the only key is behind a door');
+});
+
+// Under the cluster bound but built to make every subset of doors reachable: 18 single-door
+// pockets hanging off the start corridor (2^18 door states) with keys for all of them, and an exit
+// sealed inside walls so the exact search can never stop early. Without the MAX_EXACT_STATES cap
+// this would BFS the grid a quarter of a million times; with it, the optimistic check takes over
+// and (correctly) rejects the level, inside the per-test timeout.
+test('exitReachable caps its exact search on a level that makes every door combination reachable', { timeout: 5000 }, () => {
+  const w = 64;
+  const wall = '#'.repeat(w);
+  const rows = [
+    wall,
+    '#S' + 'K'.repeat(20) + '.'.repeat(w - 23) + '#',
+    '#' + 'D#'.repeat(18) + '#'.repeat(w - 38) + '#',
+    '#' + '.#'.repeat(18) + '#'.repeat(w - 38) + '#',
+    wall,
+    '#'.repeat(w - 3) + 'E' + '##',
+  ];
+  while (rows.length < 12) rows.push(wall);
+  const lvl = parseLevel({ name: 'door combinations', rows });
+  assert.equal(lvl.rows[2].split('D').length - 1, 18, 'fixture has 18 door clusters');
+  assert.equal(exitReachable(lvl), false);
 });

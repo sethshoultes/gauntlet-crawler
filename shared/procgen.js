@@ -86,7 +86,23 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   };
   let cells = freeCells();
   const place = (c, n) => { for (let i = 0; i < n && cells.length; i++) { const [x, y] = cells.pop(); g[y][x] = c; } };
-  place(T.KEY, doorsPlaced + rng.int(0, 1));
+  // Keys must never land inside the room the doors they open are guarding (#48) — the exit room
+  // sits behind those very doors, so a key placed there would need itself to be reached first.
+  // Consumes from the tail of `cells` like place() does so the pass stays deterministic per seed;
+  // cells inside exitRoom are skipped for keys but left in the pool for the pickups placed after,
+  // so their spread can differ from the pre-#48 layout for the same seed.
+  const inExitRoom = (x, y) => x >= exitRoom.x && x < exitRoom.x + exitRoom.w && y >= exitRoom.y && y < exitRoom.y + exitRoom.h;
+  const placeKey = (n) => {
+    let placed = 0;
+    for (let i = cells.length - 1; i >= 0 && placed < n; i--) {
+      const [x, y] = cells[i];
+      if (inExitRoom(x, y)) continue;
+      cells.splice(i, 1);
+      g[y][x] = T.KEY;
+      placed++;
+    }
+  };
+  placeKey(doorsPlaced + rng.int(0, 1));
 
   // 5. Pickups: food shrinks with depth, treasure grows
   const foodN = clamp(Math.round((5 - diff * 0.15) * (1 + (bias.food ?? 0) * 0.6)), 1, 8);

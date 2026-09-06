@@ -49,16 +49,70 @@ export function validateLevel(raw) {
   for (let y = 0; y < h; y++) {
     if (rows[y][0] !== T.WALL || rows[y][w - 1] !== T.WALL) { problems.push('border must be walls'); break; }
   }
-  if (!exitReachable(lvl)) problems.push('exit is not reachable from the start (doors count as passable if a key exists)');
+  if (!exitReachable(lvl)) problems.push('exit is not reachable from the start (walled off, behind doors without enough reachable keys, or a hidden exit that cannot be revealed)');
   return problems;
 }
 
-/** BFS from the first start to any exit; doors are passable only if the level has at least one key.
+const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+// Above this many door clusters — or once its search has visited this many door-state
+// combinations — exitReachable() switches from its exact search to an optimistic all-doors-open
+// check; see the comment at that switch. 20 clusters keeps the exact search's bitmask well inside
+// 31 bits; the state cap keeps a single validateLevel() call to a few thousand grid BFS passes even
+// when a crafted level stays under the cluster bound but makes every subset of doors reachable.
+const MAX_EXACT_DOOR_GROUPS = 20;
+const MAX_EXACT_STATES = 4096;
+
+/** 4-connected clusters of door tiles, mirroring server/game/sim.js's dissolveGroup(): walking
+ *  into any door tile of a cluster spends one key and opens every door tile in that cluster at
+ *  once, so for reachability purposes a whole cluster is one all-or-nothing "lock" that costs one
+ *  key. Returns an array of tile-index arrays (one per cluster); index order gives each cluster's
+ *  bit position in exitReachable()'s door-state bitmask. */
+function findDoorGroups(rows, w, h) {
+  const seen = new Uint8Array(w * h);
+  const groups = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (rows[y][x] !== T.DOOR || seen[y * w + x]) continue;
+    const group = [];
+    const stack = [[x, y]];
+    seen[y * w + x] = 1;
+    while (stack.length) {
+      const [cx, cy] = stack.pop();
+      group.push(cy * w + cx);
+      for (const [dx, dy] of DIRS4) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const i = ny * w + nx;
+        if (seen[i] || rows[ny][nx] !== T.DOOR) continue;
+        seen[i] = 1;
+        stack.push([nx, ny]);
+      }
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+/** Search over which door clusters have been opened to decide whether the exit can be reached at
+ *  all: a hero only ever holds as many keys as they've actually walked over, and spending one on
+ *  the wrong door (see server/game/sim.js dissolveGroup — one key opens a WHOLE 4-connected door
+ *  cluster at once) can seal off a key needed elsewhere, so simply asking "does a key exist
+ *  somewhere in the level" (the old rule) missed levels where the only key is unreachable, or
+ *  reachable only behind the very door it would need to open. Instead this treats the set of
+ *  opened door clusters as search state: for a given state, BFS the region reachable from the
+ *  start with only those clusters open (everything else — walls, unopened doors, ungranted group
+ *  walls — stays solid); if the exit condition is met in that region, the level is solvable. If
+ *  not, for every door cluster adjacent to the region but not yet open, open it (spending one of
+ *  the keys collected so far) and recurse, provided a key is actually left to spend. Cluster count
+ *  is tiny in practice (a handful per level) so the state space (2^clusters) is cheap to exhaust.
+ *
  *  A group wall (see GROUP_WALLS/TRAP_PLATES) is passable only if the level actually contains the
  *  plate that dissolves it — with no plate placed it can never open, so it stays solid for
- *  reachability purposes. A timed wall (TIMED_WALLS) is always treated as eventually passable: its
- *  timer fires unconditionally, converting it to floor or an exit (see server/game/sim.js
- *  stepTimedWalls).
+ *  reachability purposes; unlike doors this isn't state-dependent (dissolving happens for free,
+ *  triggered by standing on the plate, not by spending a key), so it's resolved once up front. A
+ *  timed wall (TIMED_WALLS) is always treated as eventually passable: its timer fires
+ *  unconditionally, converting it to floor or an exit (see server/game/sim.js stepTimedWalls). The
+ *  secret wall (TRAP, `W`) crumbles on touch with no cost at all, so it is treated as ordinary
+ *  floor here (never filtered out below).
  *
  *  Mystery treasure rooms (#13): a hidden exit behaves like a wall until revealed and like an exit
  *  afterwards, so it is never pathed *through* here — it only satisfies reachability when the
@@ -67,41 +121,94 @@ export function validateLevel(raw) {
  *  condition needs all of them, so one unreachable treasure means the exit never opens). */
 export function exitReachable(lvl) {
   const { w, h, rows, starts } = lvl;
-  const hasKey = rows.some((r) => r.includes(T.KEY));
   const openableGroups = new Set();
   for (const [plateGlyph, wallGlyph] of Object.entries(TRAP_PLATES)) {
     if (rows.some((r) => r.includes(plateGlyph))) openableGroups.add(wallGlyph);
   }
-  const seen = new Uint8Array(w * h);
-  const q = [starts[0]];
-  seen[starts[0][1] * w + starts[0][0]] = 1;
-  let hiddenExitAdjacent = false;
-  let switchReached = false;
+  const doorGroups = findDoorGroups(rows, w, h);
+  const doorGroupOf = new Int32Array(w * h).fill(-1);
+  doorGroups.forEach((tiles, gi) => { for (const i of tiles) doorGroupOf[i] = gi; });
   let treasureTotal = 0;
-  let treasureReached = 0;
   for (const r of rows) for (const c of r) if (c === T.TREASURE) treasureTotal++;
-  while (q.length) {
-    const [x, y] = q.shift();
-    const here = rows[y][x];
-    if (EXIT_TILES.has(here)) return true;
-    if (here === T.SWITCH) switchReached = true;
-    if (here === T.TREASURE) treasureReached++;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + dx, ny = y + dy;
-      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-      const c = rows[ny][nx];
-      if (c === T.WALL) continue;
-      if (c === T.HIDDEN_EXIT) { hiddenExitAdjacent = true; continue; } // terminal once revealed, never a corridor
-      if (c === T.DOOR && !hasKey) continue;
-      if (GROUP_WALLS.has(c) && !openableGroups.has(c)) continue;
-      const i = ny * w + nx;
-      if (seen[i]) continue;
-      seen[i] = 1;
-      q.push([nx, ny]);
+
+  // BFS the region reachable from the start with door clusters in `openMask` passable and every
+  // other door solid. Returns whether the exit condition is met plus what's needed to try opening
+  // one more cluster: how many keys were actually collected in this region, and which not-yet-open
+  // clusters border it.
+  // `openMask` is a bitmask (exact search) or a Set of cluster indices (all-open optimistic check, below).
+  const isOpen = (openMask, gi) => (openMask instanceof Set ? openMask.has(gi) : ((openMask >> gi) & 1) === 1);
+  const exploreRegion = (openMask) => {
+    const seen = new Uint8Array(w * h);
+    const start = starts[0];
+    const q = [start];
+    seen[start[1] * w + start[0]] = 1;
+    let exitFound = false, hiddenExitAdjacent = false, switchReached = false, treasureReached = 0, keysInRegion = 0;
+    const adjacentClosedGroups = new Set();
+    for (let head = 0; head < q.length; head++) {
+      const [x, y] = q[head];
+      const here = rows[y][x];
+      if (EXIT_TILES.has(here)) exitFound = true;
+      else if (here === T.SWITCH) switchReached = true;
+      else if (here === T.TREASURE) treasureReached++;
+      else if (here === T.KEY) keysInRegion++;
+      for (const [dx, dy] of DIRS4) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const c = rows[ny][nx];
+        if (c === T.WALL) continue;
+        if (c === T.HIDDEN_EXIT) { hiddenExitAdjacent = true; continue; } // terminal once revealed, never a corridor
+        const i = ny * w + nx;
+        if (c === T.DOOR) {
+          const gi = doorGroupOf[i];
+          if (!isOpen(openMask, gi)) { adjacentClosedGroups.add(gi); continue; }
+        } else if (GROUP_WALLS.has(c) && !openableGroups.has(c)) continue;
+        if (seen[i]) continue;
+        seen[i] = 1;
+        q.push([nx, ny]);
+      }
+    }
+    const exitSatisfied = exitFound || (hiddenExitAdjacent && (switchReached || (treasureTotal > 0 && treasureReached === treasureTotal)));
+    return { exitSatisfied, keysInRegion, adjacentClosedGroups };
+  };
+
+  // The exact search below is exponential in the number of door clusters and keys them in a 32-bit
+  // mask. Hand-built and procedural levels have a handful of clusters, but an editor-drawn or
+  // AI-generated one (validateLevel() runs on user-supplied levels server-side) can scatter dozens
+  // of single doors, so past a cluster bound — or once the search has visited more states than
+  // MAX_EXACT_STATES — the check turns deliberately optimistic instead: the exit counts as
+  // reachable if it can be reached with every door cluster open AND at least one key is
+  // collectable *before* any door is opened (a hero who can't reach a single key with every door
+  // still shut never opens the first one, so the doors-closed region is all they will ever see).
+  // This can accept a level the exact search would reject (a key spent on the wrong door, or too
+  // few keys for a long chain) but never rejects one it would accept — the safe direction for a
+  // validator whose "false" discards or rewrites a level. An earlier greedy-with-budget variant
+  // was order-dependent and could do the opposite (review on #48).
+  const optimistic = () => {
+    const closed = exploreRegion(0);
+    if (closed.exitSatisfied) return true;
+    if (closed.keysInRegion < 1) return false;
+    return exploreRegion(new Set(doorGroups.map((_, gi) => gi))).exitSatisfied;
+  };
+  if (doorGroups.length > MAX_EXACT_DOOR_GROUPS) return optimistic();
+
+  const popcount = (mask) => { let n = 0; for (let m = mask; m; m >>>= 1) n += m & 1; return n; };
+  const visited = new Set([0]);
+  const stack = [0];
+  while (stack.length) {
+    if (visited.size > MAX_EXACT_STATES) return optimistic(); // bounded CPU on adversarial input, see above
+    const mask = stack.pop();
+    const { exitSatisfied, keysInRegion, adjacentClosedGroups } = exploreRegion(mask);
+    if (exitSatisfied) return true;
+    const keysLeftToSpend = keysInRegion - popcount(mask);
+    if (keysLeftToSpend < 1) continue; // every key collected so far is already spent on an open cluster
+    for (const gi of adjacentClosedGroups) {
+      const next = mask | (1 << gi);
+      if (visited.has(next)) continue;
+      visited.add(next);
+      stack.push(next);
     }
   }
-  if (!hiddenExitAdjacent) return false;
-  return switchReached || (treasureTotal > 0 && treasureReached === treasureTotal);
+  return false;
 }
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */
