@@ -12,7 +12,7 @@ import { shouldHandle, versionedUrl, PRECACHE_URLS } from './sw-rules.js';
 // Bump this whenever the precached shell changes for a reason *other* than the asset fingerprint
 // below, so activate() drops the previous cache instead of serving stale assets forever. Plain
 // string constant — there's no build step to stamp one in.
-const SW_VERSION = 'v9';
+const SW_VERSION = 'v10';
 
 // Cache-busting (#38): server/index.js replaces this literal token with its running
 // ASSET_VERSION every time it serves /sw.js — see serveStatic()'s special-case for this one path.
@@ -57,13 +57,14 @@ self.addEventListener('fetch', (event) => {
   if (request.mode === 'navigate') {
     // Navigations: prefer the live network (so a player online always gets the current lobby),
     // falling back to the cached page — then the cached home page — only once offline. Page URLs
-    // are never versioned (see versionedUrl()), so an exact match against the precache is exactly
-    // right here — no ignoreSearch needed, or wanted (see the ASSET_VERSION comment above).
+    // are never versioned (see versionedUrl()) but do carry app queries (`/?room=abc`, `?touch=1`),
+    // and the precache holds only the bare paths, so ignore the query here. That is safe for
+    // pages precisely because they are not content-addressed; assets below must match exactly.
     event.respondWith((async () => {
       try {
         return await fetch(request);
       } catch {
-        const cached = await caches.match(request);
+        const cached = await caches.match(request, { ignoreSearch: true });
         return cached || (await caches.match('/index.html'));
       }
     })());

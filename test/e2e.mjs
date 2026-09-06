@@ -584,10 +584,10 @@ async function main() {
       try {
         await pageD.goto(`${baseUrl}/`, { waitUntil: 'load' });
 
-        // The server stamps ?v=<ASSET_VERSION> onto this href (#38), so match the base path
-        // rather than the exact string.
+        // The server stamps ?v=<ASSET_VERSION> onto this href (#38); require it, so a regression in
+        // the HTML fingerprinting shows up here rather than as stale assets after a deploy.
         const manifestHref = await pageD.locator('link[rel="manifest"]').getAttribute('href');
-        if (!/^\/manifest\.webmanifest(\?v=[0-9a-f]{12})?$/.test(manifestHref)) throw new Error(`expected the manifest link, got href="${manifestHref}"`);
+        if (!/^\/manifest\.webmanifest\?v=[0-9a-f]{12}$/.test(manifestHref)) throw new Error(`expected the manifest link, got href="${manifestHref}"`);
 
         const reg = await pageD.evaluate(async () => {
           const registration = await navigator.serviceWorker.getRegistration();
