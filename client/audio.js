@@ -3,7 +3,7 @@
 // bus, for a grittier 1985-arcade feel. Exposes a small master/SFX/voice volume mixer persisted
 // to localStorage (mirrored from server-saved prefs for logged-in users via common.js's
 // loadPrefs(), same pattern as the existing gc_mute/gc_narrate keys) and the `M`-key mute toggle.
-// Everything here is synthesized at runtime — no audio assets are shipped.
+// Effects play from the pre-rendered clips in client/audio/sfx/ (see manifest.json) when one exists and fall back to the synthesizer otherwise.
 const VOL_KEYS = { master: 'gc_vol_master', sfx: 'gc_vol_sfx', voice: 'gc_vol_voice' };
 
 function readVol(key) {
@@ -73,7 +73,7 @@ function loadSfxManifest() {
   if (!sfxManifestPromise) {
     sfxManifestPromise = fetch('/audio/sfx/manifest.json')
       .then((r) => (r.ok ? r.json() : {}))
-      .then((m) => { sfxManifest = (m && typeof m === 'object') ? m : {}; return sfxManifest; })
+      .then((m) => { sfxManifest = (m && typeof m === 'object' && !Array.isArray(m)) ? m : {}; return sfxManifest; })
       .catch(() => { sfxManifest = {}; return sfxManifest; });
   }
   return sfxManifestPromise;
@@ -155,13 +155,13 @@ function noise(dur, gain = 0.08, opts = {}) {
 }
 function chord(freqs, dur, type, gain, gap = 0) { freqs.forEach((f, i) => setTimeout(() => tone(f, dur, type, gain), i * gap)); }
 
-const sfxLast = {};
+const sfxLast = new Map();
 /** Play a named sound effect (rate-limited per name so a burst of identical events in one frame
  *  doesn't distort into a buzz). See README's "Sound" section for the full catalogue. */
 export function sfx(name) {
   const now = performance.now();
-  if (sfxLast[name] && now - sfxLast[name] < 40) return;
-  sfxLast[name] = now;
+  if (sfxLast.has(name) && now - sfxLast.get(name) < 40) return;
+  sfxLast.set(name, now);
 
   if (!muted) {
     const buf = sfxBuffers.get(name);
