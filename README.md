@@ -797,23 +797,30 @@ button appears (bottom-right, or wherever the page already provides an install s
   try the network first and fall back to the cached page only once offline. **Offline caveat**: the cached
   shell loads and the classic hero list still renders, but live play, rooms, chat, the leaderboard and the AI
   level builder all need the network — none of that is, or should be, served from cache.
-- Every precached entry is fetched with no query string, but the server stamps `?v=<ASSET_VERSION>` onto the
-  links/imports a page actually requests (see "Cloudflare and stale JS/CSS after a release" under
-  Deployment) — so both `caches.match()` calls in `client/sw.js` pass `{ ignoreSearch: true }`, letting a
-  versioned request still hit the precached shell instead of missing it and refetching over the network.
+- The server stamps `?v=<ASSET_VERSION>` onto the links/imports a page actually requests (see "Cloudflare
+  and stale JS/CSS after a release" under Deployment) — so `client/sw.js` precaches `PRECACHE_URLS` run
+  through the same `versionedUrl()` helper (`client/sw-rules.js`, also used by `server/assets.js`), keyed by
+  its own `ASSET_VERSION` (baked into the served `/sw.js` by replacing a `__ASSET_VERSION__` placeholder —
+  see `server/index.js`'s `serveStatic()`). A versioned request then lands on an *exact* `caches.match()`,
+  never an `ignoreSearch` match that could otherwise resolve to an older cached `?v=` or an unversioned URL
+  Cloudflare itself might be serving stale.
 - On activation, a new version posts a message back to every open tab and `client/pwa.js` shows a small
   "Updated — reload for the latest version" toast — deferred until gameplay ends (it checks the same
   `gc-playing` `<body>` class the mobile layout uses) so it never interrupts an active run.
 - Pass `?nosw=1` in the URL to skip registering the service worker entirely (used by the smoke/e2e test
   harnesses so a cached shell from a previous run can never mask a fresh code change).
 - **Version bump discipline**: `client/sw.js`'s `SW_VERSION` constant must change whenever the precached
-  shell does — a new/removed file in `PRECACHE_URLS` (`client/sw-rules.js`), or a content change to any
-  file already in it — because that's what makes the *worker script's own bytes* change, which is what
-  actually triggers a browser's update check; the cache name it derives (`gauntlet-shell-${SW_VERSION}`)
-  is also what makes `activate()` drop the previous cache instead of leaving it to leak. Forgetting the
-  bump means a deploy silently never reaches players on the cached shell. `test/pwa.test.js` enforces this:
-  it hashes `SW_VERSION` together with `PRECACHE_URLS` and the bytes of every precached file and pins that
-  to `test/fixtures/sw-shell-hash.json`, so any of that changing without updating both `SW_VERSION` and the
+  shell changes for a reason *other* than the asset fingerprint — a new/removed file in `PRECACHE_URLS`
+  (`client/sw-rules.js`), or a content change to any file already in it — because that's what makes the
+  *worker script's own bytes* change for that kind of edit, which is what triggers a browser's update
+  check. (A code deploy that only changes `client/`/`shared/` file contents already changes `ASSET_VERSION`,
+  and therefore `/sw.js`'s served bytes and its `CACHE_NAME` — see the Deployment section — so it doesn't
+  additionally need an `SW_VERSION` bump on its own.) The cache name it derives
+  (`` gauntlet-shell-${SW_VERSION}-${ASSET_VERSION} ``) is what makes `activate()` drop the previous cache
+  instead of leaving it to leak. Forgetting an `SW_VERSION` bump when `PRECACHE_URLS` itself changes shape
+  means a deploy silently never reaches players on the cached shell. `test/pwa.test.js` enforces this: it
+  hashes `SW_VERSION` together with `PRECACHE_URLS` and the bytes of every precached file and pins that to
+  `test/fixtures/sw-shell-hash.json`, so any of that changing without updating both `SW_VERSION` and the
   fixture fails the test (its failure message prints the exact new hash to paste in).
 
 ## Level format
@@ -1051,8 +1058,13 @@ indefinitely, at the edge or the browser, because a new deploy is a new URL. Eve
 (no `?v=`, or a stale one from a previous deploy) stays `no-cache`, so a client that doesn't yet
 have the versioned link still revalidates every time — no page can end up mixing assets from two
 different releases. `/sw.js` is the one path that's *never* versioned or long-cached: the browser's
-own update check for it depends on refetching the real file unversioned, and the service worker
-matches its precached shell with `{ ignoreSearch: true }` so a versioned request still hits it.
+own update check for it depends on refetching the real file unversioned. `versionedUrl()`
+(`client/sw-rules.js`) is the single source of truth for exactly which URLs get `?v=` and what it
+looks like — `server/assets.js`'s HTML/JS rewriters call it directly, and `client/sw.js` maps it
+over `PRECACHE_URLS` (keyed by its own `ASSET_VERSION`, baked into the served `/sw.js` by replacing
+a `__ASSET_VERSION__` placeholder — see `serveStatic()`) so the precached shell is addressed
+exactly the way a versioned page requests it, and a plain `caches.match()` finds it without ever
+risking a match against an older cached `?v=`.
 
 Post-deploy check — confirm the live origin is actually serving the new build's fingerprint before
 calling a release done:

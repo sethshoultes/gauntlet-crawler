@@ -40,6 +40,25 @@ export function shouldHandle(request) {
   return !isNetworkOnly(request);
 }
 
+// Extensions the server fingerprints with `?v=<ASSET_VERSION>` (server/assets.js's
+// isVersionableUrl/isVersionableSpecifier) — .js, .css, and the web app manifest. Defined once
+// here, not duplicated on the server, so "which URLs get a version suffix, and what that suffix
+// looks like" can never drift out of sync between the two sides of this cache-busting scheme.
+const VERSIONABLE_EXT_RE = /\.(js|css|webmanifest)$/i;
+
+/**
+ * Append `?v=<v>` to `url` if it's one of the extensions the server versions and doesn't already
+ * carry a query string; every other URL — an HTML page, an image, or `/sw.js` itself (which the
+ * browser must always refetch unversioned to notice a new deploy at all) — comes back unchanged.
+ * Pure, and shared by both sides of the fingerprinting scheme: server/assets.js's HTML/JS
+ * rewriters call it per same-origin attribute/specifier they find, and client/sw.js maps it over
+ * PRECACHE_URLS so the shell it installs is addressed exactly the way the server serves it.
+ */
+export function versionedUrl(url, v) {
+  if (!url || url === '/sw.js' || url.includes('?')) return url;
+  return VERSIONABLE_EXT_RE.test(url) ? `${url}?v=${v}` : url;
+}
+
 /** The static app shell precached at install. Lives here (not in sw.js, which needs a
  * ServiceWorkerGlobalScope) so test/pwa.test.js can pin it to the real file set: every client
  * module under client/ except the worker itself, every shared module, and the static assets the

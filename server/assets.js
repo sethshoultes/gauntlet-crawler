@@ -15,6 +15,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+// Single source of truth for "which URLs get a ?v= suffix, and what that suffix looks like" —
+// shared with client/sw.js (which maps this over PRECACHE_URLS so the service worker's precache
+// keys line up with the versioned URLs the server actually serves). client/sw-rules.js is a
+// plain dependency-free module, safe to import from either side.
+import { versionedUrl } from '../client/sw-rules.js';
 
 /** Recursively list every regular file under `dir`, as paths relative to `dir` using forward
  * slashes (so the result is stable across platforms and matches how these files are served). */
@@ -58,14 +63,13 @@ export function computeAssetVersion(dirs) {
 }
 
 // A same-origin asset reference eligible for versioning: root-relative (starts with a single
-// '/', never '//' — that's protocol-relative and points off-origin), has no query string
-// already, ends in .js/.css/.webmanifest, and is never the service worker script itself (the
-// browser must always re-fetch /sw.js unversioned to notice a new deploy at all).
-function isVersionableUrl(url) {
-  if (!url || url === '/sw.js') return false;
-  if (url.includes('?') || url.includes('#')) return false;
-  if (!url.startsWith('/') || url.startsWith('//')) return false;
-  return /\.(js|css|webmanifest)$/i.test(url);
+// '/', never '//' — that's protocol-relative and points off-origin) and has no '#' fragment.
+// Whether its extension actually qualifies (.js/.css/.webmanifest) and whether it's `/sw.js` (the
+// browser must always re-fetch that one unversioned to notice a new deploy at all) is
+// versionedUrl()'s call, not duplicated here — see the import above.
+function isSameOriginUrl(url) {
+  if (!url || url.includes('#')) return false;
+  return url.startsWith('/') && !url.startsWith('//');
 }
 
 const HTML_TAG_RE = /<(script|link)\b([^>]*)>/gi;
@@ -84,7 +88,9 @@ function parseAttrs(attrStr) {
 /**
  * Rewrite same-origin static-asset references in a served HTML page so they carry `?v=<v>`:
  * `<script src="/x.js">`, `<link href="/x.css">`, `<link href="/manifest.webmanifest">` and any
- * `<link rel="modulepreload" href="...">` (whatever its extension). Never touches `/sw.js`, an
+ * `<link rel="modulepreload" href="...">` — but only when that href's extension is one
+ * versionedUrl() actually versions (.js/.css/.webmanifest); a modulepreload pointed at some other
+ * extension is left alone, same as everywhere else in this module. Never touches `/sw.js`, an
  * external URL, or a URL that already carries a query string.
  */
 export function versionHtml(html, v) {
@@ -101,28 +107,30 @@ export function versionHtml(html, v) {
       const rel = (attrs.rel?.value || '').toLowerCase().split(/\s+/);
       if (!rel.includes('modulepreload') && !/\.(css|webmanifest)$/i.test(attr.value)) return full;
     }
-    if (!isVersionableUrl(attr.value)) return full;
+    if (!isSameOriginUrl(attr.value)) return full;
+    const versioned = versionedUrl(attr.value, v);
+    if (versioned === attr.value) return full; // /sw.js, an unversioned extension, or an existing query
     const original = `${attr.quote}${attr.value}${attr.quote}`;
-    const replaced = `${attr.quote}${attr.value}?v=${v}${attr.quote}`;
+    const replaced = `${attr.quote}${versioned}${attr.quote}`;
     return full.replace(original, replaced);
   });
 }
 
-// Same eligibility as HTML asset refs, minus the extension check (callers already require .js
-// via the regexes below) — a JS import specifier that is relative/root-absolute, has no query
-// yet, and isn't a same-origin URL smuggled in some other form.
-function isVersionableSpecifier(spec) {
-  if (!spec || spec.includes('?') || spec.includes('#')) return false;
-  if (!/\.js$/i.test(spec)) return false;
+// A JS import specifier eligible for versioning: relative (`./`, `../`) or root-absolute (`/...`,
+// never `//` — that's protocol-relative, off-origin). Whether its extension/query/`/sw.js`-ness
+// actually qualifies is versionedUrl()'s call, same as isSameOriginUrl() above for HTML.
+function isRelativeOrRootAbsoluteSpecifier(spec) {
+  if (!spec || spec.includes('#')) return false;
   if (spec.startsWith('./') || spec.startsWith('../')) return true;
-  if (spec.startsWith('/') && !spec.startsWith('//')) return spec !== '/sw.js';
-  return false;
+  return spec.startsWith('/') && !spec.startsWith('//');
 }
 
 function rewriteSpecifiers(source, v, regex) {
   return source.replace(regex, (match, prefix, quote, spec) => {
-    if (!isVersionableSpecifier(spec)) return match;
-    return `${prefix}${quote}${spec}?v=${v}${quote}`;
+    if (!isRelativeOrRootAbsoluteSpecifier(spec)) return match;
+    const versioned = versionedUrl(spec, v);
+    if (versioned === spec) return match; // /sw.js, an unversioned extension, or an existing query
+    return `${prefix}${quote}${versioned}${quote}`;
   });
 }
 
@@ -137,10 +145,11 @@ const BARE_IMPORT_RE = /\b(import\s+)(['"])([^'"]*)\2/g; // side-effect import '
 /**
  * Rewrite same-origin ES module import specifiers in served JS so they carry `?v=<v>`: static
  * `import ... from '...'`/`export ... from '...'`, dynamic `import('...')`, and bare side-effect
- * `import '...'`. Only relative (`./`, `../`) or root-absolute (`/...`) `.js` specifiers are
- * touched; bare package specifiers, external URLs, `import.meta`, and `/sw.js` are left alone —
- * e.g. `navigator.serviceWorker.register('/sw.js')` is a method call, not an import, so it's
- * never matched by any of these patterns in the first place.
+ * `import '...'`. Only relative (`./`, `../`) or root-absolute (`/...`) specifiers whose extension
+ * versionedUrl() actually versions (.js in practice — every import in this codebase) are touched;
+ * bare package specifiers, external URLs, `import.meta`, and `/sw.js` are left alone — e.g.
+ * `navigator.serviceWorker.register('/sw.js')` is a method call, not an import, so it's never
+ * matched by any of these patterns in the first place.
  */
 export function versionJs(source, v) {
   let out = source;

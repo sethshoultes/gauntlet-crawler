@@ -123,7 +123,14 @@ function serveStatic(req, res, urlPath, searchParams) {
     // so every reference a versioned page or module makes is itself versioned — the one thing
     // that keeps a fresh index.html from ever being combined with a stale game.js/style.css.
     if (ext === '.html' || ext === '.js') {
-      const text = ext === '.html' ? versionHtml(data.toString('utf8'), ASSET_VERSION) : versionJs(data.toString('utf8'), ASSET_VERSION);
+      let text = ext === '.html' ? versionHtml(data.toString('utf8'), ASSET_VERSION) : versionJs(data.toString('utf8'), ASSET_VERSION);
+      // client/sw.js ships with a literal '__ASSET_VERSION__' placeholder (its own ASSET_VERSION
+      // constant, its CACHE_NAME, and what it maps PRECACHE_URLS through) — bake this run's real
+      // ASSET_VERSION into it here so the served worker's bytes actually change on every deploy.
+      // That's what makes the browser's update check notice a new build regardless of whether
+      // sw.js's own source changed, and what lets its fetch handler use a plain caches.match()
+      // (no ignoreSearch) since the precache is now keyed by the same ?v= a versioned page uses.
+      if (rel === '/sw.js') text = text.replaceAll('__ASSET_VERSION__', ASSET_VERSION);
       const body = Buffer.from(text, 'utf8');
       headers['Content-Length'] = body.length;
       res.writeHead(200, headers);
