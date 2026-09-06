@@ -67,6 +67,9 @@ export function initAudio() {
 // client/audio.js's synth engine above remains the always-available fallback: sfx(name) plays a
 // pre-rendered clip when one has been generated and decoded, otherwise falls straight through to
 // the WebAudio synth switch below, exactly as before this pipeline existed.
+// A manifest entry's `file` must look like this -- a plain basename, no directory separators, no
+// ".." traversal, no query/hash -- before it's ever used to build a fetch URL (see sfx() below).
+const SFX_FILE_RE = /^[a-zA-Z0-9_-]+\.ogg$/;
 let sfxManifest = null; // null until the fetch below resolves to a real (possibly empty) object;
                          // reset back to null on a fetch/parse failure too (see the .catch below)
                          // rather than left at a permanent {}, so sfxManifest === null unambiguously
@@ -124,11 +127,14 @@ const sfxBufferPromises = new Map(); // manifest file -> in-flight decode Promis
 function decodeAudioData(a, arrayBuffer) {
   return new Promise((resolve, reject) => {
     a.decodeAudioData(arrayBuffer, resolve, (err) => {
-      // Marked `definitive` (see loadSfxBuffer() below): a corrupt/undecodable file won't decode
-      // any differently on a retry, unlike a network-level failure fetching its bytes.
-      const e = err || new Error('decodeAudioData failed');
-      try { e.definitive = true; } catch { /* a frozen/sealed DOMException in some runtime -- ignore */ }
-      reject(e);
+      // Wrap in a fresh Error (always extensible, unlike the DOMException the browser passed in,
+      // which some runtimes could hand back frozen/sealed) so `definitive` reliably sticks --
+      // see loadSfxBuffer() below: a corrupt/undecodable file won't decode any differently on a
+      // retry, unlike a network-level failure fetching its bytes, so this must always be cached.
+      const wrapped = new Error((err && err.message) || 'decodeAudioData failed');
+      wrapped.definitive = true;
+      wrapped.cause = err;
+      reject(wrapped);
     });
   });
 }
@@ -225,7 +231,11 @@ export function sfx(name) {
     // Own-property check: the manifest is parsed JSON, so a name like "__proto__" would otherwise
     // resolve through the prototype chain to a truthy non-entry.
     const entry = sfxManifest && Object.prototype.hasOwnProperty.call(sfxManifest, name) ? sfxManifest[name] : null;
-    const file = entry && typeof entry.file === 'string' ? entry.file : null;
+    // entry.file comes from a fetched JSON manifest, so it's untrusted input, not just an internal
+    // id -- restrict it to a plain "<id>.ogg" basename (no slashes, no "..", no query/hash) before
+    // ever using it to build a fetch URL, so a malformed/compromised manifest can't point the
+    // client at an arbitrary same-origin path.
+    const file = entry && typeof entry.file === 'string' && SFX_FILE_RE.test(entry.file) ? entry.file : null;
     if (file) {
       const buf = sfxBuffers.get(file);
       if (buf) { playBuffer(buf); return; }
