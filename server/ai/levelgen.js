@@ -89,7 +89,9 @@ export async function generateFromPrompt({ prompt, difficulty = 3, size = 'mediu
     try {
       const response = await anthropic.messages.create({
         model: MODEL,
-        max_tokens: 8000,
+        // Adaptive thinking spends from this same budget, so keep it generous: 8000 was enough to
+        // let reasoning crowd out the JSON and truncate the level mid-string.
+        max_tokens: 16000,
         system: SYSTEM,
         messages: [{
           role: 'user',
@@ -103,8 +105,16 @@ export async function generateFromPrompt({ prompt, difficulty = 3, size = 'mediu
       if (response.stop_reason === 'refusal') {
         return fallback(cleanPrompt, difficulty, size, 'The AI declined this request, so a procedural level was generated instead.');
       }
+      if (response.stop_reason === 'max_tokens') {
+        console.warn('[levelgen] response truncated at max_tokens');
+        return fallback(cleanPrompt, difficulty, size, 'The AI response was cut off before the level was complete; procedural fallback used.');
+      }
       const text = response.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-      let raw = JSON.parse(text);
+      let raw;
+      try { raw = JSON.parse(text); } catch (err) {
+        console.warn('[levelgen] malformed JSON from model:', err.message);
+        return fallback(cleanPrompt, difficulty, size, 'The AI returned a malformed level; procedural fallback used.');
+      }
       let problems = validateLevel(raw);
       if (problems.length) {
         raw = repairLevel(raw);
