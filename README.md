@@ -797,6 +797,10 @@ button appears (bottom-right, or wherever the page already provides an install s
   try the network first and fall back to the cached page only once offline. **Offline caveat**: the cached
   shell loads and the classic hero list still renders, but live play, rooms, chat, the leaderboard and the AI
   level builder all need the network — none of that is, or should be, served from cache.
+- Every precached entry is fetched with no query string, but the server stamps `?v=<ASSET_VERSION>` onto the
+  links/imports a page actually requests (see "Cloudflare and stale JS/CSS after a release" under
+  Deployment) — so both `caches.match()` calls in `client/sw.js` pass `{ ignoreSearch: true }`, letting a
+  versioned request still hit the precached shell instead of missing it and refetching over the network.
 - On activation, a new version posts a message back to every open tab and `client/pwa.js` shows a small
   "Updated — reload for the latest version" toast — deferred until gameplay ends (it checks the same
   `gc-playing` `<body>` class the mobile layout uses) so it never interrupts an active run.
@@ -855,6 +859,8 @@ server/            Node HTTP + WebSocket server
   log.js           structured JSON logger + persisted `errors` table
   ws-heartbeat.js  WebSocket liveness sweep (ping/pong, dead-client cleanup)
   highscores.js    arcade all-time high scores: record/qualify/claim-initials (#14)
+  assets.js        ASSET_VERSION + HTML/JS asset-URL fingerprinting so a release can't mix
+                   stale JS/CSS with new HTML behind Cloudflare's edge cache (#38)
 shared/            code used by both server and browser
   constants.js     tiles, classes, monsters, tuning
   level.js         parse / validate / repair, tile legend
@@ -1022,6 +1028,41 @@ set:
 | `DEPLOY_USER` | SSH user on the server (the `deploy` user created by `setup-server.sh`) |
 | `DEPLOY_SSH_KEY` | Private key authorized for that user (its public half must be in the user's `~/.ssh/authorized_keys`) |
 | `DEPLOY_PORT` *(optional)* | SSH port, if not 22 |
+
+### Cloudflare and stale JS/CSS after a release (#38)
+
+Production sits behind Cloudflare, and Cloudflare's default cache rules for static file extensions
+(`.js`, `.css`, ...) apply their own **4-hour browser TTL at the edge**, rewriting whatever
+`Cache-Control` the origin sent. The origin serves everything `no-cache` — right for `index.html`,
+but Cloudflare caches `game.js`/`style.css` anyway and keeps serving them for up to four hours
+after a deploy. The failure mode: a phone that loaded the site an hour ago requests a fresh
+`index.html` (always `no-cache`, so it gets the new markup immediately) but the edge still answers
+`game.js`/`style.css` with the previous release's bytes — a new page paired with old code, which
+broke in exactly this way after #36 (keyboard hints and no d-pad on a phone, a tiny canvas, `HEALTH
+0`).
+
+Fixed on the origin side, independent of any Cloudflare cache-rule change: at startup the server
+computes `ASSET_VERSION` (`server/assets.js`, `computeAssetVersion()`) — a short hash of every file
+under `client/` and `shared/` — and stamps it onto every same-origin asset URL it serves:
+`<script src>`/`<link href>` in HTML (`versionHtml()`) and `import`/`export ... from`/dynamic
+`import()` specifiers in JS (`versionJs()`). A request whose `?v=` matches the running server's
+`ASSET_VERSION` gets `Cache-Control: public, max-age=31536000, immutable` — safe to cache
+indefinitely, at the edge or the browser, because a new deploy is a new URL. Everything else
+(no `?v=`, or a stale one from a previous deploy) stays `no-cache`, so a client that doesn't yet
+have the versioned link still revalidates every time — no page can end up mixing assets from two
+different releases. `/sw.js` is the one path that's *never* versioned or long-cached: the browser's
+own update check for it depends on refetching the real file unversioned, and the service worker
+matches its precached shell with `{ ignoreSearch: true }` so a versioned request still hits it.
+
+Post-deploy check — confirm the live origin is actually serving the new build's fingerprint before
+calling a release done:
+
+```bash
+curl -s https://gauntlet.adventurebuildr.com/ | grep -o 'game.js?v=[0-9a-f]*'
+```
+
+`GET /api/health`'s `assetVersion` field reports the same hash, if you'd rather compare it against
+a value captured before the deploy than eyeball the `curl` output.
 
 ### Manual operations
 

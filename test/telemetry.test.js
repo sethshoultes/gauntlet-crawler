@@ -33,6 +33,9 @@ test('GET /api/health has the documented shape and needs no auth', async () => {
     assert.equal(typeof body.players, 'number');
     assert.equal(typeof body.version, 'string');
     assert.equal(body.sentry, false, 'SENTRY_DSN is explicitly cleared for this test, so this must report disabled');
+    // Cache-busting fingerprint (#38): lets a post-deploy check confirm the origin actually
+    // restarted with the new build, alongside `curl .../ | grep game.js?v=`.
+    assert.match(body.assetVersion, /^[0-9a-f]{12}$/);
   }, { env: { SENTRY_DSN: '' } });
 });
 

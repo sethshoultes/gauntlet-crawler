@@ -11,7 +11,7 @@ import { shouldHandle, PRECACHE_URLS } from './sw-rules.js';
 
 // Bump this whenever the precached shell changes, so activate() drops the previous cache instead
 // of serving stale assets forever. Plain string constant — there's no build step to stamp one in.
-const SW_VERSION = 'v6';
+const SW_VERSION = 'v7';
 const CACHE_NAME = `gauntlet-shell-${SW_VERSION}`;
 
 // PRECACHE_URLS (the static app shell) is defined in ./sw-rules.js so the unit tests can pin it
@@ -43,19 +43,24 @@ self.addEventListener('fetch', (event) => {
   if (request.mode === 'navigate') {
     // Navigations: prefer the live network (so a player online always gets the current lobby),
     // falling back to the cached page — then the cached home page — only once offline.
+    // `ignoreSearch` (#38): a versioned request (`?v=<ASSET_VERSION>`, from a same-origin link the
+    // server already rewrote) still has to hit the precache entry the shell was installed under,
+    // which was fetched with no query at all.
     event.respondWith((async () => {
       try {
         return await fetch(request);
       } catch {
-        const cached = await caches.match(request);
-        return cached || (await caches.match('/index.html'));
+        const cached = await caches.match(request, { ignoreSearch: true });
+        return cached || (await caches.match('/index.html', { ignoreSearch: true }));
       }
     })());
     return;
   }
 
   event.respondWith((async () => {
-    const cached = await caches.match(request);
+    // Same reason as the navigate branch above: match ignoring ?v= so a versioned asset request
+    // still lands on the shell's unversioned precache entry instead of missing it and re-fetching.
+    const cached = await caches.match(request, { ignoreSearch: true });
     if (cached) return cached;
     const response = await fetch(request);
     if (response.ok) {

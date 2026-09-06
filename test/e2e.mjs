@@ -584,8 +584,10 @@ async function main() {
       try {
         await pageD.goto(`${baseUrl}/`, { waitUntil: 'load' });
 
+        // The server stamps ?v=<ASSET_VERSION> onto this href (#38), so match the base path
+        // rather than the exact string.
         const manifestHref = await pageD.locator('link[rel="manifest"]').getAttribute('href');
-        if (manifestHref !== '/manifest.webmanifest') throw new Error(`expected the manifest link, got href="${manifestHref}"`);
+        if (!/^\/manifest\.webmanifest(\?v=[0-9a-f]{12})?$/.test(manifestHref)) throw new Error(`expected the manifest link, got href="${manifestHref}"`);
 
         const reg = await pageD.evaluate(async () => {
           const registration = await navigator.serviceWorker.getRegistration();
