@@ -79,27 +79,31 @@ function loadSfxManifest() {
   return sfxManifestPromise;
 }
 
-const sfxBuffers = new Map(); // id -> decoded AudioBuffer (or null once a fetch/decode attempt has
-                               // failed for this id), filled in lazily on first request. A Map
-                               // (rather than a plain object) so an id like "__proto__" can't
-                               // collide with Object.prototype.
-const sfxBufferPromises = new Map(); // id -> in-flight decode Promise, so a burst of the same id
-                                      // before the first decode finishes doesn't fire off
-                                      // duplicate fetches
-/** Lazily fetch + decode one clip the first time its id is actually requested (never eagerly for
- *  every clip in the manifest). On any fetch/decode failure, records `null` in sfxBuffers for
- *  this id (permanently for the session) so sfx(name) falls through to the synth without ever
- *  retrying the fetch -- a missing/undecodable clip doesn't get re-requested on every call. */
-function loadSfxBuffer(id, file) {
+const sfxBuffers = new Map(); // manifest file -> decoded AudioBuffer (or null once a fetch/decode
+                               // attempt has failed for it), filled in lazily on first request.
+                               // Keyed by file rather than sfx id, so aliased ids that share one
+                               // manifest file (e.g. "magic" -> "potion.ogg") reuse the same
+                               // decoded buffer instead of fetching+decoding the identical bytes
+                               // twice. A Map (rather than a plain object) so a file name that
+                               // happened to collide with "__proto__" couldn't cause trouble.
+const sfxBufferPromises = new Map(); // manifest file -> in-flight decode Promise, so a burst of
+                                      // requests for ids sharing a file (or the same id) before
+                                      // the first decode finishes doesn't fire off duplicate fetches
+/** Lazily fetch + decode one clip the first time its manifest file is actually requested (never
+ *  eagerly for every clip in the manifest). On any fetch/decode failure, records `null` in
+ *  sfxBuffers for this file (permanently for the session) so sfx(name) falls through to the synth
+ *  without ever retrying the fetch -- a missing/undecodable clip doesn't get re-requested on every
+ *  call. */
+function loadSfxBuffer(file) {
   const a = ac();
   if (!a) return Promise.resolve(null);
   const p = fetch(`/audio/sfx/${file}`)
     .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`sfx fetch ${r.status}`))))
     .then((buf) => a.decodeAudioData(buf))
-    .then((decoded) => { sfxBuffers.set(id, decoded); return decoded; })
-    .catch(() => { sfxBuffers.set(id, null); return null; })
-    .finally(() => { sfxBufferPromises.delete(id); });
-  sfxBufferPromises.set(id, p);
+    .then((decoded) => { sfxBuffers.set(file, decoded); return decoded; })
+    .catch(() => { sfxBuffers.set(file, null); return null; })
+    .finally(() => { sfxBufferPromises.delete(file); });
+  sfxBufferPromises.set(file, p);
   return p;
 }
 function playBuffer(buffer) {
@@ -169,19 +173,21 @@ export function sfx(name) {
   sfxLast.set(name, now);
 
   if (!muted) {
-    const buf = sfxBuffers.get(name);
-    if (buf) { playBuffer(buf); return; }
-    // Manifest not resolved yet, this id has no clip, or a previous fetch/decode attempt for it
-    // failed (sfxBuffers.get(name) === null, which is falsy above but IS present in the map, so
-    // the has() check below skips retrying it): fall through to the synth below for *this* call.
-    // If the manifest lists a clip for this id and it hasn't been attempted yet, kick off
-    // decoding it in the background (deduped via sfxBufferPromises) so the *next* call to
-    // sfx(name) can use it.
     // Own-property check: the manifest is parsed JSON, so a name like "__proto__" would otherwise
     // resolve through the prototype chain to a truthy non-entry.
     const entry = sfxManifest && Object.prototype.hasOwnProperty.call(sfxManifest, name) ? sfxManifest[name] : null;
-    if (entry && typeof entry.file === 'string' && !sfxBuffers.has(name) && !sfxBufferPromises.has(name)) {
-      loadSfxBuffer(name, entry.file);
+    const file = entry && typeof entry.file === 'string' ? entry.file : null;
+    if (file) {
+      const buf = sfxBuffers.get(file);
+      if (buf) { playBuffer(buf); return; }
+      // Manifest not resolved yet, this file has never been attempted, or a previous fetch/decode
+      // attempt for it failed (sfxBuffers.get(file) === null, which is falsy above but IS present
+      // in the map, so the has() check below skips retrying it): fall through to the synth below
+      // for *this* call. If the file hasn't been attempted yet, kick off decoding it in the
+      // background (deduped via sfxBufferPromises, keyed by file so aliased ids like "magic" and
+      // "potion" share one in-flight fetch too) so the *next* call to sfx(name) -- for this id or
+      // any other id sharing the same file -- can use it.
+      if (!sfxBuffers.has(file) && !sfxBufferPromises.has(file)) loadSfxBuffer(file);
     }
   }
   switch (name) {
