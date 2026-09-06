@@ -54,13 +54,13 @@ test('static file traversal is blocked; legitimate /shared and /client files sti
 
 test('GET /audio/sfx/<clip>.ogg serves with Content-Type audio/ogg', async () => {
   // Uses whichever clip the sfx pipeline (tools/generate-sfx.mjs) has actually generated on disk,
-  // via client/audio/sfx/manifest.json -- rather than hardcoding an id -- so this test still
-  // passes on a fresh checkout with an empty manifest (nothing to fetch, test is a no-op) and on
-  // a checkout with generated clips alike.
+  // via client/audio/sfx/manifest.json -- rather than hardcoding an id. The repo ships 42
+  // committed clips, so the manifest must be non-empty here (a truly empty manifest would make
+  // this whole check a silent no-op).
   const manifestPath = path.join(ROOT, 'client', 'audio', 'sfx', 'manifest.json');
   const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
   const ids = Object.keys(manifest);
-  if (ids.length === 0) return; // no clips generated in this environment -- nothing to check
+  assert.ok(ids.length > 0, 'expected client/audio/sfx/manifest.json to have at least one entry (the repo ships 42 clips)');
 
   const server = await startServer();
   const { baseUrl } = server;

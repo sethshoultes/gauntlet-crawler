@@ -62,6 +62,8 @@ test('client/audio/sfx/manifest.json is valid JSON whose clips exist, are non-em
   const linesRaw = await fs.readFile(path.join(ROOT, 'client', 'sfx-lines.json'), 'utf8');
   const lines = JSON.parse(linesRaw);
 
+  assert.ok(Object.keys(manifest).length > 0, 'expected client/audio/sfx/manifest.json to have at least one entry (the repo ships 42 clips)');
+
   for (const [id, entry] of Object.entries(manifest)) {
     assert.ok(id in lines, `manifest id "${id}" is not a known sfx id in sfx-lines.json`);
     assert.equal(typeof entry.file, 'string', `manifest["${id}"].file must be a string`);

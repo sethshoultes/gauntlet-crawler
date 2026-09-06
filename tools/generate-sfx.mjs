@@ -133,6 +133,7 @@ async function main() {
  *  above) points at its target id's already-resolved manifest entry -- same file on disk, no
  *  duplicate bytes -- rather than needing its own clip. */
 async function writeManifest() {
+  await fs.mkdir(OUT_DIR, { recursive: true });
   const raw = await fs.readFile(LINES_PATH, 'utf8');
   const lines = JSON.parse(raw);
   const manifest = {};

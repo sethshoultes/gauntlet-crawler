@@ -604,8 +604,9 @@ leading silence trimmed (`silenceremove`), and loudness-normalized (`loudnorm`) 
 back at a consistent level regardless of how loud the raw render came out — before writing
 `client/audio/sfx/<id>.ogg` and refreshing the manifest. Requires `ffmpeg` on `PATH` with a Vorbis
 or Opus encoder (same `tools/lib/ffmpeg.mjs` detection the voice pipeline uses); without one, no
-clips are produced and the run exits non-zero rather than silently falling back, since a checkout
-without generated clips should keep working from the ones already committed. An id whose entry has
+clips are produced — the script logs that generation was skipped, rewrites the manifest from
+whatever clips already exist on disk, and still exits 0, since a checkout without a usable ffmpeg
+encoder should keep working from the clips already committed rather than fail the run. An id whose entry has
 an `"alias"` field (currently just `"magic"`, aliasing `"potion"` — the two share a synth case in
 `client/audio.js`) is never sent to the API; it's resolved to its target's already-generated file
 when the manifest is rewritten, so semantically-identical effects don't cost quota twice.
