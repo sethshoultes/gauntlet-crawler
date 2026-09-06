@@ -771,6 +771,20 @@ function viewportSize() {
   return vv ? { w: Math.round(vv.width), h: Math.round(vv.height) } : { w: window.innerWidth, h: window.innerHeight };
 }
 
+/** An element's *content* box — getBoundingClientRect() minus its own computed padding — for
+ *  elements like #session whose box-sizing is border-box and whose padding is a real, sometimes
+ *  nonzero safe-area inset (client/style.css's "env(safe-area-inset-*)" padding on #session while
+ *  playing): passing the raw bounding rect straight into computeCanvasLayout()/
+ *  cellFromWidthBudget() would size the canvas and touch controls into that padding — the exact
+ *  region the safe-area inset exists to keep clear of a notch/home-indicator/rounded corner. */
+function innerBox(el) {
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  return { width: Math.max(0, r.width - padX), height: Math.max(0, r.height - padY) };
+}
+
 function resetDesktopCanvas() {
   cv.style.width = ''; cv.style.height = '';
   if (cv.width !== VIEW_W || cv.height !== VIEW_H) { cv.width = VIEW_W; cv.height = VIEW_H; ctx.imageSmoothingEnabled = false; }
@@ -879,6 +893,16 @@ function layoutGame() {
     resetDesktopCanvas(); if (rotateHint) rotateHint.hidden = true;
     document.body.classList.remove('gc-controls-overlay');
     if (touchEl) { touchEl.style.removeProperty('--dpad-cell'); touchEl.style.removeProperty('--fire-size'); }
+    // #hud-menu (and the Leave/chat panel it opens) is a mobile-only affordance — desktop always
+    // shows .bar unconditionally instead (client/style.css only gates it under the mobile media
+    // query). Reset all of its open-state here rather than leaving it for the next mobile pass: a
+    // menu opened on mobile, then resized/rotated wide enough to cross this branch and narrow again
+    // without ever calling menuBtn.onclick, would otherwise land back in mobile mode still carrying
+    // "gc-menu-open" — reappearing the panel with no tap, and an aria-expanded that no longer
+    // matches it (the button itself is about to be hidden by the `menuBtn.hidden = !mobile` above
+    // regardless, but its state shouldn't be stale for whenever it's shown again either).
+    document.body.classList.remove('gc-menu-open');
+    if (menuBtn) menuBtn.setAttribute('aria-expanded', 'false');
     return;
   }
 
@@ -900,7 +924,12 @@ function layoutGame() {
   const overlayControls = !portrait && vh <= 500;
   document.body.classList.toggle('gc-controls-overlay', overlayControls);
 
-  const sessionBox = sessionEl.getBoundingClientRect(); // the grid container's own box (post safe-area padding) — see the doc comment above
+  // The grid container's *content* box, not its raw bounding rect: #session's own padding while
+  // playing (client/style.css) is a real, sometimes nonzero safe-area inset, not decoration — the
+  // canvas fit (and, further below, the touch controls' own width budget) must size into what's
+  // left *after* that padding, or a device that actually reports one would get a canvas/touch band
+  // sized straight into the notch/home-indicator/rounded-corner area the inset exists to avoid.
+  const sessionInner = innerBox(sessionEl);
   const hudH = hudEl ? hudEl.getBoundingClientRect().height : 0;
   const logH = logEl ? logEl.getBoundingClientRect().height : 0;
   const touchShown = !!touchEl && touchEl.classList.contains('on') && getComputedStyle(touchEl).display !== 'none';
@@ -922,7 +951,7 @@ function layoutGame() {
   const fitLogH = overlayControls ? 0 : logH;
 
   const layout = computeCanvasLayout({
-    vw: sessionBox.width, vh: sessionBox.height, hudH, logH: fitLogH, controlsH,
+    vw: sessionInner.width, vh: sessionInner.height, hudH, logH: fitLogH, controlsH,
     levelW: VIEW_W, levelH: VIEW_H, dpr: window.devicePixelRatio || 1,
   });
   cv.style.width = layout.width + 'px';
@@ -938,8 +967,11 @@ function layoutGame() {
   // itself gets the full vh-hudH, since #log there is a translucent overlay drawn *over* the top of
   // it (client/style.css), not a reserved row. But the bottom-anchored d-pad still has to clear
   // both real, opaque strips stacked at the top of the screen (HUD, then #log right under it) —
-  // its own budget is `vh - hudH - logH`, not just `vh - hudH`.
-  layoutTouchControls(touchShown, overlayControls, overlayControls ? Math.max(0, vh - hudH - logH) : layout.controlsAvailH, vw);
+  // its own budget is `vh - hudH - logH`, not just `vh - hudH`. The width budget passed for the
+  // band-mode d-pad/fire (cellFromWidthBudget(), inside layoutTouchControls()) is #session's own
+  // inner width — same reasoning as the canvas fit above, not the raw viewport, so a real safe-area
+  // inset can only ever shrink the controls, never let them size into it.
+  layoutTouchControls(touchShown, overlayControls, overlayControls ? Math.max(0, vh - hudH - logH) : layout.controlsAvailH, sessionInner.width);
 
   if (rotateHint) {
     const tooShort = vh < 360;

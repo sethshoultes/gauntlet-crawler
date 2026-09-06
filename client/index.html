@@ -134,12 +134,16 @@
     user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   .touch.on.touch-force { display: flex; }
   @media (pointer: coarse) { .touch.on { display: flex; } }
-  /* Cell/button sizes read a CSS custom property client/game.js sets from the controls band's own
-     *measured* leftover height (client/layout.js's `controlsAvailH`, #42) — never from raw vw,
-     so a cramped band can only ever shrink the buttons, never let them overflow it. The var()
-     fallback (the original vw-based clamp()) is what actually applies in the landscape-phone
-     "overlay" layout below, where there's no reserved band to measure (client/game.js removes the
-     custom properties entirely in that mode rather than setting them to something meaningless). */
+  /* Cell/button sizes read a CSS custom property client/game.js's layoutTouchControls() sets from
+     the controls band's own *measured* leftover height (client/layout.js's `controlsAvailH`, #42)
+     — never from raw vw, so a cramped band can only ever shrink the buttons, never let them
+     overflow it. The short-landscape "overlay" layout below (no reserved band to measure) sets
+     these same two properties too, just computed differently there (a fixed 80px-cell/~84px-fire
+     ceiling, shrunk further only on the tightest supported viewport where even that doesn't clear
+     the HUD/#log stacked above it — see layoutTouchControls()'s doc comment). The var() fallback
+     (the original vw-based clamp()) only actually applies for the one frame before either code
+     path has run yet, or if client/game.js's mobile check somehow finds #touch shown with neither
+     mode matching. */
   /* gap: 8px matches client/game.js's DPAD_GAP, which the band-mode cell-size formula assumes. */
   .input-dpad { display: grid; grid-template-columns: repeat(3, var(--dpad-cell, clamp(56px, 25vw, 84px))); grid-template-rows: repeat(3, var(--dpad-cell, clamp(56px, 25vw, 84px)));
     gap: 8px; pointer-events: auto; }

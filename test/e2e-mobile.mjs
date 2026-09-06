@@ -420,6 +420,38 @@ async function main() {
         await page.waitForTimeout(300); // let the resize listener re-run layoutGame()
         await assertLayout('after rotate');
 
+        // Regression check (Copilot review on PR #42/#43): layoutGame() must fit the canvas inside
+        // #session's *inner content* box (its bounding rect minus its own computed padding), not
+        // the raw bounding rect — #session's padding while playing is a real, sometimes nonzero
+        // safe-area inset (client/style.css's "env(safe-area-inset-*)"), not decoration, so sizing
+        // into the padded-out rect would put the canvas straight into the area a notch/home-
+        // indicator/rounded corner actually occupies on a device that reports one. No such device
+        // is in this suite's emulated set, so this injects an artificial left/right/bottom padding
+        // on #session directly (mirroring the real rule's shape — no top padding) and asserts the
+        // canvas stays fully inside what's left after it once layoutGame() re-runs (via a plain
+        // "resize" event — the same listener a real viewport/orientation change fires).
+        const injectedPad = 30;
+        const sessionRectBefore = await page.evaluate(() => document.querySelector('#session').getBoundingClientRect());
+        await page.evaluate((pad) => {
+          const session = document.querySelector('#session');
+          session.style.paddingLeft = `${pad}px`; session.style.paddingRight = `${pad}px`; session.style.paddingBottom = `${pad}px`;
+          window.dispatchEvent(new Event('resize'));
+        }, injectedPad);
+        await page.waitForTimeout(300);
+        const cvBoxPadded = await page.locator('#cv').boundingBox();
+        if (!cvBoxPadded) throw new Error(`${spec.label}: #cv has no bounding box after injecting #session padding`);
+        const innerLeft = sessionRectBefore.x + injectedPad, innerRight = sessionRectBefore.x + sessionRectBefore.width - injectedPad;
+        const innerBottom = sessionRectBefore.y + sessionRectBefore.height - injectedPad;
+        if (cvBoxPadded.x < innerLeft - 0.5 || cvBoxPadded.x + cvBoxPadded.width > innerRight + 0.5 || cvBoxPadded.y + cvBoxPadded.height > innerBottom + 0.5) {
+          throw new Error(`${spec.label}: #cv was not fitted inside #session's padded content box: cv=${JSON.stringify(cvBoxPadded)} innerLeft=${innerLeft} innerRight=${innerRight} innerBottom=${innerBottom}`);
+        }
+        await page.evaluate(() => {
+          const session = document.querySelector('#session');
+          session.style.paddingLeft = ''; session.style.paddingRight = ''; session.style.paddingBottom = '';
+          window.dispatchEvent(new Event('resize'));
+        });
+        await page.setViewportSize(vp); // back to this device's original (portrait) size before the checks below assume it
+
         // Fullscreen (#42) requests the whole game container (#session — HUD + canvas + log +
         // controls), never just the canvas: the pre-#42 bug this issue fixes was requesting
         // fullscreen on .cv-wrap, which made everything *but* the canvas vanish. Uses the
@@ -656,6 +688,46 @@ async function main() {
       } finally { await ctx.close().catch(() => {}); }
     }
 
+    /** Regression check (Copilot review on PR #43): opening #hud-menu, resizing wide enough to
+     *  cross into layoutGame()'s desktop ("!mobile") branch, then narrow again, must not leave the
+     *  Leave/chat panel (.bar) open from a tap that happened a whole viewport ago — that branch has
+     *  to reset "gc-menu-open"/aria-expanded, not just hide the button. Deliberately *not* run
+     *  against any of DEVICE_SPECS (all `hasTouch: true`, under which `matchMedia('(pointer:
+     *  coarse)')` keeps `mobile` true regardless of viewport width — resizing alone could never
+     *  cross that branch there) — a plain, resizable, no-touch context with `?touch=1` forcing the
+     *  touch UI to render is what actually lets width alone drive `mobile` true/false. */
+    async function menuResetScenario() {
+      const ctx = await browser.newContext({ viewport: { width: 375, height: 667 } });
+      const page = await ctx.newPage(); attach(page, 'menu-reset', bags);
+      try {
+        await page.goto(`${baseUrl}/?touch=1&nosw=1`, { waitUntil: 'load' });
+        await page.waitForSelector('#heroes .hero', { timeout: 10_000 });
+        await page.click('#heroes .hero:nth-child(1)');
+        await page.fill('#gname', 'MenuResetTester');
+        await page.click('#create');
+        await page.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+        await page.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 });
+        await page.click('#rs-start');
+        await page.waitForSelector('#game.on', { timeout: 15_000 });
+        await page.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, undefined, { timeout: 10_000 });
+        await page.waitForTimeout(200);
+
+        if (!(await page.locator('#hud-menu').isVisible())) throw new Error('menu-reset: #hud-menu should be visible at a 375px-wide mobile viewport');
+        await page.click('#hud-menu');
+        if (!(await page.locator('.bar').isVisible())) throw new Error('menu-reset: .bar did not open after clicking #hud-menu');
+        if ((await page.getAttribute('#hud-menu', 'aria-expanded')) !== 'true') throw new Error('menu-reset: #hud-menu should report aria-expanded="true" once opened');
+
+        await page.setViewportSize({ width: 1024, height: 800 }); // desktop-width, fine pointer — crosses layoutGame()'s "!mobile" branch
+        await page.waitForTimeout(300);
+        if (await page.locator('#hud-menu').isVisible()) throw new Error('menu-reset: #hud-menu should hide at a 1024px-wide viewport');
+
+        await page.setViewportSize({ width: 375, height: 667 }); // back to mobile width, without ever clicking #hud-menu again
+        await page.waitForTimeout(300);
+        if (await page.locator('.bar').isVisible()) throw new Error('menu-reset: .bar reappeared after a desktop-width round-trip without clicking #hud-menu again (stale "gc-menu-open")');
+        if ((await page.getAttribute('#hud-menu', 'aria-expanded')) !== 'false') throw new Error('menu-reset: #hud-menu should report aria-expanded="false" after the desktop-width round-trip');
+      } finally { await ctx.close().catch(() => {}); }
+    }
+
     // ---------------- run every scenario across all three devices ----------------
     let n = 1;
     for (const spec of DEVICE_SPECS) {
@@ -686,6 +758,7 @@ async function main() {
     for (const spec of DEVICE_SPECS) {
       await scenario(`${n++}. PWA: manifest + service worker registration, offline lobby reload — ${spec.label}`, () => pwaScenario(spec));
     }
+    await scenario(`${n++}. #hud-menu's open state resets across a desktop-width round-trip (no stale "gc-menu-open")`, () => menuResetScenario());
   } catch (err) {
     overallFailed = true;
     console.error('[e2e-mobile] harness-level failure:', (err && err.stack) || err);
