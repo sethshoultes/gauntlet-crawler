@@ -168,11 +168,13 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
     padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
   body.gc-playing #hud, body.gc-playing .cv-wrap, body.gc-playing #log, body.gc-playing #touch { min-width: 0; }
-  /* Short landscape phones (see the "gc-controls-overlay" rule below): the d-pad/fire/potion float
-     over the canvas edges instead of getting a reserved row, so there is no "ctrl" track at all —
-     client/game.js toggles this class from the same `overlayControls` check that used to (#31)
-     gate whether computeCanvasLayout() got a nonzero controlsH. */
-  body.gc-playing.gc-controls-overlay #session.on { grid-template-areas: "hud" "cv" "log"; grid-template-rows: auto auto auto; }
+  /* Short landscape phones: the d-pad/fire/potion float over the canvas edges instead of getting a
+     reserved row, so there is no "ctrl" track at all — client/game.js toggles this class from the
+     same `overlayControls` check that used to (#31) gate whether computeCanvasLayout() got a
+     nonzero controlsH. #log drops out of the grid here too (no "log" row): it overlays the top of
+     the canvas instead (further down) rather than sitting in a strip the floating pad could cover —
+     "cv" gets all the space "hud" doesn't take. */
+  body.gc-playing.gc-controls-overlay #session.on { grid-template-areas: "hud" "cv"; grid-template-rows: auto 1fr; }
 
   body.gc-playing #game.on, body.gc-playing .stage { display: contents; }
   body.gc-playing #hud { grid-area: hud; width: 100%; margin: 0; }
@@ -187,10 +189,35 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
     grid-area: cv; width: 100%; margin: 0 auto; aspect-ratio: auto; display: flex; justify-content: center;
     border: 0; outline: 4px solid var(--line); outline-offset: -4px;
   }
-  body.gc-playing #log { grid-area: log; width: 100%; margin: 0; height: 38px !important; }
+  body.gc-playing:not(.gc-controls-overlay) #log { grid-area: log; width: 100%; margin: 0; height: 38px !important; }
+  /* Overlay mode (short landscape phones): #log shares the "cv" grid area with .cv-wrap instead of
+     getting its own row (two grid items can occupy the same area — they simply stack, ordered by
+     z-index) — align-self:start plus a fixed max-height keeps it a thin 2-line strip pinned to the
+     *top* of that shared cell rather than stretching to fill it, sitting safely above the d-pad/
+     fire/potion, which are anchored to the *bottom* of the viewport (client/index.html's .touch
+     rule) — the two can never collide. Translucent so the dungeon underneath still reads through;
+     pointer-events:none so a tap meant for the canvas beneath (e.g. the death screen's "continue")
+     isn't swallowed by it. */
+  body.gc-playing.gc-controls-overlay #log {
+    grid-area: cv; align-self: start; justify-self: stretch; z-index: 20;
+    width: 100%; margin: 0; max-height: 40px; font-size: 10px !important; line-height: 1.3;
+    background: rgba(0,0,0,.6); pointer-events: none;
+  }
   body.gc-playing:not(.gc-controls-overlay) #touch {
     grid-area: ctrl; position: static; display: flex !important;
-    width: 100%; height: 100%; margin: 0; inset: auto; padding: 4px 6px; box-sizing: border-box;
+    width: 100%; height: 100%; margin: 0; inset: auto; box-sizing: border-box;
+    /* Every one of these numbers is read straight back out by client/game.js's
+       cellFromWidthBudget()/layoutTouchControls() (TOUCH_SIDE_PAD, TOUCH_COL_GAP, DPAD_PAD_V) —
+       change one place, change the other, or the cell-size math stops matching what's actually
+       rendered (the "no overflow" guarantee depends on the two agreeing exactly). ~16px bottom
+       padding + safe-area anchors the block to the bottom of the band; the dead space this can
+       leave *above* the pad when the band is much taller than the pad's own content is intentional
+       (see layoutTouchControls()'s doc comment): the pad is sized to be comfortably big first, not
+       to fill the whole band. Side padding (6px) and the gap between the d-pad/action columns
+       (4px) are deliberately tight — on a 412px-wide phone there isn't width to spare once a
+       110px-diameter fire button sits beside a 90px-cell d-pad. */
+    padding: 16px 6px calc(16px + env(safe-area-inset-bottom, 0px)) 6px;
+    gap: 4px;
   }
 
   /* .cv-wrap/#hud still need the same "!important wins a specificity tie against index.html's
@@ -273,6 +300,29 @@ body.gc-playing { overscroll-behavior: none; }
   body.gc-playing #hud { padding: 3px 5px !important; font-size: 10px !important; background: rgba(0,0,0,.5); }
   body.gc-playing #hud .hud-head { min-height: 22px; padding-right: 84px; }
   body.gc-playing #hud .pp { padding: 2px 4px; }
+
+  /* Overlay d-pad: 80px/gap-8 is a *ceiling* (3*80 + 2*8 = 256px square, small enough to leave the
+     middle of the map clear on every supported landscape phone) — client/game.js's
+     layoutTouchControls() still sets --dpad-cell here (unlike --fire-size, left alone in this
+     mode), shrinking it further whenever even 256px is too tall for the shortest supported
+     viewport (iPhone SE landscape, only 320px, HUD included) to fit without climbing over the HUD
+     strip above it. var()'s fallback (flat 80px) only matters for the one frame before that first
+     runs. */
+  body.gc-playing.gc-controls-overlay .input-dpad { grid-template-columns: repeat(3, var(--dpad-cell, 80px)); grid-template-rows: repeat(3, var(--dpad-cell, 80px)); gap: 8px; }
+
+  /* Idle vs. held opacity (previously a flat .8 regardless of press state, ie. "near-full" over the
+     map): faint until actually touched, so the dungeon underneath reads clearly, then opaque enough
+     to see which control is currently held. :active is the browser's own "pointer down on this
+     element" state — already correct per-control with no JS bookkeeping needed, and it clears on
+     pointerleave/up the same way input.js's own held-state tracking does. */
+  body.gc-playing.gc-controls-overlay .input-dir,
+  body.gc-playing.gc-controls-overlay .input-fire,
+  body.gc-playing.gc-controls-overlay .input-potion,
+  body.gc-playing.gc-controls-overlay .input-autofire { opacity: .45; }
+  body.gc-playing.gc-controls-overlay .input-dir:active,
+  body.gc-playing.gc-controls-overlay .input-fire:active,
+  body.gc-playing.gc-controls-overlay .input-potion:active,
+  body.gc-playing.gc-controls-overlay .input-autofire.on { opacity: .9; }
 }
 
 /* High-score initials modal (client/highscore.js) — must stay usable with no page scroll down to a

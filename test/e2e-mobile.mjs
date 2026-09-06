@@ -367,6 +367,13 @@ async function main() {
             if (!inViewport(box, viewport)) throw new Error(`${spec.label} ${whenLabel}: "${name}" is not fully inside the viewport: box=${JSON.stringify(box)} viewport=${JSON.stringify(viewport)}`);
             if (overlaps(box, hudBox)) throw new Error(`${spec.label} ${whenLabel}: "${name}" overlaps the HUD: box=${JSON.stringify(box)} hud=${JSON.stringify(hudBox)}`);
             if (!overlayByDesign && overlaps(box, cvBox)) throw new Error(`${spec.label} ${whenLabel}: "${name}" overlaps the canvas: box=${JSON.stringify(box)} cv=${JSON.stringify(cvBox)}`);
+            // Log strip text must never be covered by a control in *any* mode — in the portrait/
+            // tablet "band" layout #log sits in its own row above the controls so this is trivially
+            // true, but in the short-landscape "overlay" layout (client/style.css's
+            // body.gc-controls-overlay) #log floats over the *top* of the canvas specifically so
+            // the bottom-anchored d-pad/fire/potion/auto-fire (which do legitimately overlay the
+            // canvas itself) can never reach it.
+            if (overlaps(box, logBox)) throw new Error(`${spec.label} ${whenLabel}: "${name}" overlaps #log: box=${JSON.stringify(box)} log=${JSON.stringify(logBox)}`);
           }
 
           // Fullscreen + menu: pinned to the top-right, deliberately over the HUD strip they're
@@ -377,6 +384,24 @@ async function main() {
             if (!box) continue; // #fs-toggle legitimately hides itself when the Fullscreen API is unsupported (client/game.js)
             if (!inViewport(box, viewport)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" is not fully inside the viewport: box=${JSON.stringify(box)}`);
             if (overlaps(box, cvBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps the canvas: box=${JSON.stringify(box)}`);
+            if (overlaps(box, logBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps #log: box=${JSON.stringify(box)} log=${JSON.stringify(logBox)}`);
+          }
+
+          // Portrait/tablet "band" mode only (#42 follow-up review): once the controls band is
+          // tall enough to comfortably afford it (>= 380px), client/game.js's layoutTouchControls()
+          // should be sizing the d-pad meaningfully large (>= 90px cells), not leaving it small
+          // with a big dead zone above it — a regression check for the "cells were ~75px in a
+          // ~413px band" bug this review's formula tuning fixed (see DPAD_WIDTH_FRAC's comment).
+          if (!overlayByDesign) {
+            const touchBox = await page.locator('#touch').boundingBox();
+            if (!touchBox) throw new Error(`${spec.label} ${whenLabel}: #touch has no bounding box`);
+            if (touchBox.height >= 380) {
+              const firstCellBox = dpadCells.length ? await dpadCells[0].boundingBox() : null;
+              if (!firstCellBox) throw new Error(`${spec.label} ${whenLabel}: no d-pad cell bounding box to check against the band-height budget`);
+              if (firstCellBox.width < 89.5) {
+                throw new Error(`${spec.label} ${whenLabel}: controls band is ${touchBox.height}px tall but d-pad cells are only ${firstCellBox.width}px (expected >= 90px)`);
+              }
+            }
           }
         };
 

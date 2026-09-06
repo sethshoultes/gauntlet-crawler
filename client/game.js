@@ -777,33 +777,96 @@ function resetDesktopCanvas() {
   if (sceneCv && (sceneCv.width !== VIEW_W || sceneCv.height !== VIEW_H)) { sceneCv.width = VIEW_W; sceneCv.height = VIEW_H; }
 }
 
-/** Sizes the on-screen d-pad cells and fire/potion buttons from the *actual* height available to
- *  them — never raw vw, which is what let a fire/potion/auto-fire overflow off-screen on a narrow
- *  phone pre-#42 (client/index.html's clamp() is now only a same-origin fallback for a frame where
- *  this hasn't run yet). In the normal portrait/tablet "band" layout that's `controlsAvailH`
- *  (computeCanvasLayout's leftover height below the fitted canvas — client/layout.js); in the
- *  short-landscape "overlay" layout (no reserved band — the pad floats over the canvas edges
- *  instead) it's `vh - hudH - logH`, since that's the vertical span the *floating* pad must fit
- *  inside without climbing over the HUD strip above it or the log strip below it — both are real,
- *  opaque, normal-flow content in that layout too (only the canvas is meant to be floated over). */
-function layoutTouchControls(touchShown, availH) {
+// Portrait/tablet "band" sizing constants (post-#31 follow-up review). DPAD_PAD_V is the controls
+// band's own top+bottom padding (client/style.css gives #touch this exact padding, so the two stay
+// in lock-step) and DPAD_GAP matches .input-dpad's CSS gap (also shared with the landscape
+// "overlay" d-pad's separate fixed 80px/gap-8 rule — see client/style.css) — both used for the
+// *height* budget below pretty much as the review specified. The *width* budget is not the review's
+// literal "floor((viewportW * 0.58 - 2*gap) / 3)": on a 412px-wide phone (Pixel 7) 58% of the
+// viewport can't fit three 90px cells no matter how gap/padding are tuned (3*90 alone is already
+// 270px, more than 0.58*412=239px) — short of both the ">= 90px at a >= 380px band" requirement
+// this same review adds to test/e2e-mobile.mjs and the "~110px on Pixel 7" example it gives. What
+// actually shares the row with the d-pad is the fire/potion/auto-fire column, whose own width is
+// itself cell-dependent (FIRE_MULT below) — cellFromWidthBudget() solves that joint constraint
+// directly (verified against real devices below) rather than reserving an independent width
+// fraction that can't account for it.
+const DPAD_PAD_V = 16, DPAD_GAP = 8, TOUCH_SIDE_PAD = 6, TOUCH_COL_GAP = 4, FIRE_CAP = 110, FIRE_MULT = 1.3;
+// Overlay mode's #touch keeps client/index.html's base `.touch` rule (position: fixed, anchored
+// `bottom: 10px + safe-area-inset-bottom`) rather than the band layout's own padding — that bottom
+// offset has to come out of the height budget too (plus a couple of px of rounding slack), or a
+// d-pad sized to exactly fill "vh - hudH" ends up anchored 10px+ *higher* than assumed and climbs
+// into the HUD strip regardless of how small the cell itself is capped. Deliberately ignores actual
+// safe-area-inset-bottom (unreadable from plain JS without a live probe element) — a real notch
+// there would need slightly more, but none of the devices this game supports have one in landscape.
+const OVERLAY_BOTTOM_OFFSET = 12;
+// .input-dpad's own CSS padding in this mode (client/index.html's "@media (orientation: landscape)
+// and (max-height: 500px)" rule — the translucent backing box around the pad) adds this much on
+// *both* top and bottom of the d-pad's rendered height, on top of the cells/gaps themselves —
+// forgetting it here undercounts the pad's real height by 2*OVERLAY_DPAD_PAD and reintroduces the
+// exact HUD-overlap this whole function exists to prevent.
+const OVERLAY_DPAD_PAD = 6;
+// The actions column (fire, the auto-fire pill, potion, stacked) is bottom-anchored in the same
+// fixed box as the d-pad, so it needs the same "clear the HUD/#log strip stacked at the top" check
+// — its own non-fire overhead (auto-fire pill height + the column's own two internal gaps +
+// top/bottom padding, all from .input-actions's CSS) measured empirically at ~68px, since the
+// auto-fire label can wrap onto a second line at this column's width, making it awkward to derive
+// from the individual CSS values exactly.
+const OVERLAY_ACTIONS_OVERHEAD = 68;
+
+/** The largest d-pad cell (unfloored, uncapped) that leaves enough width for the fire/potion column
+ *  it sits beside — `TOUCH_SIDE_PAD*2 + TOUCH_COL_GAP + DPAD_GAP*2` is everything *else* horizontal
+ *  in the row (#touch's own side padding, the gap between the d-pad and action columns, and the
+ *  d-pad's own two internal gaps); what's left splits between `3` d-pad cells and one fire/potion
+ *  circle (`FIRE_MULT` cell-widths wide, per the spec, until it hits its own `FIRE_CAP`). Solved as
+ *  two linear regimes rather than guessed at: while the fire diameter implied by `cell` is still
+ *  under FIRE_CAP, growing cell grows both cell*3 and cell*FIRE_MULT together (denominator `3 +
+ *  FIRE_MULT`); once fire would exceed FIRE_CAP it's pinned there instead, so from that point only
+ *  the d-pad's own `3*cell` keeps growing against the remaining width. */
+function cellFromWidthBudget(vw) {
+  const overhead = TOUCH_SIDE_PAD * 2 + TOUCH_COL_GAP + DPAD_GAP * 2;
+  const uncappedFireCell = (vw - overhead) / (3 + FIRE_MULT);
+  if (uncappedFireCell * FIRE_MULT <= FIRE_CAP) return uncappedFireCell;
+  return (vw - overhead - FIRE_CAP) / 3;
+}
+
+/** Sizes the on-screen d-pad cells and fire/potion buttons from the *actual* height (and, via
+ *  cellFromWidthBudget(), width) available to them — never raw vw alone, which is what let a fire/
+ *  potion/auto-fire overflow off-screen on a narrow phone pre-#42 (client/index.html's clamp() is
+ *  now only a same-origin fallback for a frame where this hasn't run yet).
+ *
+ *  `availH` means two different things depending on `overlayControls`, both supplied by the
+ *  caller: in the normal portrait/tablet "band" layout it's `controlsAvailH` — computeCanvasLayout's
+ *  leftover height below the fitted canvas (client/layout.js); in the short-landscape "overlay"
+ *  layout (no reserved band — the pad floats over the canvas edges instead) it's `vh - hudH - logH`,
+ *  the room the *floating* d-pad and fire/potion/auto-fire column must fit inside without climbing
+ *  over the HUD strip and the translucent #log strip stacked right under it (both real, opaque
+ *  content there too — only the canvas is meant to be floated over). Overlay's own 80px/gap-8 CSS
+ *  cap (client/style.css's ".gc-controls-overlay .input-dpad" rule) and fire/potion's existing
+ *  ~84px CSS fallback are both a *ceiling* ("may stay in the right margin as they are" per the #42
+ *  follow-up review) — this only shrinks either *below* that on the tightest supported viewport
+ *  (iPhone SE landscape, 320px tall total), where even those defaults don't clear the HUD/#log
+ *  stacked at the top. */
+function layoutTouchControls(touchShown, overlayControls, availH, vw) {
   if (!touchEl) return;
   if (!touchShown) { touchEl.style.removeProperty('--dpad-cell'); touchEl.style.removeProperty('--fire-size'); return; }
-  const box = touchEl.getBoundingClientRect();
-  const w = box.width || 0;
-  const h = availH || box.height;
-  const gap = 6, padY = 10, padX = 14;
-  const cellFromHeight = (h - padY - gap * 2) / 3;
-  const cellFromWidth = (w * 0.55 - padX - gap * 2) / 3; // d-pad gets roughly half the band's width, actions the rest
-  // No lower floor: the #42 spec's ~80-100px target is only ever a *ceiling* here (`Math.min(100, ...)`)
+  if (overlayControls) {
+    const overlayCell = Math.max(1, Math.min(80, Math.floor((availH - OVERLAY_BOTTOM_OFFSET - OVERLAY_DPAD_PAD * 2 - DPAD_GAP * 2) / 3)));
+    touchEl.style.setProperty('--dpad-cell', overlayCell + 'px');
+    const overlayFire = Math.max(1, Math.min(84, Math.floor((availH - OVERLAY_BOTTOM_OFFSET - OVERLAY_ACTIONS_OVERHEAD) / 2)));
+    touchEl.style.setProperty('--fire-size', overlayFire + 'px');
+    return;
+  }
+  const cellFromHeight = (availH - DPAD_PAD_V * 2 - DPAD_GAP * 2) / 3;
+  const cellFromWidth = cellFromWidthBudget(vw);
+  // No lower floor: the #42 spec's cap (120px) is only ever a *ceiling* here (`Math.min(120, ...)`)
   // — clamping a *minimum* on top, as an earlier version of this did, would force cells back up
   // past whatever space the math just proved is actually available, overflowing on the smallest
-  // supported viewport (iPhone SE landscape) exactly the way raw vw units used to everywhere.
-  const cell = Math.max(1, Math.min(100, Math.floor(Math.min(cellFromHeight, cellFromWidth))));
+  // supported viewport (iPhone SE) exactly the way raw vw units used to everywhere. iPhone SE's
+  // own ~211px band naturally degrades this to its old ~50-55px cells (height-bound there, not
+  // width-bound) without any special-casing.
+  const cell = Math.max(1, Math.min(120, Math.floor(Math.min(cellFromHeight, cellFromWidth))));
   touchEl.style.setProperty('--dpad-cell', cell + 'px');
-  // fire+gap+auto-fire+gap+potion must fit in `h` too (the fixed 0.40 factor below budgets ~20px
-  // for the auto-fire pill plus two gaps; see .input-autofire's CSS for its actual rendered size).
-  const fire = Math.max(1, Math.min(100, Math.floor(h * 0.40)));
+  const fire = Math.max(1, Math.min(FIRE_CAP, Math.floor(cell * FIRE_MULT)));
   touchEl.style.setProperty('--fire-size', fire + 'px');
 }
 
@@ -821,10 +884,6 @@ function layoutGame() {
 
   const { w: vw, h: vh } = viewportSize();
   const portrait = vh >= vw;
-  const sessionBox = sessionEl.getBoundingClientRect(); // the grid container's own box (post safe-area padding) — see the doc comment above
-  const hudH = hudEl ? hudEl.getBoundingClientRect().height : 0;
-  const logH = logEl ? logEl.getBoundingClientRect().height : 0;
-  const touchShown = !!touchEl && touchEl.classList.contains('on') && getComputedStyle(touchEl).display !== 'none';
   // Portrait reserves a band below the canvas for the d-pad; landscape *phones* (short viewport)
   // instead let it overlay the canvas edges, matching the CSS "@media (orientation: landscape) and
   // (max-height: 500px)" rule that gives the pad a translucent backing specifically so it stays
@@ -835,8 +894,16 @@ function layoutGame() {
   // leave a fully-opaque d-pad sitting on top of the canvas there with nothing subtracted from the
   // fit, genuinely overlapping it (caught by test/e2e-mobile.mjs's #34 canvas-geometry scenario on
   // a landscape iPad). client/style.css keys its own grid-vs-overlay split off this same class.
+  // Toggled *before* measuring #hud/#log below (rather than after, as an earlier version of this
+  // did) so a portrait->landscape-overlay transition never measures a stale, previous-mode #log
+  // height — #log's own rendered size differs between the two (client/style.css).
   const overlayControls = !portrait && vh <= 500;
   document.body.classList.toggle('gc-controls-overlay', overlayControls);
+
+  const sessionBox = sessionEl.getBoundingClientRect(); // the grid container's own box (post safe-area padding) — see the doc comment above
+  const hudH = hudEl ? hudEl.getBoundingClientRect().height : 0;
+  const logH = logEl ? logEl.getBoundingClientRect().height : 0;
+  const touchShown = !!touchEl && touchEl.classList.contains('on') && getComputedStyle(touchEl).display !== 'none';
   // A fixed reservation, not touchEl's own measured height (#31's original approach): #42 sizes
   // the d-pad/fire/potion *from* the band's leftover height (layoutTouchControls() below), so
   // feeding that same rendered height back in here as the *estimate* for how much to reserve would
@@ -844,13 +911,18 @@ function layoutGame() {
   // the leftover, which grows the controls, which grows next pass's reservation, and so on, with no
   // guarantee of converging back to "use the full width". CONTROLS_MIN_H matches the grid's own
   // `minmax(110px, 1fr)` floor (client/style.css) plus a little breathing room: the fit only needs
-  // to guarantee *at least* that much room exists, since the grid's flexible row (or, in overlay
-  // mode, layoutTouchControls' own vh-hudH-logH budget) gives the band whatever's actually left —
-  // always >= this minimum, usually quite a bit more on anything but the shortest phones.
+  // to guarantee *at least* that much room exists, since the grid's flexible row gives the band
+  // whatever's actually left — always >= this minimum, usually quite a bit more on anything but the
+  // shortest phones. Irrelevant in overlay mode: the pad there is a fixed-size CSS overlay (below),
+  // not sized from any reserved band, so nothing needs reserving from the canvas fit at all.
   const controlsH = touchShown && !overlayControls ? CONTROLS_MIN_H : 0;
+  // In overlay mode #log no longer claims its own grid row (client/style.css) — it floats over the
+  // top of the canvas instead (translucent, 2 lines) — so the canvas fit shouldn't reserve room
+  // for it there; only in the normal band layout does logH still need subtracting.
+  const fitLogH = overlayControls ? 0 : logH;
 
   const layout = computeCanvasLayout({
-    vw: sessionBox.width, vh: sessionBox.height, hudH, logH, controlsH,
+    vw: sessionBox.width, vh: sessionBox.height, hudH, logH: fitLogH, controlsH,
     levelW: VIEW_W, levelH: VIEW_H, dpr: window.devicePixelRatio || 1,
   });
   cv.style.width = layout.width + 'px';
@@ -862,10 +934,12 @@ function layoutGame() {
     sceneCv.width = layout.backingWidth; sceneCv.height = layout.backingHeight;
   }
 
-  // Overlay mode has no reserved band to measure a leftover from (computeCanvasLayout's
-  // controlsAvailH assumes a controlsH that's 0 there) — the floating pad's real budget is
-  // whatever vertical room the HUD/log strips *don't* already occupy, see layoutTouchControls().
-  layoutTouchControls(touchShown, overlayControls ? Math.max(0, vh - hudH - logH) : layout.controlsAvailH);
+  // Overlay mode reserves nothing in the canvas fit (controlsH is 0 there, see above) — the canvas
+  // itself gets the full vh-hudH, since #log there is a translucent overlay drawn *over* the top of
+  // it (client/style.css), not a reserved row. But the bottom-anchored d-pad still has to clear
+  // both real, opaque strips stacked at the top of the screen (HUD, then #log right under it) —
+  // its own budget is `vh - hudH - logH`, not just `vh - hudH`.
+  layoutTouchControls(touchShown, overlayControls, overlayControls ? Math.max(0, vh - hudH - logH) : layout.controlsAvailH, vw);
 
   if (rotateHint) {
     const tooShort = vh < 360;

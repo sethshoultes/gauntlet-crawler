@@ -140,8 +140,9 @@
      fallback (the original vw-based clamp()) is what actually applies in the landscape-phone
      "overlay" layout below, where there's no reserved band to measure (client/game.js removes the
      custom properties entirely in that mode rather than setting them to something meaningless). */
+  /* gap: 8px matches client/game.js's DPAD_GAP, which the band-mode cell-size formula assumes. */
   .input-dpad { display: grid; grid-template-columns: repeat(3, var(--dpad-cell, clamp(56px, 25vw, 84px))); grid-template-rows: repeat(3, var(--dpad-cell, clamp(56px, 25vw, 84px)));
-    gap: 6px; pointer-events: auto; }
+    gap: 8px; pointer-events: auto; }
   .input-dpad, .input-actions { touch-action: none; }
   .input-dir { padding: 0; font-size: clamp(14px, 8vw, 30px); line-height: 1; opacity: .85; border-radius: 8px; }
   .input-dir-mid { visibility: hidden; pointer-events: none; }
@@ -188,10 +189,11 @@
   /* Landscape phones (short viewport): the pad overlays the canvas edges instead of reserving a
      full-width band below it (client/game.js's layoutGame() only subtracts controls height from
      the fitted canvas box in portrait) — a translucent backing keeps each control legible over
-     whatever's rendered underneath. */
+     whatever's rendered underneath. Idle/held opacity and the d-pad's fixed size cap are set in
+     client/style.css instead (scoped to body.gc-controls-overlay, more precise than this bare
+     media query — see that file's "@media (orientation: landscape) and (max-height: 500px)" block). */
   @media (orientation: landscape) and (max-height: 500px) {
     .input-dpad, .input-actions { background: rgba(0,0,0,.3); border-radius: 16px; padding: 6px; }
-    .input-dir, .input-fire, .input-potion, .input-autofire { opacity: .8; }
   }
 </style>
 </head>
