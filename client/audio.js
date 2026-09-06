@@ -172,8 +172,11 @@ export function sfx(name) {
     // If the manifest lists a clip for this id and it hasn't been attempted yet, kick off
     // decoding it in the background (deduped via sfxBufferPromises) so the *next* call to
     // sfx(name) can use it.
-    if (sfxManifest && sfxManifest[name] && !sfxBuffers.has(name) && !sfxBufferPromises.has(name)) {
-      loadSfxBuffer(name, sfxManifest[name].file);
+    // Own-property check: the manifest is parsed JSON, so a name like "__proto__" would otherwise
+    // resolve through the prototype chain to a truthy non-entry.
+    const entry = sfxManifest && Object.hasOwn(sfxManifest, name) ? sfxManifest[name] : null;
+    if (entry && typeof entry.file === 'string' && !sfxBuffers.has(name) && !sfxBufferPromises.has(name)) {
+      loadSfxBuffer(name, entry.file);
     }
   }
   switch (name) {

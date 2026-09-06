@@ -18,9 +18,11 @@ function listEncoders() {
   return new Promise((resolve) => {
     let out = '';
     const p = spawn('ffmpeg', ['-hide_banner', '-encoders'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    p.stdout.setEncoding('utf8');
     p.stdout.on('data', (d) => { out += d; });
     p.on('error', () => resolve(''));
-    p.on('exit', () => resolve(out));
+    // 'close' (not 'exit') so stdout has fully drained before we parse the encoder list.
+    p.on('close', () => resolve(out));
   });
 }
 
@@ -54,8 +56,10 @@ export function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const p = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
+    p.stderr.setEncoding('utf8');
     p.stderr.on('data', (d) => { stderr += d; });
     p.on('error', reject);
-    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-500)}`))));
+    // 'close' so the stderr tail in the error message is complete.
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-500)}`))));
   });
 }
