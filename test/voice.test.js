@@ -48,3 +48,42 @@ test('client/audio/voice/manifest.json is valid JSON (an object)', async () => {
   assert.ok(manifest !== null);
   assert.ok(!Array.isArray(manifest));
 });
+
+test('every manifest key has a committed, non-empty .ogg clip starting with the OggS magic bytes', async () => {
+  const manifestRaw = await fs.readFile(path.join(ROOT, 'client', 'audio', 'voice', 'manifest.json'), 'utf8');
+  const manifest = JSON.parse(manifestRaw);
+  const keys = Object.keys(manifest);
+  assert.ok(keys.length > 0, 'expected client/audio/voice/manifest.json to have at least one entry');
+
+  for (const id of keys) {
+    const clipPath = path.join(ROOT, 'client', 'audio', 'voice', `${id}.ogg`);
+    let stat;
+    try {
+      stat = await fs.stat(clipPath);
+    } catch (err) {
+      assert.fail(`expected committed clip client/audio/voice/${id}.ogg to exist (${err.message})`);
+    }
+    assert.ok(stat.isFile(), `client/audio/voice/${id}.ogg must be a regular file`);
+    assert.ok(stat.size > 0, `client/audio/voice/${id}.ogg must not be empty`);
+
+    const fh = await fs.open(clipPath, 'r');
+    try {
+      const buf = Buffer.alloc(4);
+      await fh.read(buf, 0, 4, 0);
+      assert.equal(buf.toString('ascii'), 'OggS', `client/audio/voice/${id}.ogg must start with the OggS magic bytes`);
+    } finally {
+      await fh.close();
+    }
+  }
+});
+
+test('every client/audio/voice/manifest.json key exists in client/voice-lines.json', async () => {
+  const manifestRaw = await fs.readFile(path.join(ROOT, 'client', 'audio', 'voice', 'manifest.json'), 'utf8');
+  const manifest = JSON.parse(manifestRaw);
+
+  const linesRaw = await fs.readFile(path.join(ROOT, 'client', 'voice-lines.json'), 'utf8');
+  const lines = JSON.parse(linesRaw);
+
+  const missing = Object.keys(manifest).filter((id) => !(id in lines));
+  assert.deepEqual(missing, [], `manifest key(s) missing from voice-lines.json: ${missing.join(', ')}`);
+});

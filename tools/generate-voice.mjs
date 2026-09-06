@@ -9,12 +9,13 @@
 // lines are NOT added to the manifest, so the game keeps using speechSynthesis for them until
 // ffmpeg is installed and the script is re-run.
 //
-// If ELEVENLABS_API_KEY is not set, this prints setup instructions and exits 0 (not an error —
-// the game already falls back to speechSynthesis for any line with no pre-rendered clip, so a
-// fresh checkout works fine without ever running this script).
+// If neither ELEVENLABS_API_KEY nor ELEVENLABS_API is set, this prints setup instructions and
+// exits 0 (not an error — the game already falls back to speechSynthesis for any line with no
+// pre-rendered clip, so a fresh checkout works fine without ever running this script).
 //
 // Usage:
 //   ELEVENLABS_API_KEY=... [ELEVENLABS_VOICE_ID=...] [ELEVENLABS_MODEL_ID=eleven_multilingual_v2] node tools/generate-voice.mjs [id ...]
+// (ELEVENLABS_API is accepted as an alias for ELEVENLABS_API_KEY, mirroring tools/generate-sfx.mjs.)
 // With no ids given, every line in voice-lines.json is (re)generated.
 
 import fs from 'node:fs/promises';
@@ -80,7 +81,7 @@ async function synthesize(voiceId, apiKey, text) {
 }
 
 function printInstructions() {
-  console.log(`No ELEVENLABS_API_KEY set — skipping voice generation.
+  console.log(`No ELEVENLABS_API_KEY (or ELEVENLABS_API) set — skipping voice generation.
 
 client/voice.js already falls back to the browser's speechSynthesis for any narrator line with no
 pre-rendered clip, so this is optional. To generate real clips:
@@ -89,7 +90,11 @@ pre-rendered clip, so this is optional. To generate real clips:
   2. Optionally pick a voice id from https://elevenlabs.io/app/voice-library (Profile -> Voices),
      or use the built-in default.
   3. Run:
-       ELEVENLABS_API_KEY=sk-... [ELEVENLABS_VOICE_ID=voice_id] node tools/generate-voice.mjs
+       ELEVENLABS_API_KEY=sk-... [ELEVENLABS_VOICE_ID=voice_id] [ELEVENLABS_MODEL_ID=model_id] \\
+       node tools/generate-voice.mjs
+
+     ELEVENLABS_API works as an alias for ELEVENLABS_API_KEY. ELEVENLABS_MODEL_ID optionally
+     overrides the ElevenLabs model used for synthesis (defaults to eleven_multilingual_v2).
 
 Install ffmpeg (any recent version on PATH) for the extra 8kHz "arcade narrator" bit-crush pass;
 without it, clips are written unmodified (as .mp3 instead of .ogg — client/voice.js requests
@@ -106,7 +111,7 @@ async function main() {
     if (!(id in lines)) { console.error(`Unknown voice line id: ${id} (not in client/voice-lines.json)`); process.exitCode = 1; return; }
   }
 
-  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const apiKey = process.env.ELEVENLABS_API_KEY || process.env.ELEVENLABS_API;
   if (!apiKey) { printInstructions(); return; }
 
   const voiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
