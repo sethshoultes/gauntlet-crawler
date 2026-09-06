@@ -76,7 +76,15 @@ let sfxManifestPromise = null;
 function loadSfxManifest() {
   if (!sfxManifestPromise) {
     sfxManifestPromise = fetch('/audio/sfx/manifest.json')
-      .then((r) => (r.ok ? r.json() : {}))
+      .then((r) => {
+        if (r.ok) return r.json();
+        // A 404 (no manifest published yet) is a legitimate "no clips" state, tolerated as {}.
+        // Any other non-OK status (a 5xx, say) is a transient server-side failure, not a real
+        // answer -- reject so the .catch below treats it the same as a network-level failure and
+        // retries, instead of caching an empty manifest for the rest of the session.
+        if (r.status === 404) return {};
+        throw new Error(`sfx manifest fetch ${r.status}`);
+      })
       .then((m) => { sfxManifest = (m && typeof m === 'object' && !Array.isArray(m)) ? m : {}; return sfxManifest; })
       .catch(() => {
         // A transient failure here (offline at page load, a flaky network blip, malformed JSON)
@@ -102,10 +110,12 @@ const sfxBufferPromises = new Map(); // manifest file -> in-flight decode Promis
                                       // requests for ids sharing a file (or the same id) before
                                       // the first decode finishes doesn't fire off duplicate fetches
 /** Lazily fetch + decode one clip the first time its manifest file is actually requested (never
- *  eagerly for every clip in the manifest). On any fetch/decode failure, records `null` in
- *  sfxBuffers for this file (permanently for the session) so sfx(name) falls through to the synth
- *  without ever retrying the fetch -- a missing/undecodable clip doesn't get re-requested on every
- *  call. */
+ *  eagerly for every clip in the manifest). On a *definitive* failure -- a non-OK HTTP status (the
+ *  file genuinely isn't there) or decodeAudioData() rejecting (corrupt/undecodable) -- records
+ *  `null` in sfxBuffers for this file (permanently for the session) so sfx(name) falls through to
+ *  the synth without ever retrying a fetch that can't succeed. A *transient* failure (fetch()
+ *  itself rejecting -- offline, DNS, a dropped connection) is NOT cached, so a later sfx() call
+ *  retries once connectivity returns instead of being stuck with no clip until a page reload. */
 /** decodeAudioData() has had a Promise-returning form since ~2014, but its original signature
  *  (still valid everywhere, including browsers that never added the Promise form) takes explicit
  *  success/error callbacks -- so pass them ourselves rather than relying on a return value that a
@@ -113,17 +123,29 @@ const sfxBufferPromises = new Map(); // manifest file -> in-flight decode Promis
  *  then cache in sfxBuffers as if it were a real decode, permanently disabling that clip). */
 function decodeAudioData(a, arrayBuffer) {
   return new Promise((resolve, reject) => {
-    a.decodeAudioData(arrayBuffer, resolve, (err) => reject(err || new Error('decodeAudioData failed')));
+    a.decodeAudioData(arrayBuffer, resolve, (err) => {
+      // Marked `definitive` (see loadSfxBuffer() below): a corrupt/undecodable file won't decode
+      // any differently on a retry, unlike a network-level failure fetching its bytes.
+      const e = err || new Error('decodeAudioData failed');
+      try { e.definitive = true; } catch { /* a frozen/sealed DOMException in some runtime -- ignore */ }
+      reject(e);
+    });
   });
 }
 function loadSfxBuffer(file) {
   const a = ac();
   if (!a) return Promise.resolve(null);
   const p = fetch(`/audio/sfx/${file}`)
-    .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`sfx fetch ${r.status}`))))
+    .then((r) => (r.ok
+      ? r.arrayBuffer()
+      // A bad HTTP status is definitive: the server answered, and it isn't there.
+      : Promise.reject(Object.assign(new Error(`sfx fetch ${r.status}`), { definitive: true }))))
     .then((buf) => decodeAudioData(a, buf))
     .then((decoded) => { sfxBuffers.set(file, decoded); return decoded; })
-    .catch(() => { sfxBuffers.set(file, null); return null; })
+    .catch((err) => {
+      if (err && err.definitive) sfxBuffers.set(file, null);
+      return null;
+    })
     .finally(() => { sfxBufferPromises.delete(file); });
   sfxBufferPromises.set(file, p);
   return p;
