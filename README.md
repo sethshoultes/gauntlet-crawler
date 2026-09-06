@@ -603,16 +603,22 @@ always used) when there's no clip yet. `client/game.js` calls `say(id, text)` wi
 every narrator line (`welcome`, `needs_food`, `about_to_die`, `saved_by_food`, `poisoned`,
 `dont_shoot_food`, `dont_shoot_food_again`, `save_keys`, `use_magic`, `bravery`, `level_n`,
 `wave_n`, `died`, `amulet_invis`, `amulet_reflect`, `amulet_repulse`, `amulet_super`,
-`boost_pickup`, plus `cutscene` for cutscene captions) instead of hard-coding the line's text —
+`boost_pickup`, `you_are_it`, plus `cutscene` for cutscene captions) instead of hard-coding the line's text —
 `text` is still passed through as the speechSynthesis fallback and as the source for generating a
 clip, but a pre-rendered clip is looked up by id alone. Every line runs through the narrator-voice
 mixer volume from Settings.
 
 `client/voice-lines.json` is the source of truth mapping every id to its line's text, and
-`client/audio/voice/manifest.json` (ships empty) lists which ids currently have a rendered clip.
-`test/voice.test.js` greps `client/game.js` for every `say(id, ...)` call and fails if an id is
-missing from `voice-lines.json`. See [Development](#development) below for how to generate real
-clips with `tools/generate-voice.mjs`.
+`client/audio/voice/manifest.json` lists which ids currently have a rendered clip — the repo ships
+13 pre-rendered clips, committed alongside their `.ogg` files under `client/audio/voice/`.
+`speechSynthesis` is still the fallback for the remaining stable ids with no clip yet
+(`amulet_invis`, `amulet_reflect`, `amulet_repulse`, `amulet_super`, `boost_pickup`, `you_are_it`),
+for the `cutscene` id (its caption text is unique per scene, so it's never pre-rendered), or if a
+shipped clip ever fails to load. `test/voice.test.js` greps `client/game.js` for every
+`say(id, ...)` call and fails if an id is missing from `voice-lines.json`, and also asserts every
+`manifest.json` key has a committed, non-empty `.ogg` clip (starting with the `OggS` magic bytes)
+and a matching `voice-lines.json` entry. See [Development](#development) below for how to
+regenerate clips with `tools/generate-voice.mjs`.
 
 ### AI Narrator (#18)
 
@@ -975,17 +981,20 @@ instead, run `tools/generate-voice.mjs`:
 node tools/generate-voice.mjs
 
 # with an ElevenLabs account:
-ELEVENLABS_API_KEY=sk-...            \
-ELEVENLABS_VOICE_ID=voice_id_here    \  # optional — defaults to a documented placeholder voice
-node tools/generate-voice.mjs [id ...]  # omit ids to (re)generate every line
+# ELEVENLABS_VOICE_ID is optional (defaults to a documented placeholder voice);
+# ELEVENLABS_MODEL_ID is optional (defaults to eleven_multilingual_v2);
+# omit the ids to (re)generate every line.
+ELEVENLABS_API_KEY=sk-... ELEVENLABS_VOICE_ID=voice_id_here ELEVENLABS_MODEL_ID=model_id_here \
+  node tools/generate-voice.mjs [id ...]
 ```
 
 It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
-additionally down-samples each clip to 8kHz mono Ogg/Vorbis (a cheap-DAC "bit-crush" pass that
+additionally down-samples each clip to 8kHz mono Ogg (Opus when ffmpeg has libopus, else Vorbis; a cheap-DAC "bit-crush" pass that
 matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing the
-manifest. Generated clips are not committed to the repo (see `.gitignore`) — only
-`client/audio/voice/manifest.json` is, shipping empty so a fresh checkout always falls back to
-`speechSynthesis` until someone runs the script.
+manifest. The repo ships all 13 clips already generated and committed under
+`client/audio/voice/` (see [Narrator voice](#narrator-voice) above), so a fresh checkout doesn't
+need to run this script at all — re-run it only to regenerate a clip (e.g. after editing its text
+in `client/voice-lines.json`) or to pick a different voice.
 
 ## Deployment
 

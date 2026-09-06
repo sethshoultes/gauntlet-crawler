@@ -1,1 +1,15 @@
-{}
+{
+  "welcome": true,
+  "needs_food": true,
+  "about_to_die": true,
+  "saved_by_food": true,
+  "poisoned": true,
+  "dont_shoot_food": true,
+  "dont_shoot_food_again": true,
+  "save_keys": true,
+  "use_magic": true,
+  "bravery": true,
+  "level_n": true,
+  "wave_n": true,
+  "died": true
+}
