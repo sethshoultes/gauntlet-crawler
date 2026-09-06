@@ -143,7 +143,13 @@ window.addEventListener('pointercancel', stopPainting);
 // works off getBoundingClientRect()) is untouched — and #ecv-wrap scrolls (not the page) once the
 // zoomed size exceeds the panel.
 let zoom = 1;
+let appliedZoom = null; // last `${zoom}:${ED.w}` written to the DOM, so draw() can call this freely
 function applyZoom() {
+  // Idempotent: draw() calls this on every paint stroke, so only touch style/text when the
+  // computed values actually changed -- otherwise each drag step forces a needless style recalc.
+  const key = `${zoom}:${ED.w}`;
+  if (key === appliedZoom) return;
+  appliedZoom = key;
   if (zoom === 1) { cv.style.width = ''; cv.style.maxWidth = ''; }
   else { cv.style.width = `${ED.w * CELL * zoom}px`; cv.style.maxWidth = 'none'; }
   $('#zoom-val').textContent = `${Math.round(zoom * 100)}%`;

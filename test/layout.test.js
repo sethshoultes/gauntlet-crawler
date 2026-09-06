@@ -41,7 +41,7 @@ test('height-bound case (tall, narrow available box) still keeps the 4:3 aspect'
   assert.equal(Math.round(r.width), Math.round(300 * (640 / 480)));
 });
 
-test('prefers an exact integer scale when one fits without shrinking the fractional fit', () => {
+test('snaps to an exact integer scale when one fits (see the snap-down test below for the letterboxing case)', () => {
   // 640x480 fits exactly twice into 1280x960 -> an integer 2x scale, not a blurry 1.999x.
   const r = computeCanvasLayout({ vw: 1280, vh: 960, levelW: 640, levelH: 480 });
   assert.equal(r.scale, 2);
@@ -95,4 +95,12 @@ test('a very short landscape band (controlsH=0, small hudH) still fills nearly t
   const r = computeCanvasLayout({ vw: 915, vh: 412, hudH: 40, controlsH: 0, levelW: 640, levelH: 480 });
   assert.ok(r.height <= 372);
   assert.ok(r.height > 300, `expected the canvas to use most of the remaining height, got ${r.height}`);
+});
+
+test('floors the canvas box so a fractional viewport never yields a box larger than the available space', () => {
+  // 375.6 CSS px wide (a fractional getBoundingClientRect) -> width must be <= 375.6, i.e. 375, not 376.
+  const r = computeCanvasLayout({ vw: 375.6, vh: 900, levelW: 640, levelH: 480 });
+  assert.ok(r.width <= 375.6 && r.height <= 900, `box ${r.width}x${r.height} must fit inside 375.6x900`);
+  assert.equal(r.width, 375);
+  assert.equal(r.height, Math.floor(375.6 * 0.75)); // 281, never rounded up to 282
 });

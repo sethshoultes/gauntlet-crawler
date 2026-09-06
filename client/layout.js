@@ -10,11 +10,12 @@
 /**
  * Fit a fixed-aspect game canvas into `vw`x`vh` minus the HUD strip (`hudH`, stacked above the
  * canvas) and a touch-controls band (`controlsH`, stacked below — pass 0 when the controls instead
- * overlay the canvas edges, as they do in the landscape-phone layout). Prefers an exact integer
- * multiple of the logical resolution (crisp, no soft scaling) when one fits without shrinking the
- * result versus a plain fractional fit; otherwise falls back to the fractional fit; both are drawn
- * with `image-rendering: pixelated` in CSS (see client/style.css), so the caller never needs to
- * treat the two cases differently beyond picking the backing-store resolution.
+ * overlay the canvas edges, as they do in the landscape-phone layout). Snaps down to an exact
+ * integer multiple of the logical resolution (crisp, no soft scaling) whenever one fits, accepting
+ * the letterboxing that costs (e.g. a raw fit of 1.4x becomes 1x); only below 1x, where no integer
+ * scale exists, does it fall back to the fractional fit. Both are drawn with `image-rendering:
+ * pixelated` in CSS (see client/style.css), so the caller never needs to treat the two cases
+ * differently beyond picking the backing-store resolution.
  *
  *  - vw/vh: the box available for [HUD + canvas + controls] combined (CSS px)
  *  - hudH/controlsH: space already consumed by the HUD strip / touch-controls band (CSS px, >= 0)
@@ -53,8 +54,10 @@ export function computeCanvasLayout({ vw, vh, hudH = 0, controlsH = 0, levelW, l
     if (iw <= availW && ih <= availH) scale = intScale;
   }
 
-  width = Math.max(1, Math.round(levelW * scale));
-  height = Math.max(1, Math.round(levelH * scale));
+  // Floor, never round: vw/vh come from getBoundingClientRect() and can be fractional, and a
+  // rounded-up box would overflow the available space by a pixel and clip in tight layouts.
+  width = Math.max(1, Math.floor(levelW * scale));
+  height = Math.max(1, Math.floor(levelH * scale));
 
   return {
     orientation,
