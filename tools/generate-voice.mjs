@@ -39,7 +39,7 @@ function hasFfmpeg() {
   });
 }
 
-/** Crude "bit-crush": ffmpeg down to an 8kHz mono Ogg/Vorbis file — a cheap, lossy sample rate
+/** Crude "bit-crush": ffmpeg down to an 8kHz mono Ogg (Opus or Vorbis, whichever encoder ffmpeg provides) file — a cheap, lossy sample rate
  *  that gives generated speech a chunkier, lower-fidelity arcade-narrator character. */
 // Pick whichever Ogg-capable encoder this ffmpeg build ships: libopus is the common one on macOS
 // (Homebrew builds often omit libvorbis); the built-in experimental vorbis encoder is the last resort.
