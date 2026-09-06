@@ -14,3 +14,9 @@ playwright/.cache/
 *.tmp
 *.swp
 .DS_Store
+
+# Intermediate/raw TTS output; only the finished .ogg clips are committed.
+client/audio/voice/*.mp3
+client/audio/voice/*.raw.mp3
+client/audio/sfx/*.mp3
+client/audio/sfx/*.raw.mp3

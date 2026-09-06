@@ -36,7 +36,7 @@ function hasFfmpeg() {
   return new Promise((resolve) => {
     const p = spawn('ffmpeg', ['-version'], { stdio: 'ignore' });
     p.on('error', () => resolve(false));
-    p.on('exit', (code) => resolve(code === 0));
+    p.on('close', (code) => resolve(code === 0));
   });
 }
 
@@ -50,7 +50,7 @@ async function detectOggEncoder() {
   const list = await new Promise((resolve) => {
     const p = spawn('ffmpeg', ['-hide_banner', '-encoders'], { stdio: ['ignore', 'pipe', 'ignore'] });
     let out = ''; p.stdout.on('data', (d) => { out += d; });
-    p.on('exit', () => resolve(out)); p.on('error', () => resolve(''));
+    p.on('close', () => resolve(out)); p.on('error', () => resolve(''));
   });
   if (/\blibopus\b/.test(list)) oggEncoderArgs = ['-c:a', 'libopus', '-b:a', '24k'];
   else if (/\blibvorbis\b/.test(list)) oggEncoderArgs = ['-c:a', 'libvorbis'];
@@ -66,7 +66,7 @@ async function crushToOgg(inputPath, outputPath) {
     const p = spawn('ffmpeg', ['-y', '-i', inputPath, '-ar', '8000', '-ac', '1', ...enc, outputPath], { stdio: ['ignore', 'ignore', 'pipe'] });
     p.stderr.on('data', (d) => { err += d; });
     p.on('error', reject);
-    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.trim().split('\n').pop()}`))));
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.trim().split('\n').pop()}`))));
   });
 }
 

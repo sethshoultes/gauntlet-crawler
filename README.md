@@ -561,7 +561,7 @@ node tools/generate-voice.mjs [id ...]  # omit ids to (re)generate every line
 ```
 
 It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
-additionally down-samples each clip to 8kHz mono Ogg/Vorbis (a cheap-DAC "bit-crush" pass that
+additionally down-samples each clip to 8kHz mono Ogg (Opus when ffmpeg has libopus, else Vorbis; a cheap-DAC "bit-crush" pass that
 matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing the
 manifest. The repo ships all 13 clips already generated and committed under
 `client/audio/voice/` (see [Narrator voice](#narrator-voice) above), so a fresh checkout doesn't
