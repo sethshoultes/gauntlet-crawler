@@ -27,6 +27,8 @@ import { enabled as sentryEnabled } from './sentry.js';
 import { heartbeat } from './ws-heartbeat.js';
 import * as heroes from './heroes.js';
 import * as highscores from './highscores.js';
+import { computeAssetVersion, versionHtml, versionJs } from './assets.js';
+import { versionedUrl } from '../client/sw-rules.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
@@ -35,6 +37,16 @@ const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'))
 const lobby = new Lobby();
 admin.init(lobby);
 telemetry.startRetentionJob(90);
+
+// Cache-busting for static assets (#38): a short hash of every file under client/ and shared/,
+// computed once at startup so it's stable for the life of this process. serveStatic() stamps it
+// onto same-origin asset URLs in every .html/.js response it sends (see versionHtml/versionJs in
+// ./assets.js) and only serves a request whose `?v=` matches this as long-term immutable — see
+// README "Deployment" for why Cloudflare in front of production makes that necessary.
+const ASSET_VERSION = computeAssetVersion([
+  { dir: path.join(ROOT, 'client'), prefix: '' },
+  { dir: path.join(ROOT, 'shared'), prefix: 'shared/' },
+]);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -80,7 +92,7 @@ setInterval(() => {
   const t = Date.now();
   for (const [key, times] of buckets) if (!times.length || t - times[times.length - 1] > 10 * 60_000) buckets.delete(key);
 }, 5 * 60_000).unref();
-function serveStatic(req, res, urlPath) {
+function serveStatic(req, res, urlPath, searchParams) {
   let rel;
   try { rel = decodeURIComponent(urlPath); } catch { res.writeHead(400); return res.end(); }
   // A NUL byte makes fs.readFile throw synchronously; refuse it before it can reach the filesystem layer.
@@ -98,7 +110,38 @@ function serveStatic(req, res, urlPath) {
   if (relToBase.startsWith('..') || path.isAbsolute(relToBase)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
     if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('Not found'); }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    // Cache-busting (#38): a request whose ?v= matches this process's ASSET_VERSION names an
+    // immutable, content-addressed URL — safe to cache for a year even through Cloudflare's edge.
+    // Anything else (no ?v=, or a stale one from a previous deploy) stays no-cache so a client
+    // that didn't get the versioned URL rewrite still revalidates on every load. /sw.js is the one
+    // path that must ever be no-cache regardless: the browser's own update check for it depends on
+    // refetching the real file, not a version query we'd have to teach it to send.
+    const ext = path.extname(file);
+    // Only URLs the rewriter actually fingerprints (.js/.css/.webmanifest, never /sw.js -- the same
+    // versionedUrl() rule) qualify: pages and images are not content-addressed, so a stray ?v= on
+    // /index.html must never earn them a year-long immutable header.
+    const isFingerprinted = versionedUrl(rel, ASSET_VERSION) !== rel;
+    const cacheControl = (isFingerprinted && searchParams?.get('v') === ASSET_VERSION)
+      ? 'public, max-age=31536000, immutable' : 'no-cache';
+    const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': cacheControl };
+    // Rewrite same-origin asset refs (HTML) / import specifiers (JS) to carry ?v=ASSET_VERSION,
+    // so every reference a versioned page or module makes is itself versioned — the one thing
+    // that keeps a fresh index.html from ever being combined with a stale game.js/style.css.
+    if (ext === '.html' || ext === '.js') {
+      let text = ext === '.html' ? versionHtml(data.toString('utf8'), ASSET_VERSION) : versionJs(data.toString('utf8'), ASSET_VERSION);
+      // client/sw.js ships with a literal '__ASSET_VERSION__' placeholder (its own ASSET_VERSION
+      // constant, its CACHE_NAME, and what it maps PRECACHE_URLS through) — bake this run's real
+      // ASSET_VERSION into it here so the served worker's bytes actually change on every deploy.
+      // That's what makes the browser's update check notice a new build regardless of whether
+      // sw.js's own source changed, and what lets its fetch handler use a plain caches.match()
+      // (no ignoreSearch) since the precache is now keyed by the same ?v= a versioned page uses.
+      if (rel === '/sw.js') text = text.replaceAll('__ASSET_VERSION__', ASSET_VERSION);
+      const body = Buffer.from(text, 'utf8');
+      headers['Content-Length'] = body.length;
+      res.writeHead(200, headers);
+      return res.end(body);
+    }
+    res.writeHead(200, headers);
     res.end(data);
   });
 }
@@ -122,6 +165,9 @@ async function api(req, res, url) {
       // Informational only -- the client keeps using the same POST /api/client-errors beacon
       // either way (see client/common.js); this just lets an operator confirm SENTRY_DSN took.
       sentry: sentryEnabled(),
+      // Cache-busting fingerprint (#38) — a post-deploy check can confirm the origin actually
+      // restarted with the new build by comparing this against `curl .../ | grep game.js?v=`.
+      assetVersion: ASSET_VERSION,
     });
   }
 
@@ -359,7 +405,7 @@ const server = http.createServer(async (req, res) => {
       catch (e) { json(res, e.status || 400, { error: e.message }); }
       return;
     }
-    serveStatic(req, res, url.pathname);
+    serveStatic(req, res, url.pathname, url.searchParams);
   } catch (e) {
     log.error('http request failed', { url: req.url, stack: e.stack });
     if (!res.headersSent) { try { res.writeHead(500); } catch {} }

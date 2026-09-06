@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { startServer } from './helpers/server.mjs';
-import { isNetworkOnly, shouldHandle, PRECACHE_URLS } from '../client/sw-rules.js';
+import { isNetworkOnly, shouldHandle, versionedUrl, PRECACHE_URLS } from '../client/sw-rules.js';
 import { ICON_SPECS, ICONS_DIR, generateAll } from '../tools/generate-icons.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -103,6 +103,16 @@ test('the server serves manifest.webmanifest and sw.js with correct MIME/caching
     // A new deploy's worker must never be masked by a cached old one.
     assert.equal(swRes.headers.get('cache-control'), 'no-cache');
 
+    // Cache-busting (#38 review): server/index.js bakes its running ASSET_VERSION into sw.js's
+    // '__ASSET_VERSION__' placeholder so the worker's own bytes (and CACHE_NAME) change on every
+    // deploy — assert the real hash landed and the placeholder token never leaks into what's served.
+    const swBody = await swRes.text();
+    assert.doesNotMatch(swBody, /__ASSET_VERSION__/, 'the literal placeholder must never reach a served /sw.js');
+    const healthRes = await fetch(baseUrl + '/api/health');
+    const { assetVersion } = await healthRes.json();
+    assert.match(swBody, new RegExp(`const ASSET_VERSION = '${assetVersion}'`));
+    assert.match(swBody, new RegExp('`gauntlet-shell-\\$\\{SW_VERSION\\}-\\$\\{ASSET_VERSION\\}`'));
+
     const swRulesRes = await fetch(baseUrl + '/sw-rules.js');
     assert.equal(swRulesRes.status, 200);
 
@@ -141,6 +151,33 @@ test('sw-rules: isNetworkOnly/shouldHandle never let /api, /ws or /sw.js be cach
   // POST/PUT/DELETE responses are never cached, even on an otherwise-cacheable path.
   for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
     assert.equal(shouldHandle(get('/', { method })), false, `${method} / must not be cached`);
+  }
+});
+
+// versionedUrl() is the single source of truth "which URLs get a ?v= suffix, and what that
+// suffix looks like" shared between client/sw.js (mapping it over PRECACHE_URLS) and
+// server/assets.js (the HTML/JS rewriters) — see #38's review follow-up.
+test('sw-rules: versionedUrl versions .js/.css/.webmanifest, leaves pages/images/sw.js/queried URLs alone', () => {
+  assert.equal(versionedUrl('/game.js', 'abc123'), '/game.js?v=abc123');
+  assert.equal(versionedUrl('/style.css', 'abc123'), '/style.css?v=abc123');
+  assert.equal(versionedUrl('/manifest.webmanifest', 'abc123'), '/manifest.webmanifest?v=abc123');
+  assert.equal(versionedUrl('/shared/constants.js', 'abc123'), '/shared/constants.js?v=abc123');
+
+  // Never the service worker script itself, regardless of version.
+  assert.equal(versionedUrl('/sw.js', 'abc123'), '/sw.js');
+  // HTML pages and images are extensions the server never fingerprints.
+  assert.equal(versionedUrl('/index.html', 'abc123'), '/index.html');
+  assert.equal(versionedUrl('/', 'abc123'), '/');
+  assert.equal(versionedUrl('/icons/icon-192.png', 'abc123'), '/icons/icon-192.png');
+  // A URL that already carries a query is left exactly as-is.
+  assert.equal(versionedUrl('/style.css?x=1', 'abc123'), '/style.css?x=1');
+
+  // Every entry of PRECACHE_URLS run through versionedUrl() must round-trip through
+  // isNetworkOnly/shouldHandle the same way as the bare URL (mapping never turns a shell asset
+  // into something the fetch handler would refuse to serve from cache).
+  for (const url of PRECACHE_URLS) {
+    const versioned = versionedUrl(url, 'abc123');
+    assert.equal(shouldHandle({ method: 'GET', url: versioned }), shouldHandle({ method: 'GET', url }), url);
   }
 });
 

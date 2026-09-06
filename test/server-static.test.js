@@ -46,3 +46,80 @@ test('static file traversal is blocked; legitimate /shared and /client files sti
     await server.stop();
   }
 });
+
+// Cache-busting for static assets (#38): a fresh index.html must never be able to end up paired
+// with a stale game.js/style.css behind Cloudflare's edge cache — see server/assets.js and
+// serveStatic() in server/index.js.
+test('static assets are fingerprinted with ?v=<ASSET_VERSION> and cached accordingly', async () => {
+  const server = await startServer();
+  const { baseUrl } = server;
+  try {
+    const indexRes = await fetch(baseUrl + '/');
+    assert.equal(indexRes.status, 200);
+    const html = await indexRes.text();
+    const match = html.match(/\/game\.js\?v=([0-9a-f]{12})/);
+    assert.ok(match, 'served HTML must reference /game.js?v=<12 hex chars>');
+    const version = match[1];
+    // Every other same-origin script/link this page references should carry the same version.
+    assert.match(html, /\/style\.css\?v=[0-9a-f]{12}/);
+    assert.match(html, /\/pwa\.js\?v=[0-9a-f]{12}/);
+    assert.match(html, /\/highscore\.js\?v=[0-9a-f]{12}/);
+    // /sw.js is registered from client/pwa.js by plain string, not linked from HTML, but must
+    // never itself gain a version query anywhere it might appear.
+    assert.doesNotMatch(html, /sw\.js\?v=/);
+
+    // Requests carrying the current version are immutable-cacheable...
+    const versioned = await fetch(`${baseUrl}/game.js?v=${version}`);
+    assert.equal(versioned.status, 200);
+    assert.equal(versioned.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+
+    // ...an unversioned request for the same file stays no-cache...
+    const unversioned = await fetch(baseUrl + '/game.js');
+    assert.equal(unversioned.status, 200);
+    assert.equal(unversioned.headers.get('cache-control'), 'no-cache');
+
+    // ...and so does a request carrying a stale/incorrect version (e.g. a browser tab still
+    // holding a link from a previous deploy) — it must be revalidated, never trusted as immutable.
+    const stale = await fetch(baseUrl + '/game.js?v=wrong');
+    assert.equal(stale.status, 200);
+    assert.equal(stale.headers.get('cache-control'), 'no-cache');
+
+    // /sw.js must always stay no-cache, even if a stray ?v= is appended to the request, so the
+    // browser's own update check for it is never short-circuited by an immutable header.
+    const swVersioned = await fetch(`${baseUrl}/sw.js?v=${version}`);
+    assert.equal(swVersioned.status, 200);
+    assert.equal(swVersioned.headers.get('cache-control'), 'no-cache');
+    const swPlain = await fetch(baseUrl + '/sw.js');
+    assert.equal(swPlain.headers.get('cache-control'), 'no-cache');
+
+    // Pages and images are not fingerprinted, so even a matching ?v= must not make them immutable:
+    // a proxy or a future code path appending ?v= to /index.html would otherwise pin stale HTML for
+    // a year.
+    for (const p of ['/', '/index.html', '/icons/icon-192.png']) {
+      const r = await fetch(`${baseUrl}${p}?v=${version}`);
+      assert.equal(r.status, 200, p);
+      assert.equal(r.headers.get('cache-control'), 'no-cache', `${p}?v= must stay no-cache`);
+    }
+
+    // The served JS body itself carries versioned import specifiers (both relative and
+    // root-absolute), not just the HTML that links to it.
+    const gameJsBody = await unversioned.text();
+    assert.match(gameJsBody, /from '\.\/common\.js\?v=[0-9a-f]{12}'/);
+    assert.match(gameJsBody, /from '\/shared\/constants\.js\?v=[0-9a-f]{12}'/);
+
+    // The service worker's own import of ./sw-rules.js is versioned too.
+    const swBody = await swPlain.text();
+    assert.match(swBody, /from '\.\/sw-rules\.js\?v=[0-9a-f]{12}'/);
+
+    // The version is stable across separate requests to the same running server.
+    const again = await fetch(baseUrl + '/');
+    const againMatch = (await again.text()).match(/\/game\.js\?v=([0-9a-f]{12})/);
+    assert.equal(againMatch && againMatch[1], version, 'ASSET_VERSION must be stable across requests within one server lifetime');
+
+    const healthRes = await fetch(baseUrl + '/api/health');
+    const health = await healthRes.json();
+    assert.equal(health.assetVersion, version, '/api/health must report the same ASSET_VERSION used to fingerprint served assets');
+  } finally {
+    await server.stop();
+  }
+});
