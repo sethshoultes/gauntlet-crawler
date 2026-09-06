@@ -92,6 +92,15 @@ test('static assets are fingerprinted with ?v=<ASSET_VERSION> and cached accordi
     const swPlain = await fetch(baseUrl + '/sw.js');
     assert.equal(swPlain.headers.get('cache-control'), 'no-cache');
 
+    // Pages and images are not fingerprinted, so even a matching ?v= must not make them immutable:
+    // a proxy or a future code path appending ?v= to /index.html would otherwise pin stale HTML for
+    // a year.
+    for (const p of ['/', '/index.html', '/icons/icon-192.png']) {
+      const r = await fetch(`${baseUrl}${p}?v=${version}`);
+      assert.equal(r.status, 200, p);
+      assert.equal(r.headers.get('cache-control'), 'no-cache', `${p}?v= must stay no-cache`);
+    }
+
     // The served JS body itself carries versioned import specifiers (both relative and
     // root-absolute), not just the HTML that links to it.
     const gameJsBody = await unversioned.text();

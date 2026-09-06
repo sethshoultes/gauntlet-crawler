@@ -28,6 +28,7 @@ import { heartbeat } from './ws-heartbeat.js';
 import * as heroes from './heroes.js';
 import * as highscores from './highscores.js';
 import { computeAssetVersion, versionHtml, versionJs } from './assets.js';
+import { versionedUrl } from '../client/sw-rules.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(here, '..');
@@ -116,7 +117,11 @@ function serveStatic(req, res, urlPath, searchParams) {
     // path that must ever be no-cache regardless: the browser's own update check for it depends on
     // refetching the real file, not a version query we'd have to teach it to send.
     const ext = path.extname(file);
-    const cacheControl = (rel !== '/sw.js' && searchParams?.get('v') === ASSET_VERSION)
+    // Only URLs the rewriter actually fingerprints (.js/.css/.webmanifest, never /sw.js -- the same
+    // versionedUrl() rule) qualify: pages and images are not content-addressed, so a stray ?v= on
+    // /index.html must never earn them a year-long immutable header.
+    const isFingerprinted = versionedUrl(rel, ASSET_VERSION) !== rel;
+    const cacheControl = (isFingerprinted && searchParams?.get('v') === ASSET_VERSION)
       ? 'public, max-age=31536000, immutable' : 'no-cache';
     const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': cacheControl };
     // Rewrite same-origin asset refs (HTML) / import specifiers (JS) to carry ?v=ASSET_VERSION,
