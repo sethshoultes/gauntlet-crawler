@@ -279,7 +279,10 @@ async function main() {
       while (Date.now() < deadline) {
         const text = await pageD.locator('#log').textContent();
         if (text.includes('Choose a chest')) sawChestPrompt = true;
-        hud = await readSelfHud(pageD).catch(() => null);
+        // Keep the last successful reading: a single failed read mid-transition must not erase it
+        // and turn a genuine "did not advance" into a misleading "could not read the HUD".
+        const reading = await readSelfHud(pageD).catch(() => null);
+        if (reading) hud = reading;
         if (hud && hud.level !== before) break;
         await pageD.waitForTimeout(200);
       }
