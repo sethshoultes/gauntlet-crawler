@@ -35,9 +35,8 @@ const DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // "Rachel" — ElevenLabs' doc
  *  gives generated speech a chunkier, lower-fidelity arcade-narrator character. Uses whichever
  *  Ogg-compatible encoder (Vorbis preferred, Opus as a fallback) this ffmpeg build actually has —
  *  see tools/lib/ffmpeg.mjs's detectOggEncoder(). */
-async function crushToOgg(inputPath, outputPath, encoder) {
-  const extra = encoder.extraArgs || [];
-  await runFfmpeg(['-y', '-i', inputPath, '-ar', '8000', '-ac', '1', '-c:a', encoder.codec, ...extra, outputPath]);
+async function crushToOgg(inputPath, outputPath, encoderArgs) {
+  await runFfmpeg(['-y', '-i', inputPath, '-ar', '8000', '-ac', '1', ...encoderArgs, outputPath]);
 }
 
 async function synthesize(voiceId, apiKey, text) {
@@ -83,10 +82,10 @@ async function main() {
   const voiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
   await fs.mkdir(OUT_DIR, { recursive: true });
   const ffmpegPresent = await hasFfmpeg();
-  const encoder = ffmpegPresent ? await detectOggEncoder() : null;
-  const canCrush = !!encoder;
+  const encoderArgs = ffmpegPresent ? await detectOggEncoder() : null;
+  const canCrush = !!encoderArgs;
   if (!ffmpegPresent) console.log('ffmpeg not found on PATH — clips will be written as plain .mp3 (no bit-crush pass).');
-  else if (!canCrush) console.log('ffmpeg has no Vorbis or Opus encoder — clips will be written as plain .mp3 (no bit-crush pass).');
+  else if (!canCrush) console.log('ffmpeg has no usable Ogg encoder (libopus/libvorbis) — clips will be written as plain .mp3 (no bit-crush pass).');
 
   for (const id of ids) {
     const text = lines[id];
@@ -99,11 +98,11 @@ async function main() {
         // Always remove the temp file, even when the crush step itself fails (bad codec, corrupt
         // input): otherwise a partial failure leaves stray `.raw.mp3` artifacts in OUT_DIR.
         try {
-          await crushToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`), encoder);
+          await crushToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`), encoderArgs);
         } finally {
           await fs.rm(tmpPath, { force: true });
         }
-        console.log(`ok (.ogg, bit-crushed, ${encoder.codec})`);
+        console.log(`ok (.ogg, bit-crushed, ${encoderArgs[1]})`);
       } else {
         await fs.writeFile(path.join(OUT_DIR, `${id}.mp3`), mp3);
         console.log('ok (.mp3)');

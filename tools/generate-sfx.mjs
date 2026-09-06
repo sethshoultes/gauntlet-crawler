@@ -6,10 +6,14 @@
 // present, calls ElevenLabs' sound-generation endpoint for each id, then post-processes the
 // result with ffmpeg (mono, 16kHz, loudness-normalized, leading silence trimmed) into
 // client/audio/sfx/<id>.ogg, and writes client/audio/sfx/manifest.json (id -> { file, seconds }).
+// client/audio.js fetches each clip and decodes it via AudioContext.decodeAudioData() -- there's
+// no <audio> element involved.
 //
 // Without ffmpeg on PATH (or without a usable Ogg encoder), clips can't be produced in a format
-// the game's Audio element can decode reliably alongside the manifest, so nothing is written for
-// that id and it keeps using client/audio.js's synthesized fallback.
+// client/audio.js can decode, so encoding is skipped for every id (the ElevenLabs API isn't even
+// called, to avoid spending quota on output that can't be used) and the manifest is still written
+// for whatever clips already exist on disk from a previous run. Every id keeps using
+// client/audio.js's synthesized fallback until it has a usable clip.
 //
 // If neither ELEVENLABS_API_KEY nor ELEVENLABS_API is set, this prints setup instructions and
 // exits 0 (not an error) -- the game already falls back to the WebAudio synth for any effect with
@@ -51,10 +55,9 @@ async function synthesize(apiKey, prompt, seconds) {
  *  silence trimmed (ElevenLabs sound-generation often leaves a beat of silence up front), and
  *  loudness-normalized so every clip plays back at a consistent level through the game's SFX bus
  *  regardless of how loud the source render came out. */
-async function processToOgg(inputPath, outputPath, encoder) {
-  const extra = encoder.extraArgs || [];
+async function processToOgg(inputPath, outputPath, encoderArgs) {
   const af = 'silenceremove=start_periods=1:start_threshold=-50dB,loudnorm=I=-16:TP=-1.5:LRA=11';
-  await runFfmpeg(['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-af', af, '-c:a', encoder.codec, ...extra, outputPath]);
+  await runFfmpeg(['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', '-af', af, ...encoderArgs, outputPath]);
 }
 
 function printInstructions() {
@@ -89,33 +92,36 @@ async function main() {
   if (!apiKey) { printInstructions(); return; }
 
   const ffmpegPresent = await hasFfmpeg();
-  const encoder = ffmpegPresent ? await detectOggEncoder() : null;
-  if (!ffmpegPresent) { console.log('ffmpeg not found on PATH -- cannot produce .ogg clips, aborting.'); process.exitCode = 1; return; }
-  if (!encoder) { console.log('ffmpeg has no Vorbis or Opus encoder -- cannot produce .ogg clips, aborting.'); process.exitCode = 1; return; }
+  const encoderArgs = ffmpegPresent ? await detectOggEncoder() : null;
+  if (!ffmpegPresent) console.log('ffmpeg not found on PATH -- skipping sound-effect generation for every id (synth fallback covers all of them).');
+  else if (!encoderArgs) console.log('ffmpeg has no usable Ogg encoder (libopus/libvorbis) -- skipping sound-effect generation for every id (synth fallback covers all of them).');
 
-  await fs.mkdir(OUT_DIR, { recursive: true });
+  if (encoderArgs) {
+    await fs.mkdir(OUT_DIR, { recursive: true });
+    const codecLabel = encoderArgs[1];
 
-  for (const id of ids) {
-    const entry = lines[id];
-    // An "alias" entry (e.g. "magic" -> "potion", which share the same synth case in
-    // client/audio.js) reuses another id's clip instead of spending API quota on an identical
-    // sound -- handled entirely in writeManifest() below, nothing to generate here.
-    if (entry.alias) { console.log(`Skipping "${id}" (alias of "${entry.alias}")`); continue; }
-    const { prompt, seconds } = entry;
-    process.stdout.write(`Generating "${id}" (${seconds}s)... `);
-    const tmpPath = path.join(OUT_DIR, `${id}.raw.mp3`);
-    try {
-      const mp3 = await synthesize(apiKey, prompt, seconds);
-      await fs.writeFile(tmpPath, mp3);
-      await processToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`), encoder);
-      console.log(`ok (.ogg, ${encoder.codec})`);
-    } catch (err) {
-      console.log(`FAILED: ${err.message}`);
-      process.exitCode = 1;
-    } finally {
-      // Always remove the temp file, even when synth/encode fails, so a partial run doesn't
-      // leave stray `.raw.mp3` artifacts in OUT_DIR.
-      await fs.rm(tmpPath, { force: true });
+    for (const id of ids) {
+      const entry = lines[id];
+      // An "alias" entry (e.g. "magic" -> "potion", which share the same synth case in
+      // client/audio.js) reuses another id's clip instead of spending API quota on an identical
+      // sound -- handled entirely in writeManifest() below, nothing to generate here.
+      if (entry.alias) { console.log(`Skipping "${id}" (alias of "${entry.alias}")`); continue; }
+      const { prompt, seconds } = entry;
+      process.stdout.write(`Generating "${id}" (${seconds}s)... `);
+      const tmpPath = path.join(OUT_DIR, `${id}.raw.mp3`);
+      try {
+        const mp3 = await synthesize(apiKey, prompt, seconds);
+        await fs.writeFile(tmpPath, mp3);
+        await processToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`), encoderArgs);
+        console.log(`ok (.ogg, ${codecLabel})`);
+      } catch (err) {
+        console.log(`FAILED: ${err.message}`);
+        process.exitCode = 1;
+      } finally {
+        // Always remove the temp file, even when synth/encode fails, so a partial run doesn't
+        // leave stray `.raw.mp3` artifacts in OUT_DIR.
+        await fs.rm(tmpPath, { force: true });
+      }
     }
   }
 

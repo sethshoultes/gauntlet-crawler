@@ -24,21 +24,27 @@ function listEncoders() {
   });
 }
 
-let cachedEncoder = null;
-/** Returns { codec, extraArgs? } for the best Ogg-compatible audio encoder ffmpeg has built in, or
- *  null if none is usable. Both callers always encode mono (client-side clips are mono, per the
- *  README/game design), which rules out ffmpeg's built-in native "vorbis" encoder -- it only
- *  supports 2-channel output -- so the preference order is: libvorbis (matches what the voice
- *  pipeline has always produced) > libopus (a real library, handles mono fine) > native opus >
- *  native vorbis (last resort; only usable for stereo sources). */
+/** Pure parser over `ffmpeg -hide_banner -encoders` output: picks the best Ogg-compatible audio
+ *  encoder ffmpeg was actually built with, or null if none is usable. Both callers always encode
+ *  mono (client-side clips are mono, per the README/game design), which rules out ffmpeg's
+ *  built-in native "vorbis" encoder -- it only supports 2-channel output, so it is never returned
+ *  here even when present. Preference order: libvorbis (matches what the voice pipeline has
+ *  always produced) > libopus (a real library, handles mono fine; given an explicit bitrate since
+ *  it has no sensible default the way libvorbis does) > null (no usable encoder -- callers must
+ *  skip encoding rather than fall back to the native vorbis encoder). */
+export function pickOggEncoder(listText) {
+  if (/\blibvorbis\b/.test(listText)) return ['-c:a', 'libvorbis'];
+  if (/\blibopus\b/.test(listText)) return ['-c:a', 'libopus', '-b:a', '24k'];
+  return null;
+}
+
+let cachedEncoder;
+/** Returns the ffmpeg args array for the best available Ogg encoder (see pickOggEncoder()), or
+ *  null if none is usable. Cached after the first call. */
 export async function detectOggEncoder() {
-  if (cachedEncoder !== null) return cachedEncoder;
+  if (cachedEncoder !== undefined) return cachedEncoder;
   const encoders = await listEncoders();
-  if (/\blibvorbis\b/.test(encoders)) cachedEncoder = { codec: 'libvorbis' };
-  else if (/\blibopus\b/.test(encoders)) cachedEncoder = { codec: 'libopus' };
-  else if (/\bopus\b/.test(encoders)) cachedEncoder = { codec: 'opus' };
-  else if (/\bvorbis\b/.test(encoders)) cachedEncoder = { codec: 'vorbis', extraArgs: ['-strict', '-2'] };
-  else cachedEncoder = null;
+  cachedEncoder = pickOggEncoder(encoders);
   return cachedEncoder;
 }
 
