@@ -266,18 +266,25 @@ async function main() {
       await loadFixture({}, { exit: [5, 1], treasureRoom: true });
       await logIncludes(pageD, 'Bonus treasure room');
       const before = (await readSelfHud(pageD)).level;
-      await pressFor(pageD, 'd', 700); // straight onto the exit
-      const deadline = Date.now() + 6000;
+      // Walk onto the exit deterministically: re-issue short 'd' bursts, checking the spy's
+      // authoritative position between each one, rather than trusting one fixed-duration press to
+      // land exactly on the tile -- a slow CI runner can jitter the hero short of (or past) it.
+      await walkUntilTile(pageD, spy, heroPid, 'd', 5, { targetY: 1, maxSteps: 90 }); // ~15s deadline
+
       let sawChestPrompt = false;
+      // Generous: the level-clear flow plays a banner/cutscene beat before it advances (see
+      // scenario 12's own note on this), which can run long on a slow CI runner.
+      const deadline = Date.now() + 20_000;
+      let hud = null;
       while (Date.now() < deadline) {
         const text = await pageD.locator('#log').textContent();
         if (text.includes('Choose a chest')) sawChestPrompt = true;
-        const hud = await readSelfHud(pageD).catch(() => null);
+        hud = await readSelfHud(pageD).catch(() => null);
         if (hud && hud.level !== before) break;
         await pageD.waitForTimeout(200);
       }
-      const after = (await readSelfHud(pageD)).level;
-      if (after === before) throw new Error(`expected clearing a treasure room's exit to advance the level (stuck at "${before}")`);
+      const after = hud?.level;
+      if (after == null || after === before) throw new Error(`expected clearing a treasure room's exit to advance the level (stuck at "${before}")`);
       if (sawChestPrompt) knownBug('11. Treasure room: bonus banner, any exit clears without a chest pick', 'a treasure room offered a chest pick — it should skip the intermission entirely (see Room#onLevelComplete\'s wasTreasure branch)');
     });
 

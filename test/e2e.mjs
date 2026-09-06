@@ -396,6 +396,13 @@ async function main() {
 
     // ---------------- 7. Dashboard ----------------
     await scenario('7. Dashboard: progression, achievements, recent runs, leaderboard tabs', async () => {
+      // client/dashboard.js only wires up the tab buttons' onclick (and does its own initial
+      // render('scores')) once its own `await api('/api/leaderboard')` resolves, after several
+      // other sequential awaits earlier in main() -- so listen for that response *before*
+      // navigating (it can otherwise resolve before we start waiting for it) rather than racing it
+      // with a fixed sleep: a slow CI runner can still have it in flight when the checks below
+      // finish, and clicking a tab before its handler is attached is a silent no-op.
+      const leaderboardLoaded = pageA.waitForResponse((r) => r.url().includes('/api/leaderboard'), { timeout: 20_000 });
       await pageA.goto(`${baseUrl}/dashboard.html?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#mine', { timeout: 10_000 });
       if (!(await pageA.locator('#mine').isVisible())) throw new Error('#mine panel is not visible for a logged-in user');
@@ -412,9 +419,14 @@ async function main() {
       const runsText = await pageA.locator('#runs').textContent();
       if (runsText.includes('No runs yet')) throw new Error('expected at least one row in the Recent runs table after all the play above');
 
+      await leaderboardLoaded;
+      // Confirms dashboard.js reached its post-fetch wiring (tab buttons' onclick + the initial
+      // render('scores')), not merely that the response landed on the wire.
+      await pageA.waitForFunction(() => (document.querySelector('#lb')?.innerHTML || '').includes('<th'), { timeout: 15_000 });
+
       for (const tab of ['death', 'rank', 'depth', 'kills', 'achievements', 'scores']) {
         await pageA.click(`#tabs button[data-t="${tab}"]`);
-        await pageA.waitForTimeout(150);
+        await pageA.waitForFunction(() => (document.querySelector('#lb')?.innerHTML || '').includes('<th'), { timeout: 10_000 });
         const lbHtml = await pageA.locator('#lb').innerHTML();
         if (!lbHtml || !lbHtml.includes('<th')) throw new Error(`leaderboard tab "${tab}" did not render a header row`);
       }
