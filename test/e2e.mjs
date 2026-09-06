@@ -432,8 +432,13 @@ async function main() {
         await pageA.click(`#tabs button[data-t="${tab}"]`);
         // Wait on real header elements, not an innerHTML substring: the table is re-rendered per
         // tab, and a DOM query is stable against harmless markup changes.
-        await pageA.locator('#lb th').first().waitFor({ state: 'attached', timeout: 10_000 }).catch(() => {});
-        if ((await pageA.locator('#lb th').count()) === 0) throw new Error(`leaderboard tab "${tab}" did not render a header row`);
+        try {
+          await pageA.locator('#lb th').first().waitFor({ state: 'attached', timeout: 10_000 });
+        } catch (e) {
+          // Only a timeout means "no header row"; any other Playwright error is a real harness fault.
+          if (e?.name !== 'TimeoutError') throw e;
+          throw new Error(`leaderboard tab "${tab}" did not render a header row`);
+        }
       }
     });
 
