@@ -3,6 +3,7 @@
 // without an Anthropic key).
 import { api, me, renderNav, authModal, toast, esc } from './common.js';
 import { sprite, TILE_SPRITE, GEN_TINT, PLATE_TINT } from './sprites.js';
+import { paintPath } from './paint-path.js';
 import { T } from '/shared/constants.js';
 import { validateLevel, LEGEND } from '/shared/level.js';
 
@@ -11,6 +12,8 @@ renderNav('editor');
 
 const ED = { w: 32, h: 24, grid: [], name: 'My Dungeon', desc: '', id: null, source: 'editor', prompt: '', published: false, brush: T.WALL, painting: false, user: null };
 const CELL = 20;
+// exposed for manual/E2E debugging only — not used by the editor itself (see client/game.js's window.__gc for the same pattern)
+window.__ed = { grid: () => ED.grid.map((r) => r.slice()) };
 const cv = $('#ecv'); const ctx = cv.getContext('2d'); ctx.imageSmoothingEnabled = false;
 
 const MON_SPRITE = {
@@ -51,6 +54,7 @@ function draw() {
   ctx.strokeStyle = 'rgba(255,255,255,0.05)';
   for (let x = 0; x <= ED.w; x++) { ctx.beginPath(); ctx.moveTo(x * CELL, 0); ctx.lineTo(x * CELL, ED.h * CELL); ctx.stroke(); }
   for (let y = 0; y <= ED.h; y++) { ctx.beginPath(); ctx.moveTo(0, y * CELL); ctx.lineTo(ED.w * CELL, y * CELL); ctx.stroke(); }
+  applyZoom(); // re-apply the displayed zoom size in case the grid was just resized
   validate();
 }
 function validate() {
@@ -90,26 +94,68 @@ function cellAt(ev) {
   const x = Math.floor((ev.clientX - r.left) / r.width * ED.w), y = Math.floor((ev.clientY - r.top) / r.height * ED.h);
   return x >= 0 && y >= 0 && x < ED.w && y < ED.h ? [x, y] : null;
 }
-function paint(ev) {
-  const cell = cellAt(ev); if (!cell) return;
+function paintCell(x, y, c) { if (x >= 0 && y >= 0 && x < ED.w && y < ED.h) ED.grid[y][x] = c; }
+function floodFill(x, y, c) {
+  const from = ED.grid[y][x]; if (from === c) return;
+  const q = [[x, y]]; const seen = new Set();
+  while (q.length) {
+    const [cx, cy] = q.pop(); const k = cx + ',' + cy;
+    if (seen.has(k) || cx < 0 || cy < 0 || cx >= ED.w || cy >= ED.h || ED.grid[cy][cx] !== from) continue;
+    seen.add(k); ED.grid[cy][cx] = c;
+    q.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+  }
+}
+ED.lastCell = null; // last painted cell, for paintPath() drag interpolation below
+function paint(ev, isDrag) {
+  const cell = cellAt(ev); if (!cell) { ED.lastCell = null; return; }
   const [x, y] = cell;
   const c = ev.buttons === 2 ? T.FLOOR : ED.brush;
-  if (ev.shiftKey) {
-    const from = ED.grid[y][x]; if (from === c) return;
-    const q = [[x, y]]; const seen = new Set();
-    while (q.length) {
-      const [cx, cy] = q.pop(); const k = cx + ',' + cy;
-      if (seen.has(k) || cx < 0 || cy < 0 || cx >= ED.w || cy >= ED.h || ED.grid[cy][cx] !== from) continue;
-      seen.add(k); ED.grid[cy][cx] = c;
-      q.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
-    }
-  } else ED.grid[y][x] = c;
+  if (ev.shiftKey) { floodFill(x, y, c); ED.lastCell = cell; draw(); return; } // flood only ever applies to the exact cell under the pointer, never the interpolated path
+  // A fast drag (especially touch) can report pointermove events several cells apart; paint every
+  // cell along the straight line from the last one so the stroke has no gaps.
+  const cells = isDrag && ED.lastCell ? paintPath(ED.lastCell, cell) : [cell];
+  for (const [cx, cy] of cells) paintCell(cx, cy, c);
+  ED.lastCell = cell;
   draw();
 }
 cv.addEventListener('contextmenu', (e) => e.preventDefault());
-cv.addEventListener('pointerdown', (e) => { ED.painting = true; paint(e); });
-cv.addEventListener('pointermove', (e) => { if (ED.painting) paint(e); });
-window.addEventListener('pointerup', () => { ED.painting = false; });
+cv.addEventListener('pointerdown', (e) => {
+  ED.painting = true; ED.lastCell = null;
+  cv.setPointerCapture(e.pointerId); // keeps pointermove targeting #ecv even if the drag leaves its bounds
+  paint(e, false);
+});
+cv.addEventListener('pointermove', (e) => { if (ED.painting) paint(e, true); });
+// A touch drag can be cancelled mid-stroke — the browser taking over for a scroll/zoom gesture,
+// another touch point arriving, or the OS interrupting for its own UI — and a cancelled pointer
+// never gets a matching pointerup. Without this, ED.painting would stay stuck true forever after
+// one cancelled stroke, so the *next* stray pointermove (e.g. just moving the mouse with no button
+// held) would silently keep painting.
+function stopPainting(e) {
+  ED.painting = false; ED.lastCell = null;
+  try { cv.releasePointerCapture(e.pointerId); } catch { /* not captured / already released */ }
+}
+window.addEventListener('pointerup', stopPainting);
+window.addEventListener('pointercancel', stopPainting);
+
+// zoom (#32): the grid otherwise shrinks to fit the panel (max-width:100%), which is unusably
+// small on a phone for anything but the smallest levels. Zooming changes only the canvas's
+// *displayed* CSS size — the pixel buffer (and so the coordinate math in cellAt() above, which
+// works off getBoundingClientRect()) is untouched — and #ecv-wrap scrolls (not the page) once the
+// zoomed size exceeds the panel.
+let zoom = 1;
+let appliedZoom = null; // last `${zoom}:${ED.w}` written to the DOM, so draw() can call this freely
+function applyZoom() {
+  // Idempotent: draw() calls this on every paint stroke, so only touch style/text when the
+  // computed values actually changed -- otherwise each drag step forces a needless style recalc.
+  const key = `${zoom}:${ED.w}`;
+  if (key === appliedZoom) return;
+  appliedZoom = key;
+  if (zoom === 1) { cv.style.width = ''; cv.style.maxWidth = ''; }
+  else { cv.style.width = `${ED.w * CELL * zoom}px`; cv.style.maxWidth = 'none'; }
+  $('#zoom-val').textContent = `${Math.round(zoom * 100)}%`;
+}
+$('#zoom-in').onclick = () => { zoom = Math.min(3, zoom + 0.25); applyZoom(); };
+$('#zoom-out').onclick = () => { zoom = Math.max(0.5, zoom - 0.25); applyZoom(); };
 
 // controls
 $('#name').oninput = validate; $('#desc').oninput = validate;

@@ -43,6 +43,8 @@ const MIME = {
   // Voice/audio clips (narrator pipeline) and static assets served as-is, with no build step.
   '.ogg': 'audio/ogg', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.webm': 'video/webm', '.mp4': 'video/mp4',
   '.woff2': 'font/woff2', '.map': 'application/json',
+  // PWA (#33): the manifest needs its dedicated MIME type for installability checks to pass.
+  '.webmanifest': 'application/manifest+json',
 };
 
 // ---------- tiny helpers ----------
@@ -485,9 +487,11 @@ wss.on('connection', (ws, req) => {
         case 'chat': if (room) room.chat(pid, msg.text); break;
         case 'pick': if (room) room.pick(pid, msg.id); break;
         case 'debug':
-          // Test-only hook so E2E/manual scripts can force a level clear without playing the
-          // whole level. Never wired up unless the server is explicitly started with this flag.
-          if (process.env.GAUNTLET_DEBUG === '1' && room) room.debugAction(msg.action);
+          // Test-only hook so E2E/manual scripts can force a level clear (or load a fixture level)
+          // without playing the whole level. Never wired up unless the server is explicitly
+          // started with this flag. The whole message is passed through so an action can carry
+          // its own extra fields (see Room#debugAction's 'loadLevel').
+          if (process.env.GAUNTLET_DEBUG === '1' && room) room.debugAction(msg.action, msg);
           break;
         case 'ready': if (room) room.setReady(pid, !!msg.ready); break;
         case 'hero': if (room) room.setHero(pid, msg.cls, msg.palette || null); break;

@@ -528,6 +528,49 @@ career leaderboard on `/dashboard.html` — see `server/highscores.js` and `clie
   with the bitmap font in the attract loop (same data source, see [Cutscenes and attract
   mode](#cutscenes-and-attract-mode) above).
 
+### Mobile (#31)
+
+The in-game screen (`client/index.html`'s `#game` view, `client/game.js`, `client/input.js`) is
+responsive on phones and tablets, in both orientations — this is separate from the touch d-pad
+itself (see "Mobile and gamepad" above); this section covers the surrounding screen: canvas fit,
+HUD layout, safe areas, orientation, fullscreen and wake lock.
+
+- **Canvas fit**: `client/layout.js` exports a pure `computeCanvasLayout({vw, vh, hudH, controlsH,
+  levelW, levelH, dpr})` (unit-tested in `test/layout.test.js`) that fits the game's fixed 640x480
+  logical resolution into whatever's left of the viewport after the HUD strip and, in portrait, the
+  touch-controls band — an exact integer zoom (2x, 3x, ...) when the screen is roomy enough to fit
+  one without shrinking versus a plain fit, otherwise a fractional zoom; either way the canvas is
+  drawn with `image-rendering: pixelated`, so pixel art stays crisp rather than blurring at a soft
+  scale. `client/game.js`'s `layoutGame()` is the only caller: it re-measures on `resize`,
+  `orientationchange` and `visualViewport` changes (a mobile browser's collapsing address bar), sets
+  the canvas's CSS size and its `devicePixelRatio`-aware backing store (`canvas.width`/`height`), and
+  the render loop applies one `ctx.setTransform()` so all the existing 640x480-space drawing code is
+  unaffected. Below a `(max-width: 900px), (pointer: coarse)` breakpoint the HUD stacks above the
+  canvas (full width) instead of sitting beside it; above that breakpoint (desktop) the canvas keeps
+  its original fixed 640x480 backing store and CSS-driven sizing exactly as before.
+- **Compact HUD** (under 700px width, or a landscape phone under 500px tall): each player card
+  collapses to a small colored initial badge, a health bar and HP/SCORE, dropping the hero/rank line
+  and the key/potion counts — the level/timer readout and any active boost/amulet icons stay visible
+  either way. Portrait reserves a band below the canvas for the touch d-pad/fire buttons; a landscape
+  phone instead lets them overlay the canvas's edges (semi-transparent) since there's little spare
+  height to reserve there.
+- **Touch/viewport hygiene**: `viewport-fit=cover` in the viewport meta plus `env(safe-area-inset-*)`
+  on the touch band (clearing a notch/home-indicator/rounded corner); `touch-action: none` on the
+  canvas and every touch control; `overscroll-behavior: none` while a run is active (no
+  pull-to-refresh/rubber-banding); `user-select: none` on the touch controls.
+- **Short-viewport hint**: below 360px of viewport height, a dismissible "Rotate for a bigger view"
+  banner appears over the canvas.
+- **Fullscreen toggle**: a button in the canvas's corner (Fullscreen API on the canvas's wrapper) —
+  hidden entirely when unsupported (e.g. iOS Safari, which has no Fullscreen API for arbitrary
+  elements).
+- **Screen Wake Lock**: requested while a run is active, released on leaving the room or at game
+  over — best-effort, silently ignored wherever the API is missing or a lock is refused.
+- **Touch-operable overlays** at a 360px-wide viewport: the chest-picker, cutscene-skip and
+  death/"insert coin" screens are all drawn on the canvas itself and already scale with it (a tap
+  anywhere on the canvas also now confirms the death screen's "continue", not just `Enter`); the
+  high-score initials modal (`client/highscore.js`) gained a small up/down button pair per letter
+  slot alongside the existing tap-to-cycle-up/click-to-select and keyboard/gamepad controls.
+
 ### Sound
 
 Every sound effect is synthesized at runtime with the Web Audio API — no audio assets ship with
@@ -640,6 +683,37 @@ most-played custom levels.
 `isAdmin(user)` gate at the top of `admin.handle()`; a logged-in non-admin gets a 403 and
 `/admin.html` shows an access-denied message instead of the dashboard.
 
+### Mobile
+
+Every non-game page (lobby, dashboard, settings, Hero Builder, Level Builder, attract/trailer, admin)
+is usable on a phone: no horizontal page scroll down to a 360px-wide viewport, ≥44px tap targets on
+nav links and primary buttons, and ≥14px text.
+
+- **Nav** (`client/common.js` `renderNav`, styled in `client/style.css`'s "pages / mobile" block):
+  under ~700px the link list collapses behind a `#nav-toggle` hamburger button
+  (`aria-expanded`/`aria-controls`, so it's announced correctly either way) into a vertical dropdown;
+  the links stay plain, focusable `<a>` elements throughout, and clicking one closes the menu.
+- **Lobby** (`client/index.html`): the hero-picker grid, room list/settings panel and high-score
+  table stack to a single column, and the hero cards wrap.
+- **Hero Builder** pixel editor and **Level Builder** tile grid (`client/heroes.js`,
+  `client/editor.js`) paint via Pointer Events (`pointerdown`/`pointermove`, with
+  `setPointerCapture` so a drag that leaves the grid's bounds keeps painting); `touch-action: none`
+  is scoped to the grid canvas only, so the palette strip beside it stays free to scroll. A fast
+  drag — especially a touch one — can report `pointermove` several cells apart; both editors run
+  every stroke through `client/paint-path.js`'s `paintPath(from, to)` (a pure Bresenham
+  line-interpolation helper, unit-tested in `test/paint-path.test.js`) so the whole path gets
+  painted with no gaps. The palette itself becomes a horizontally scrollable strip of large
+  swatches on narrow screens; the Level Builder additionally gets on-canvas **+/−** zoom controls
+  (resizes only the canvas's displayed CSS size — the coordinate math and the AI-generation/
+  save/publish flow are untouched); the Hero Builder gets an **Undo** button (one stroke or Clear
+  per step).
+- **Settings**: on a coarse-pointer (touch) device the key-bindings editor — irrelevant without a
+  physical keyboard — starts collapsed behind a `<details>` disclosure, with a short note pointing
+  at the touch/gamepad controls instead; sliders stay usable either way.
+- **Dashboard/admin**: tables scroll inside their own container (`.table-scroll`,
+  `.chart-wrap`) instead of the page, and the admin analytics bar charts (inline SVG) shrink to fit
+  their container's width.
+
 ### Analytics and logging
 
 A first-party `events` table (`server/telemetry.js`) records a small set of interactions: server
@@ -701,6 +775,42 @@ write path is rate-limited: `POST /api/register`, `POST /api/login`, room creati
 share one bucket, since each persists a live sim and timers in memory until the room empties out),
 account changes, every level/hero write, and `POST /api/runs/:id/initials`. In-room chat is additionally trimmed, drops
 empty/whitespace-only messages, and throttles a single connection to 10 messages per 10 seconds.
+
+## Install as an app
+
+Gauntlet Crawler is an installable PWA (#33): on Android/Chrome and desktop Chrome/Edge, an **Install app**
+button appears (bottom-right, or wherever the page already provides an install slot) once the browser fires
+`beforeinstallprompt`; on iOS Safari, use Share → **Add to Home Screen**. Installed, it launches full-screen
+(no browser chrome) like an arcade cabinet, with its own home-screen icon.
+
+- `client/manifest.webmanifest` declares the name, standalone display mode and icon set; every page's `<head>`
+  links it plus `theme-color` and the Apple home-screen meta tags (`apple-mobile-web-app-capable`,
+  `apple-mobile-web-app-status-bar-style`, `apple-touch-icon`).
+- Icons (`client/icons/*.png` — 192, 512, a 512 maskable variant, and a 180 Apple touch icon) are pixel-art
+  renders of the warrior hero sprite, generated by a pure-Node script with no image-library or native
+  dependency: `node tools/generate-icons.mjs` (re)writes them; `test/pwa.test.js` regenerates into a temp
+  directory and byte-compares against the committed PNGs so they can never silently drift out of date.
+- `client/sw.js` is a module service worker (registered by `client/pwa.js`) that precaches the static app
+  shell — every HTML page, `style.css`, the client and `/shared/*.js` modules, the sprite/font code, the
+  media webp stills and the narrator's audio manifest — cache-first. It never intercepts `/api/*`, the `/ws`
+  WebSocket upgrade, or `/sw.js` itself (see `client/sw-rules.js`, shared with its unit tests); navigations
+  try the network first and fall back to the cached page only once offline. **Offline caveat**: the cached
+  shell loads and the classic hero list still renders, but live play, rooms, chat, the leaderboard and the AI
+  level builder all need the network — none of that is, or should be, served from cache.
+- On activation, a new version posts a message back to every open tab and `client/pwa.js` shows a small
+  "Updated — reload for the latest version" toast — deferred until gameplay ends (it checks the same
+  `gc-playing` `<body>` class the mobile layout uses) so it never interrupts an active run.
+- Pass `?nosw=1` in the URL to skip registering the service worker entirely (used by the smoke/e2e test
+  harnesses so a cached shell from a previous run can never mask a fresh code change).
+- **Version bump discipline**: `client/sw.js`'s `SW_VERSION` constant must change whenever the precached
+  shell does — a new/removed file in `PRECACHE_URLS` (`client/sw-rules.js`), or a content change to any
+  file already in it — because that's what makes the *worker script's own bytes* change, which is what
+  actually triggers a browser's update check; the cache name it derives (`gauntlet-shell-${SW_VERSION}`)
+  is also what makes `activate()` drop the previous cache instead of leaving it to leak. Forgetting the
+  bump means a deploy silently never reaches players on the cached shell. `test/pwa.test.js` enforces this:
+  it hashes `SW_VERSION` together with `PRECACHE_URLS` and the bytes of every precached file and pins that
+  to `test/fixtures/sw-shell-hash.json`, so any of that changing without updating both `SW_VERSION` and the
+  fixture fails the test (its failure message prints the exact new hash to paste in).
 
 ## Level format
 
@@ -769,7 +879,9 @@ client/            static browser app (no build step)
   cutscenes-demo.html      dev page for reviewing cutscenes
   common.js, sprites.js, font.js, pixelsprite.js, audio.js, voice.js, cutscenes.js   shared client modules
   input.js                touch d-pad/auto-fire + Gamepad API + local co-op input (#15)
-test/               node:test unit suites, plus smoke.mjs and e2e.mjs (Playwright)
+  layout.js               pure canvas-fit math for the mobile game screen (#31)
+test/               node:test unit suites, plus smoke.mjs, e2e.mjs, e2e-features.mjs (#35) and
+                    e2e-mobile.mjs (device emulation, #34) — the latter two share helpers/e2e.mjs
 tools/              tools/generate-voice.mjs — narrator voice clip generation
 deploy/             Hetzner/Docker deployment scripts and Caddy config
 ```
@@ -779,12 +891,24 @@ deploy/             Hetzner/Docker deployment scripts and Caddy config
 ```bash
 npm test                                              # unit tests (test/**/*.test.js), node --test
 CHROMIUM_PATH=/path/to/chromium npm run smoke         # boots the real server, drives it in a real browser
-CHROMIUM_PATH=/path/to/chromium npm run e2e           # full multiplayer/editor/dashboard scenarios, two browsers
+CHROMIUM_PATH=/path/to/chromium npm run e2e           # multiplayer/editor/dashboard scenarios, two browsers
+CHROMIUM_PATH=/path/to/chromium npm run e2e:features  # full feature sweep (#35) — hazards/pickups,
+                                                       # It mode, chests, Hero Builder, settings, admin,
+                                                       # attract mode, ... — see test/e2e-features.mjs
+CHROMIUM_PATH=/path/to/chromium npm run e2e:mobile    # same server, but Playwright device emulation (#34)
 ```
 
-`npm run smoke` and `npm run e2e` need `npx playwright install --with-deps chromium` once (or an
-existing Chromium binary pointed at by `CHROMIUM_PATH`). `.github/workflows/ci.yml` runs all three
-— `test`, `smoke`, `e2e` — on every push and pull request.
+`npm run smoke`, `npm run e2e`, `npm run e2e:features` and `npm run e2e:mobile` need `npx playwright
+install --with-deps chromium` once (or an existing Chromium binary pointed at by `CHROMIUM_PATH`).
+`test/e2e-mobile.mjs` drives the same server through Playwright's real device emulation (touch,
+mobile viewport, device scale factor) on an iPhone SE, a Pixel 7 and an iPad (gen 7) — lobby,
+registration/room creation/solo play by touch, canvas geometry and a mid-run rotate, a forced
+Death-mode run through the arcade high-score initials modal, the Hero Builder and Level Builder's
+touch-drag painting, Settings, and the installable PWA shell — plus a landscape rerun of the
+gameplay scenario on the two phones. `test/e2e-features.mjs` (#35) and `test/e2e-mobile.mjs` (#34)
+share `test/helpers/e2e.mjs`'s server-boot/scenario-runner/error-capture plumbing rather than
+touching `test/e2e.mjs` itself. `.github/workflows/ci.yml` runs all five — `test`, `smoke`, `e2e`,
+`e2e-features`, `e2e-mobile` — on every push and pull request.
 
 Optional environment variables:
 
@@ -804,20 +928,30 @@ Optional environment variables:
 **Debug hooks** (only reachable when `GAUNTLET_DEBUG=1`, otherwise a plain 404/no-op — these are
 the *only* debug surfaces in the app):
 
-- A `{t:'debug', action}` WebSocket message, handled by `Room#debugAction` (`server/game/room.js`):
+- A `{t:'debug', action, ...}` WebSocket message, handled by `Room#debugAction` (`server/game/room.js`):
   `action: 'clear'` force-completes the current level (used by `test/e2e.mjs` to reach the chest
   intermission and later levels without playing them out), `action: 'killall'` wipes every current
-  monster (used to force a Death-mode wave to advance instantly).
+  monster (used to force a Death-mode wave to advance instantly), `action: 'loadLevel'` (body also
+  carries `rows` — an ASCII level grid, same shape as the [level format](#level-format) — plus
+  optional `timers` and `treasureRoom`) swaps the room's live level for that fixture grid in place
+  (same level index, no chest/intermission side effects), so a scenario can place the hero right
+  next to one specific tile (an amulet, a pressure plate, a timed wall, ...) instead of hunting for
+  one in a real generated level — `timers` shortens a timed wall's default 30s countdown for the
+  test, and `treasureRoom: true` exercises the bonus-round entry exactly like a real treasure level.
+  Used by `test/e2e-features.mjs` (#35). `action: 'endrun'` ends the run right now (same path as a
+  real wipe or level-cap finish — records stats/high scores and broadcasts `gameover`) so
+  `test/e2e-mobile.mjs` can reach the arcade high-score initials modal without grinding out a full
+  life-loss sequence.
 - `POST /api/heroes/debug/xp` (body `{amount}`), handled in `server/heroes.js`: grants XP to the
-  caller so `test/heroes-api.test.js` and `test/e2e.mjs` can reach the Hero Builder's rank-3 unlock
-  without a long grind.
+  caller so `test/heroes-api.test.js`, `test/e2e.mjs` and `test/e2e-features.mjs` can reach the Hero
+  Builder's rank-3 unlock without a long grind.
 - `POST /api/debug/highscore` (body `{score, cls, level, mode, userId, guestId, username,
   endedAt}`), handled inline in `server/index.js`: seeds one row directly on the [arcade high-score
   board](#high-scores-14) so `test/highscores.test.js` can test `GET /api/highscores` and `POST
   /api/runs/:id/initials` without driving a whole Death-mode run to completion.
 
-`test/e2e.mjs` starts its server with `GAUNTLET_DEBUG=1`; `npm start`/`npm run dev` don't set it,
-so these hooks are unreachable in a normal or deployed instance.
+`test/e2e.mjs` and `test/e2e-features.mjs` start their own server with `GAUNTLET_DEBUG=1`; `npm
+start`/`npm run dev` don't set it, so these hooks are unreachable in a normal or deployed instance.
 
 **Generating narrator voice clips**: the game works out of the box via the browser's
 `speechSynthesis` (see [Narrator voice](#narrator-voice) above). To pre-render real audio clips
@@ -937,11 +1071,15 @@ II's arcade parity: amulets and permanent boosts (#10), pressure-plate wall grou
 (#13).
 
 Sound synthesis (#20), pre-rendered narrator voice lines (#19), optional opt-in AI narrator
-commentary (#18), the mobile touch layout/gamepad support (#15), and the original-style attract
-mode / three-initial high-score entry (#14) are also implemented (see [Sound](#sound), [Narrator
-voice](#narrator-voice), [AI Narrator](#ai-narrator-18), "Mobile and gamepad", and [Cutscenes and
-attract mode](#cutscenes-and-attract-mode) / [High scores](#high-scores-14) above) even though all
-five issues are still open on the tracker pending someone closing them out.
+commentary (#18), the mobile touch layout/gamepad support (#15), the responsive game screen (#31),
+and the original-style attract mode / three-initial high-score entry (#14) are also implemented
+(see [Sound](#sound), [Narrator voice](#narrator-voice), [AI Narrator](#ai-narrator-18), "Mobile and
+gamepad", [Mobile](#mobile-31), and [Cutscenes and attract mode](#cutscenes-and-attract-mode) /
+[High scores](#high-scores-14) above) even though all six issues are still open on the tracker
+pending someone closing them out.
+
+The installable PWA shell — manifest, home-screen icons, offline app-shell caching (#33) — is also
+implemented; see [Install as an app](#install-as-an-app) above.
 
 Open, not yet implemented:
 

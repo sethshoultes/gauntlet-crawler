@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- PWA (#33): installable manifest, home-screen metadata, SW registration + install/update UI -->
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0b0b12" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<script type="module" src="/pwa.js"></script>
 <title>Hero Builder · Gauntlet Crawler</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23a05cff%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%233b7dff%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="/style.css" />
@@ -57,6 +64,20 @@
   #builder[hidden], #locked[hidden], #guest[hidden] { display: none; }
   .field { margin: 8px 0; } .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 3px; }
   .field input[type=text], .field input:not([type]), .field textarea, .field select { width: 100%; }
+
+  /* ---- pixel editor: mobile (#32) ----
+     Pointer Events with drag-to-paint (client/heroes.js) already cover mouse and touch; #pcv
+     already has touch-action:none above so a finger dragging across the grid paints instead of
+     scrolling the page, while the palette strip below is left free to scroll horizontally. */
+  @media (max-width: 700px) {
+    #pcv { width: min(100%, 320px); height: auto; aspect-ratio: 1; }
+    .swatches {
+      display: grid; grid-auto-flow: column; grid-auto-columns: 56px; grid-template-columns: none;
+      overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch;
+    }
+    .swatch-btn { width: 56px; height: 56px; }
+    .tools button, .pick-grid button { min-height: 44px; }
+  }
 </style>
 </head>
 <body>
@@ -84,6 +105,7 @@
       <div class="tools">
         <button id="eraser-btn">Eraser</button>
         <button id="mirror-btn">Mirror: Off</button>
+        <button id="undo-btn" title="Undo the last stroke or Clear">Undo</button>
         <button id="clear-btn">Clear</button>
       </div>
       <div class="field"><label>Start from a template</label>

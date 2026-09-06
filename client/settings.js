@@ -66,6 +66,14 @@ async function main() {
   const keys = { ...DEFAULT_KEYS, ...(prefs.keyBindings || {}) };
   for (const k of Object.keys(DEFAULT_KEYS)) { const el = $(`#k-${k}`); if (el) el.value = keys[k]; }
 
+  // Key bindings are irrelevant on a coarse-pointer (touch) device — collapse the editor behind
+  // its <details> disclosure and point at the touch/gamepad note instead. `matchMedia` is guarded
+  // since test/client-settings.test.js runs this module under a bare-bones Node stub with no
+  // window.matchMedia.
+  const coarsePointer = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  if ($('#keybindings-details')) $('#keybindings-details').open = !coarsePointer;
+  if ($('#keybindings-touch-note')) $('#keybindings-touch-note').style.display = coarsePointer ? '' : 'none';
+
   $('#save-prefs').onclick = async () => {
     const keyBindings = {};
     for (const k of Object.keys(DEFAULT_KEYS)) keyBindings[k] = ($(`#k-${k}`).value || DEFAULT_KEYS[k]).trim().slice(0, 12) || DEFAULT_KEYS[k];

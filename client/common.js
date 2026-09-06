@@ -116,27 +116,86 @@ export function toast(title, text, kind = '') {
   setTimeout(() => el.remove(), 5000);
 }
 
+// The Escape-key and outside-click handlers below live on `document`, not on #nav-toggle/#nav-links
+// themselves, because renderNav() can legitimately run more than once on the same page (editor.js
+// re-renders the nav after a mid-session login to refresh the "Logged in as ..." line) — each call
+// replaces #nav-toggle/#nav-links wholesale via innerHTML, so listeners bound directly to those
+// elements are discarded for free along with the old nodes, but a listener added to `document`
+// itself is not: adding one on every renderNav() call would stack up a fresh copy each time,
+// permanently, since nothing on a static multi-page site ever tears them down. `navListenersReady`
+// guards against that — the handlers themselves re-query #nav-toggle/#nav-links live (rather than
+// closing over the elements current at install time) so the single copy stays correct across any
+// number of re-renders.
+let navListenersReady = false;
+function installNavGlobalListeners() {
+  if (navListenersReady) return;
+  navListenersReady = true;
+  const closeMenu = () => {
+    const links = document.querySelector('#nav-links');
+    const toggle = document.querySelector('#nav-toggle');
+    if (!links || !links.classList.contains('open')) return;
+    links.classList.remove('open');
+    toggle?.setAttribute('aria-expanded', 'false');
+  };
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+  document.addEventListener('click', (e) => {
+    const links = document.querySelector('#nav-links');
+    const toggle = document.querySelector('#nav-toggle');
+    if (!links || !links.classList.contains('open')) return;
+    // A click on the toggle button itself is already handled by its own listener below (which
+    // would otherwise immediately reopen what this just closed); anywhere inside the open panel
+    // is a normal in-menu click, not an "outside" one.
+    if (toggle?.contains(e.target) || links.contains(e.target)) return;
+    closeMenu();
+  });
+}
+
 export async function renderNav(active) {
   const nav = document.querySelector('nav.top');
   if (!nav) return;
   const m = await me();
   track('pageview', { path: location.pathname });
   if (m.user) loadPrefs().catch(() => {});
+  // Under ~700px (see the "pages / mobile" block in client/style.css) the links collapse behind
+  // #nav-toggle, a real <button> with aria-expanded so it's announced correctly either way; the
+  // links stay plain focusable <a> elements throughout (`display:none` on the closed panel simply
+  // removes them from the tab order, same as any collapsed disclosure).
   nav.innerHTML = `
     <a class="brand" href="/">GAUNTLET CRAWLER</a>
-    <a class="nl ${active === 'play' ? 'active' : ''}" href="/">Play</a>
-    <a class="nl ${active === 'dashboard' ? 'active' : ''}" href="/dashboard.html">Dashboard</a>
-    <a class="nl ${active === 'editor' ? 'active' : ''}" href="/editor.html">Level Builder</a>
-    <a class="nl ${active === 'attract' ? 'active' : ''}" href="/attract.html">Arcade</a>
-    ${m.user ? `<a class="nl ${active === 'heroes' ? 'active' : ''}" href="/heroes.html">Heroes</a>` : ''}
-    ${m.user ? `<a class="nl ${active === 'settings' ? 'active' : ''}" href="/settings.html">Settings</a>` : ''}
-    ${m.isAdmin ? `<a class="nl ${active === 'admin' ? 'active' : ''}" href="/admin.html">Admin</a>` : ''}
-    <span class="spacer"></span>
-    <span class="who">${m.user ? `Logged in as <b>${esc(m.user.username)}</b>` : 'Playing as guest'}</span>
-    ${m.user ? '<button id="nav-logout">Log out</button>' : '<button id="nav-login">Log in / Register</button>'}
+    <button type="button" id="nav-toggle" class="nav-toggle" aria-expanded="false" aria-controls="nav-links">
+      <span aria-hidden="true">&#9776;</span><span class="sr-only">Menu</span>
+    </button>
+    <div class="nav-links" id="nav-links">
+      <a class="nl ${active === 'play' ? 'active' : ''}" href="/">Play</a>
+      <a class="nl ${active === 'dashboard' ? 'active' : ''}" href="/dashboard.html">Dashboard</a>
+      <a class="nl ${active === 'editor' ? 'active' : ''}" href="/editor.html">Level Builder</a>
+      <a class="nl ${active === 'attract' ? 'active' : ''}" href="/attract.html">Arcade</a>
+      ${m.user ? `<a class="nl ${active === 'heroes' ? 'active' : ''}" href="/heroes.html">Heroes</a>` : ''}
+      ${m.user ? `<a class="nl ${active === 'settings' ? 'active' : ''}" href="/settings.html">Settings</a>` : ''}
+      ${m.isAdmin ? `<a class="nl ${active === 'admin' ? 'active' : ''}" href="/admin.html">Admin</a>` : ''}
+      <span class="spacer"></span>
+      <span class="who">${m.user ? `Logged in as <b>${esc(m.user.username)}</b>` : 'Playing as guest'}</span>
+      ${m.user ? '<button id="nav-logout">Log out</button>' : '<button id="nav-login">Log in / Register</button>'}
+    </div>
   `;
   nav.querySelector('#nav-logout')?.addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); setToken(null); location.reload(); });
   nav.querySelector('#nav-login')?.addEventListener('click', () => authModal().then((ok) => ok && location.reload()));
+
+  const toggle = nav.querySelector('#nav-toggle');
+  const links = nav.querySelector('#nav-links');
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation(); // don't let the document click listener below immediately close what this just opened
+    const open = links.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', String(open));
+  });
+  installNavGlobalListeners();
+  // Closing on navigation matters even though every nav link is a full page load (so the menu
+  // would reset anyway) — it keeps the collapsed state correct for the instant between the click
+  // and the browser actually navigating away, and for any future same-page link added here.
+  links.querySelectorAll('a.nl').forEach((a) => a.addEventListener('click', () => {
+    links.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+  }));
 }
 
 /** Login/register modal. Resolves true if the user logged in. */

@@ -102,7 +102,12 @@ export function showInitialsModal({ runId, score, token }) {
       <h3>High score!</h3>
       <p class="muted" style="margin:0 0 10px;font-size:12px">${(score || 0).toLocaleString()} points cracked the all-time top 10. Enter your initials:</p>
       <div class="hs-slots">
-        ${[0, 1, 2].map((i) => `<button type="button" class="hs-slot" data-i="${i}" aria-label="Letter ${i + 1}">A</button>`).join('')}
+        ${[0, 1, 2].map((i) => `
+          <div class="hs-slotcol">
+            <button type="button" class="hs-updown hs-up" data-i="${i}" aria-label="Letter ${i + 1} up">&uarr;</button>
+            <button type="button" class="hs-slot" data-i="${i}" aria-label="Letter ${i + 1}">A</button>
+            <button type="button" class="hs-updown hs-down" data-i="${i}" aria-label="Letter ${i + 1} down">&darr;</button>
+          </div>`).join('')}
       </div>
       <p class="help" style="margin-top:10px">&uarr;/&darr; change letter &middot; &larr;/&rarr; move &middot; Enter to confirm</p>
       <div class="row" style="margin-top:10px;justify-content:flex-end">
@@ -159,6 +164,12 @@ export function showInitialsModal({ runId, score, token }) {
     slots.forEach((el, i) => {
       el.onclick = () => { if (active === i) cycle(1); else { active = i; render(); } };
     });
+    // Touch-friendly up/down per slot (#31): the slot button above only ever cycled *up*, with no
+    // way back down except wrapping around 25 more taps — these mirror the ArrowUp/ArrowDown keys
+    // keyboard/gamepad already had, and also select their own slot first so a tap always acts on
+    // the letter it's next to rather than whatever was last active.
+    bg.querySelectorAll('.hs-up').forEach((el) => { el.onclick = () => { active = Number(el.dataset.i); cycle(1); }; });
+    bg.querySelectorAll('.hs-down').forEach((el) => { el.onclick = () => { active = Number(el.dataset.i); cycle(-1); }; });
     bg.querySelector('#hs-confirm').onclick = confirm;
     bg.querySelector('#hs-skip').onclick = skip;
   });
