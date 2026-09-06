@@ -24,6 +24,14 @@ import * as Input from './input.js'; // touch d-pad, auto-fire and gamepad/local
 import { computeCanvasLayout } from './layout.js'; // canvas-fit math for the mobile game screen (#31)
 import { showInitialsModal } from './highscore.js';
 import { startIdleAttract } from './attract-idle.js';
+
+// Fullscreen calls go through a Promise chain so a missing API or a rejected request (user gesture
+// rules, iOS Safari) can never throw synchronously into the caller -- the whole expression, not
+// just the call, is inside the promise.
+function exitFullscreenQuietly() {
+  Promise.resolve().then(() => document.exitFullscreen()).catch(() => { /* nothing to leave, or denied */ });
+}
+
 const RESUME_KEY = 'gc_resume';
 const GUEST_KEY = 'gc_guest_id';
 // Durable guest identity (#7): minted by the server on our first join and echoed back in every
@@ -305,7 +313,7 @@ function leaveGame(reason) {
   document.body.classList.remove('gc-playing'); // touch/scroll hygiene (#31), see client/style.css
   document.body.classList.remove('gc-menu-open'); // close the mobile Leave/chat panel (#42) if it was open
   $('#hud-menu')?.setAttribute('aria-expanded', 'false');
-  if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {}); // don't leave a run stuck in fullscreen
+  if (document.fullscreenElement) exitFullscreenQuietly(); // don't leave a run stuck in fullscreen
   releaseWakeLock();
   if (reason) toast('Left the dungeon', reason);
   loadRooms();
@@ -997,8 +1005,8 @@ if (fsBtn) {
   fsBtn.hidden = !fsSupported;
   if (fsSupported) {
     fsBtn.onclick = () => {
-      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-      else sessionEl.requestFullscreen?.().catch(() => {});
+      if (document.fullscreenElement) exitFullscreenQuietly();
+      else Promise.resolve().then(() => sessionEl.requestFullscreen()).catch(() => { /* denied or unsupported: stay inline */ });
     };
     document.addEventListener('fullscreenchange', () => {
       fsBtn.classList.toggle('on', !!document.fullscreenElement);
