@@ -276,6 +276,14 @@ async function main() {
       const ctx = await browser.newContext({ ...spec.device });
       const page = await ctx.newPage(); attach(page, `geom-${spec.label}`, bags);
       try {
+        // Stub Element.prototype.requestFullscreen *before* any script runs, recording which
+        // element every call targets (headless Chromium can refuse the real Fullscreen API even
+        // with a trusted tap, so this is what actually lets the "fullscreen targets #session, not
+        // the canvas" acceptance criterion (#42) be asserted reliably rather than best-effort).
+        await page.addInitScript(() => {
+          window.__fsCalls = [];
+          Element.prototype.requestFullscreen = function () { window.__fsCalls.push(this.id || this.tagName); return Promise.resolve(); };
+        });
         await page.goto(`${baseUrl}/?touch=1&nosw=1`, { waitUntil: 'load' });
         await page.waitForSelector('#heroes .hero', { timeout: 10_000 });
         await page.locator('#heroes .hero').first().tap();
@@ -289,32 +297,119 @@ async function main() {
         await page.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, undefined, { timeout: 10_000 });
         await page.waitForTimeout(200); // let layoutGame() run at least once post-HUD
 
+        const overlaps = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+        const inViewport = (box, viewport) => box.x >= -0.5 && box.y >= -0.5 && box.x + box.width <= viewport.width + 0.5 && box.y + box.height <= viewport.height + 0.5;
+
+        // #42 acceptance criteria: this scenario is deliberately rewritten from the #34 original,
+        // which only ever compared *container* boxes (#touch as a whole vs #cv/#hud) — on the
+        // broken pre-#42 layout that could (and did) pass anyway, for two reasons this version
+        // fixes: (1) #touch was `position: fixed` while #hud/#cv/#log were normal in-flow content
+        // on a page that could itself scroll (exactly the "page scrolls during play" bug, #42's
+        // acceptance criteria adds an explicit assertion against it below) — once the page is
+        // scrolled even a little (e.g. a leftover scroll position from focusing #gname in the
+        // lobby beforehand), a fixed element's box and a scrolled-away in-flow element's box are no
+        // longer comparable at all, so the overlap check could spuriously see no intersection even
+        // though the *unscrolled* page clearly does; (2) it never looked at any individual button —
+        // a fire/potion/auto-fire pushed off the right edge of the screen (the phone screenshots'
+        // literal first complaint) never showed up in a check that only ever measured the
+        // container's own (possibly differently-sized) box. This version pins scrollY to 0 before
+        // every measurement and checks the real button elements themselves.
         const assertLayout = async (whenLabel) => {
-          const overflow = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+          await page.evaluate(() => window.scrollTo(0, 0));
+
+          const overflow = await page.evaluate(() => ({
+            scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth,
+            scrollHeight: document.scrollingElement.scrollHeight, innerHeight: window.innerHeight,
+          }));
           if (overflow.scrollWidth > overflow.innerWidth + 1) throw new Error(`${spec.label} ${whenLabel}: horizontal scroll (scrollWidth=${overflow.scrollWidth} innerWidth=${overflow.innerWidth})`);
+          if (overflow.scrollHeight > overflow.innerHeight + 1) throw new Error(`${spec.label} ${whenLabel}: page scrolls vertically during play (scrollHeight=${overflow.scrollHeight} innerHeight=${overflow.innerHeight})`);
 
           const cvBox = await page.locator('#cv').boundingBox();
           if (!cvBox) throw new Error(`${spec.label} ${whenLabel}: #cv has no bounding box`);
           const viewport = page.viewportSize();
-          if (cvBox.x < -0.5 || cvBox.y < -0.5 || cvBox.x + cvBox.width > viewport.width + 0.5 || cvBox.y + cvBox.height > viewport.height + 0.5) {
-            throw new Error(`${spec.label} ${whenLabel}: #cv is not fully inside the viewport: box=${JSON.stringify(cvBox)} viewport=${JSON.stringify(viewport)}`);
+          if (!inViewport(cvBox, viewport)) throw new Error(`${spec.label} ${whenLabel}: #cv is not fully inside the viewport: box=${JSON.stringify(cvBox)} viewport=${JSON.stringify(viewport)}`);
+
+          const hudBox = await page.locator('#hud').boundingBox();
+          if (!hudBox) throw new Error(`${spec.label} ${whenLabel}: #hud has no bounding box`);
+          const portrait = viewport.height >= viewport.width;
+          if (portrait && hudBox.height > viewport.height * 0.25 + 0.5) {
+            throw new Error(`${spec.label} ${whenLabel}: HUD is taller than 25% of the viewport (hud height=${hudBox.height}, viewport height=${viewport.height})`);
           }
 
+          const logBox = await page.locator('#log').boundingBox();
+          if (!logBox) throw new Error(`${spec.label} ${whenLabel}: #log has no bounding box (not visible)`);
+          if (!(logBox.height > 0)) throw new Error(`${spec.label} ${whenLabel}: #log has zero height`);
+          if (!inViewport(logBox, viewport)) throw new Error(`${spec.label} ${whenLabel}: #log is not fully inside the viewport: box=${JSON.stringify(logBox)}`);
+
           // Short landscape phones are the one deliberate exception (client/game.js's layoutGame,
-          // matching the CSS "@media (orientation: landscape) and (max-height: 500px)" rule): the
-          // d-pad overlays the canvas edges there on purpose, with a translucent backing to stay
-          // legible, rather than reserving a band that would leave little room for either. Every
-          // other case — portrait, and landscape tall enough to miss that breakpoint (tablets) —
-          // must not overlap.
+          // matching the CSS "@media (orientation: landscape) and (max-height: 500px)" rule /
+          // body.gc-controls-overlay class): the d-pad/fire/potion overlay the canvas edges there
+          // on purpose, with a translucent backing to stay legible, rather than reserving a band
+          // that would leave little room for either. Every other case — portrait, and landscape
+          // tall enough to miss that breakpoint (tablets) — must not overlap the canvas. Overlapping
+          // the HUD strip is never acceptable in any mode (the HUD sits at the very top; nothing
+          // gameplay-related has a reason to reach it).
           const overlayByDesign = viewport.width > viewport.height && viewport.height <= 500;
+
+          // Every *real* control button (#42: not just #touch's own container box) — each d-pad
+          // cell (excluding the inert visibility:hidden middle one), fire, potion, and the
+          // auto-fire toggle.
+          const dpadCells = await page.locator('.input-dpad .input-dir:not(.input-dir-mid)').all();
+          if (dpadCells.length !== 8) throw new Error(`${spec.label} ${whenLabel}: expected 8 real d-pad cells, found ${dpadCells.length}`);
+          const gameplayControls = [
+            ...await Promise.all(dpadCells.map(async (el, i) => ({ name: `d-pad cell ${i}`, box: await el.boundingBox() }))),
+            { name: 'fire', box: await page.locator('.input-fire').boundingBox() },
+            { name: 'potion', box: await page.locator('.input-potion').boundingBox() },
+            { name: 'auto-fire', box: await page.locator('.input-autofire').boundingBox() },
+          ];
+          for (const { name, box } of gameplayControls) {
+            if (!box) throw new Error(`${spec.label} ${whenLabel}: "${name}" has no bounding box (not visible)`);
+            if (!inViewport(box, viewport)) throw new Error(`${spec.label} ${whenLabel}: "${name}" is not fully inside the viewport: box=${JSON.stringify(box)} viewport=${JSON.stringify(viewport)}`);
+            if (overlaps(box, hudBox)) throw new Error(`${spec.label} ${whenLabel}: "${name}" overlaps the HUD: box=${JSON.stringify(box)} hud=${JSON.stringify(hudBox)}`);
+            if (!overlayByDesign && overlaps(box, cvBox)) throw new Error(`${spec.label} ${whenLabel}: "${name}" overlaps the canvas: box=${JSON.stringify(box)} cv=${JSON.stringify(cvBox)}`);
+            // Log strip text must never be covered by a control in *any* mode — in the portrait/
+            // tablet "band" layout #log sits in its own row above the controls so this is trivially
+            // true, but in the short-landscape "overlay" layout (client/style.css's
+            // body.gc-controls-overlay) #log floats over the *top* of the canvas specifically so
+            // the bottom-anchored d-pad/fire/potion/auto-fire (which do legitimately overlay the
+            // canvas itself) can never reach it.
+            if (overlaps(box, logBox)) throw new Error(`${spec.label} ${whenLabel}: "${name}" overlaps #log: box=${JSON.stringify(box)} log=${JSON.stringify(logBox)}`);
+          }
+
+          // Fullscreen + menu: pinned to the top-right, deliberately over the *header row* of the
+          // HUD strip they're visually part of (so no whole-#hud overlap check for these two) —
+          // but they must never reach down into the canvas, must stay on-screen, and — landscape
+          // specifically, where the header row is short enough for this to have actually happened
+          // (a player card's score sat right under the buttons' bottom edge) — must never cover any
+          // individual player card either. client/style.css's ".hud-head" gets a min-height tall
+          // enough to contain the buttons for exactly this reason; this is the regression check.
+          const ppBoxes = await Promise.all((await page.locator('#hud .pp').all()).map((el) => el.boundingBox()));
+          for (const sel of ['#fs-toggle', '#hud-menu']) {
+            const box = await page.locator(sel).boundingBox();
+            if (!box) continue; // #fs-toggle legitimately hides itself when the Fullscreen API is unsupported (client/game.js)
+            if (!inViewport(box, viewport)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" is not fully inside the viewport: box=${JSON.stringify(box)}`);
+            if (overlaps(box, cvBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps the canvas: box=${JSON.stringify(box)}`);
+            if (overlaps(box, logBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps #log: box=${JSON.stringify(box)} log=${JSON.stringify(logBox)}`);
+            ppBoxes.forEach((ppBox, i) => {
+              if (ppBox && overlaps(box, ppBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps player card ${i}: box=${JSON.stringify(box)} card=${JSON.stringify(ppBox)}`);
+            });
+          }
+
+          // Portrait/tablet "band" mode only (#42 follow-up review): once the controls band is
+          // tall enough to comfortably afford it (>= 380px), client/game.js's layoutTouchControls()
+          // should be sizing the d-pad meaningfully large (>= 90px cells), not leaving it small
+          // with a big dead zone above it — a regression check for the "cells were ~75px in a
+          // ~413px band" bug this review's formula tuning fixed (see DPAD_WIDTH_FRAC's comment).
           if (!overlayByDesign) {
-            const overlaps = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
             const touchBox = await page.locator('#touch').boundingBox();
             if (!touchBox) throw new Error(`${spec.label} ${whenLabel}: #touch has no bounding box`);
-            if (overlaps(touchBox, cvBox)) throw new Error(`${spec.label} ${whenLabel}: touch controls overlap the canvas`);
-            const hudBox = await page.locator('#hud').boundingBox();
-            if (!hudBox) throw new Error(`${spec.label} ${whenLabel}: #hud has no bounding box`);
-            if (overlaps(touchBox, hudBox)) throw new Error(`${spec.label} ${whenLabel}: touch controls overlap the HUD`);
+            if (touchBox.height >= 380) {
+              const firstCellBox = dpadCells.length ? await dpadCells[0].boundingBox() : null;
+              if (!firstCellBox) throw new Error(`${spec.label} ${whenLabel}: no d-pad cell bounding box to check against the band-height budget`);
+              if (firstCellBox.width < 89.5) {
+                throw new Error(`${spec.label} ${whenLabel}: controls band is ${touchBox.height}px tall but d-pad cells are only ${firstCellBox.width}px (expected >= 90px)`);
+              }
+            }
           }
         };
 
@@ -325,9 +420,83 @@ async function main() {
         await page.waitForTimeout(300); // let the resize listener re-run layoutGame()
         await assertLayout('after rotate');
 
+        // Regression check (Copilot review on PR #42/#43): layoutGame() must fit the canvas inside
+        // #session's *inner content* box (its bounding rect minus its own computed padding), not
+        // the raw bounding rect — #session's padding while playing is a real, sometimes nonzero
+        // safe-area inset (client/style.css's "env(safe-area-inset-*)"), not decoration, so sizing
+        // into the padded-out rect would put the canvas straight into the area a notch/home-
+        // indicator/rounded corner actually occupies on a device that reports one. No such device
+        // is in this suite's emulated set, so this injects an artificial left/right/bottom padding
+        // on #session directly (mirroring the real rule's shape — no top padding) and asserts the
+        // canvas stays fully inside what's left after it once layoutGame() re-runs (via a plain
+        // "resize" event — the same listener a real viewport/orientation change fires).
+        const injectedPad = 30;
+        const sessionRectBefore = await page.evaluate(() => document.querySelector('#session').getBoundingClientRect());
+        await page.evaluate((pad) => {
+          const session = document.querySelector('#session');
+          session.style.paddingLeft = `${pad}px`; session.style.paddingRight = `${pad}px`; session.style.paddingBottom = `${pad}px`;
+          window.dispatchEvent(new Event('resize'));
+        }, injectedPad);
+        await page.waitForTimeout(300);
+        const cvBoxPadded = await page.locator('#cv').boundingBox();
+        if (!cvBoxPadded) throw new Error(`${spec.label}: #cv has no bounding box after injecting #session padding`);
+        const innerLeft = sessionRectBefore.x + injectedPad, innerRight = sessionRectBefore.x + sessionRectBefore.width - injectedPad;
+        const innerBottom = sessionRectBefore.y + sessionRectBefore.height - injectedPad;
+        if (cvBoxPadded.x < innerLeft - 0.5 || cvBoxPadded.x + cvBoxPadded.width > innerRight + 0.5 || cvBoxPadded.y + cvBoxPadded.height > innerBottom + 0.5) {
+          throw new Error(`${spec.label}: #cv was not fitted inside #session's padded content box: cv=${JSON.stringify(cvBoxPadded)} innerLeft=${innerLeft} innerRight=${innerRight} innerBottom=${innerBottom}`);
+        }
+        await page.evaluate(() => {
+          const session = document.querySelector('#session');
+          session.style.paddingLeft = ''; session.style.paddingRight = ''; session.style.paddingBottom = '';
+          window.dispatchEvent(new Event('resize'));
+        });
+
+        // Regression check (Copilot review on PR #43): a *bottom* safe-area inset specifically —
+        // #session already pads env(safe-area-inset-bottom), and #touch's own band-mode padding /
+        // overlay-mode `bottom` offset each add the *same* inset again (client/style.css), which
+        // layoutTouchControls() now reads live off #touch's own computed style rather than
+        // assuming a fixed 16px/10px (band/overlay) as a JS constant. Simulates a device reporting
+        // a 24px inset by setting the *exact* values that inset would resolve each of those three
+        // declarations to (mirroring the real calc() shape) and asserts nothing regresses: every
+        // control stays on-screen and clear of the HUD/#log/canvas exactly as assertLayout() checks
+        // for the un-padded case above.
+        const simulatedInset = 24;
+        const inOverlay = await page.evaluate(() => document.body.classList.contains('gc-controls-overlay'));
+        await page.evaluate(({ inset, overlay }) => {
+          const session = document.querySelector('#session');
+          const touch = document.querySelector('#touch');
+          session.style.paddingBottom = `${inset}px`;
+          if (overlay) touch.style.bottom = `${10 + inset}px`; // matches .touch's base "calc(10px + env(safe-area-inset-bottom))"
+          else touch.style.paddingBottom = `${16 + inset}px`; // matches the band rule's "calc(16px + env(safe-area-inset-bottom))"
+          window.dispatchEvent(new Event('resize'));
+        }, { inset: simulatedInset, overlay: inOverlay });
+        await page.waitForTimeout(300);
+        await assertLayout(`with a simulated ${simulatedInset}px bottom safe-area inset`);
+        await page.evaluate(() => {
+          const session = document.querySelector('#session');
+          const touch = document.querySelector('#touch');
+          session.style.paddingBottom = ''; touch.style.bottom = ''; touch.style.paddingBottom = '';
+          window.dispatchEvent(new Event('resize'));
+        });
+
+        await page.setViewportSize(vp); // back to this device's original (portrait) size before the checks below assume it
+
+        // Fullscreen (#42) requests the whole game container (#session — HUD + canvas + log +
+        // controls), never just the canvas: the pre-#42 bug this issue fixes was requesting
+        // fullscreen on .cv-wrap, which made everything *but* the canvas vanish. Uses the
+        // Element.prototype.requestFullscreen stub installed above rather than the real Fullscreen
+        // API, which headless Chromium can silently refuse even for a trusted tap.
+        if (await page.locator('#fs-toggle').isVisible()) {
+          await page.locator('#fs-toggle').tap();
+          const fsCalls = await page.evaluate(() => window.__fsCalls);
+          if (fsCalls.at(-1) !== 'session') throw new Error(`${spec.label}: #fs-toggle called requestFullscreen() on "${fsCalls.at(-1)}", expected "session" (#session)`);
+        }
+
         // Best-effort only, short-timeout — see the gameplay scenario's #leave comment above for
         // why: a short landscape phone can leave #leave sitting exactly under the fixed
-        // touch-controls band.
+        // touch-controls band. #leave is reachable through #hud-menu now (#42) rather than always
+        // on-screen.
+        if (await page.locator('#hud-menu').isVisible().catch(() => false)) await page.locator('#hud-menu').tap().catch(() => {});
         await page.locator('#leave').tap({ timeout: 2000 }).catch(() => {});
       } finally { await ctx.close().catch(() => {}); }
     }
@@ -548,6 +717,46 @@ async function main() {
       } finally { await ctx.close().catch(() => {}); }
     }
 
+    /** Regression check (Copilot review on PR #43): opening #hud-menu, resizing wide enough to
+     *  cross into layoutGame()'s desktop ("!mobile") branch, then narrow again, must not leave the
+     *  Leave/chat panel (.bar) open from a tap that happened a whole viewport ago — that branch has
+     *  to reset "gc-menu-open"/aria-expanded, not just hide the button. Deliberately *not* run
+     *  against any of DEVICE_SPECS (all `hasTouch: true`, under which `matchMedia('(pointer:
+     *  coarse)')` keeps `mobile` true regardless of viewport width — resizing alone could never
+     *  cross that branch there) — a plain, resizable, no-touch context with `?touch=1` forcing the
+     *  touch UI to render is what actually lets width alone drive `mobile` true/false. */
+    async function menuResetScenario() {
+      const ctx = await browser.newContext({ viewport: { width: 375, height: 667 } });
+      const page = await ctx.newPage(); attach(page, 'menu-reset', bags);
+      try {
+        await page.goto(`${baseUrl}/?touch=1&nosw=1`, { waitUntil: 'load' });
+        await page.waitForSelector('#heroes .hero', { timeout: 10_000 });
+        await page.click('#heroes .hero:nth-child(1)');
+        await page.fill('#gname', 'MenuResetTester');
+        await page.click('#create');
+        await page.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+        await page.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 });
+        await page.click('#rs-start');
+        await page.waitForSelector('#game.on', { timeout: 15_000 });
+        await page.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, undefined, { timeout: 10_000 });
+        await page.waitForTimeout(200);
+
+        if (!(await page.locator('#hud-menu').isVisible())) throw new Error('menu-reset: #hud-menu should be visible at a 375px-wide mobile viewport');
+        await page.click('#hud-menu');
+        if (!(await page.locator('.bar').isVisible())) throw new Error('menu-reset: .bar did not open after clicking #hud-menu');
+        if ((await page.getAttribute('#hud-menu', 'aria-expanded')) !== 'true') throw new Error('menu-reset: #hud-menu should report aria-expanded="true" once opened');
+
+        await page.setViewportSize({ width: 1024, height: 800 }); // desktop-width, fine pointer — crosses layoutGame()'s "!mobile" branch
+        await page.waitForTimeout(300);
+        if (await page.locator('#hud-menu').isVisible()) throw new Error('menu-reset: #hud-menu should hide at a 1024px-wide viewport');
+
+        await page.setViewportSize({ width: 375, height: 667 }); // back to mobile width, without ever clicking #hud-menu again
+        await page.waitForTimeout(300);
+        if (await page.locator('.bar').isVisible()) throw new Error('menu-reset: .bar reappeared after a desktop-width round-trip without clicking #hud-menu again (stale "gc-menu-open")');
+        if ((await page.getAttribute('#hud-menu', 'aria-expanded')) !== 'false') throw new Error('menu-reset: #hud-menu should report aria-expanded="false" after the desktop-width round-trip');
+      } finally { await ctx.close().catch(() => {}); }
+    }
+
     // ---------------- run every scenario across all three devices ----------------
     let n = 1;
     for (const spec of DEVICE_SPECS) {
@@ -578,6 +787,7 @@ async function main() {
     for (const spec of DEVICE_SPECS) {
       await scenario(`${n++}. PWA: manifest + service worker registration, offline lobby reload — ${spec.label}`, () => pwaScenario(spec));
     }
+    await scenario(`${n++}. #hud-menu's open state resets across a desktop-width round-trip (no stale "gc-menu-open")`, () => menuResetScenario());
   } catch (err) {
     overallFailed = true;
     console.error('[e2e-mobile] harness-level failure:', (err && err.stack) || err);

@@ -533,36 +533,57 @@ career leaderboard on `/dashboard.html` — see `server/highscores.js` and `clie
 The in-game screen (`client/index.html`'s `#game` view, `client/game.js`, `client/input.js`) is
 responsive on phones and tablets, in both orientations — this is separate from the touch d-pad
 itself (see "Mobile and gamepad" above); this section covers the surrounding screen: canvas fit,
-HUD layout, safe areas, orientation, fullscreen and wake lock.
+HUD layout, safe areas, orientation, fullscreen and wake lock. #42 reworked the phone layout below
+900px width (or any coarse pointer) into a single CSS grid spanning the whole screen while a run is
+active (`body.gc-playing`, `client/style.css`): a thin HUD strip, the canvas, a log strip, and a
+controls band that gets whatever height is left — screenshots below. Desktop (>= 900px, a fine
+pointer) is unchanged from #31.
 
-- **Canvas fit**: `client/layout.js` exports a pure `computeCanvasLayout({vw, vh, hudH, controlsH,
-  levelW, levelH, dpr})` (unit-tested in `test/layout.test.js`) that fits the game's fixed 640x480
-  logical resolution into whatever's left of the viewport after the HUD strip and, in portrait, the
-  touch-controls band — an exact integer zoom (2x, 3x, ...) when the screen is roomy enough to fit
-  one without shrinking versus a plain fit, otherwise a fractional zoom; either way the canvas is
-  drawn with `image-rendering: pixelated`, so pixel art stays crisp rather than blurring at a soft
-  scale. `client/game.js`'s `layoutGame()` is the only caller: it re-measures on `resize`,
-  `orientationchange` and `visualViewport` changes (a mobile browser's collapsing address bar), sets
-  the canvas's CSS size and its `devicePixelRatio`-aware backing store (`canvas.width`/`height`), and
-  the render loop applies one `ctx.setTransform()` so all the existing 640x480-space drawing code is
-  unaffected. Below a `(max-width: 900px), (pointer: coarse)` breakpoint the HUD stacks above the
-  canvas (full width) instead of sitting beside it; above that breakpoint (desktop) the canvas keeps
-  its original fixed 640x480 backing store and CSS-driven sizing exactly as before.
-- **Compact HUD** (under 700px width, or a landscape phone under 500px tall): each player card
-  collapses to a small colored initial badge, a health bar and HP/SCORE, dropping the hero/rank line
-  and the key/potion counts — the level/timer readout and any active boost/amulet icons stay visible
-  either way. Portrait reserves a band below the canvas for the touch d-pad/fire buttons; a landscape
-  phone instead lets them overlay the canvas's edges (semi-transparent) since there's little spare
-  height to reserve there.
+| Pixel 7 portrait | iPhone SE portrait | Pixel 7 landscape | iPad (gen 7) portrait |
+| --- | --- | --- | --- |
+| ![Pixel 7 portrait](docs/mobile/pixel7-portrait.png) | ![iPhone SE portrait](docs/mobile/iphone-se-portrait.png) | ![Pixel 7 landscape](docs/mobile/pixel7-landscape.png) | ![iPad portrait](docs/mobile/ipad-gen7-portrait.png) |
+
+- **Canvas fit**: `client/layout.js` exports a pure `computeCanvasLayout({vw, vh, hudH, logH,
+  controlsH, levelW, levelH, dpr})` (unit-tested in `test/layout.test.js`) that fits the game's
+  fixed 640x480 logical resolution into whatever's left of the viewport after the HUD strip, the log
+  strip and (in portrait, or a landscape tablet) the touch-controls band — an exact integer zoom
+  (2x, 3x, ...) when the screen is roomy enough to fit one without shrinking versus a plain fit,
+  otherwise a fractional zoom; either way the canvas is drawn with `image-rendering: pixelated`, so
+  pixel art stays crisp rather than blurring at a soft scale. It also returns `controlsAvailH` — the
+  true leftover height below the fitted canvas once HUD/log are accounted for — which is what the
+  controls band's own CSS grid track resolves to and what `client/game.js` sizes the on-screen
+  d-pad/fire/potion buttons from (never raw `vw`, so a cramped band can only ever shrink them, never
+  let them overflow it). `client/game.js`'s `layoutGame()` is the only caller: it re-measures on
+  `resize`, `orientationchange`, `visualViewport` changes (a mobile browser's collapsing address
+  bar) and `fullscreenchange`, sets the canvas's CSS size and its `devicePixelRatio`-aware backing
+  store (`canvas.width`/`height`), and the render loop applies one `ctx.setTransform()` so all the
+  existing 640x480-space drawing code is unaffected. Below a `(max-width: 900px), (pointer: coarse)`
+  breakpoint the game screen becomes a single-column grid (HUD / canvas / log / controls) instead of
+  the HUD sitting beside the canvas; above that breakpoint (desktop) the canvas keeps its original
+  fixed 640x480 backing store and CSS-driven sizing exactly as before.
+- **Compact HUD**: one thin header row (level, timer — the fullscreen/menu buttons visually sit
+  beside it, pinned top-right) plus one single-line row per player (a colored initial badge, name,
+  health bar with HP number, score), capped at roughly a quarter of the viewport height in portrait
+  even with four players — dropping the hero/rank line, key/potion counts and boost/amulet icons the
+  desktop sidebar shows. A landscape phone under 500px tall (`body.gc-controls-overlay`) instead
+  keeps the HUD as a thin translucent strip and lets the d-pad/fire/potion overlay the canvas's edges
+  (also semi-transparent) since there's little spare height to reserve a band there.
+- **Log strip**: a two-line strip directly under the canvas, always visible — never hidden under the
+  controls the way it used to be.
+- **Nav/chat hidden while playing**: the site nav and the always-on chat/Leave bar have no room left
+  in the grid, so both hide entirely below the same breakpoint once a run starts (`body.gc-playing`)
+  — a small menu button (`#hud-menu`, pinned top-right next to the fullscreen toggle) reveals Leave
+  and chat again as a floating panel.
 - **Touch/viewport hygiene**: `viewport-fit=cover` in the viewport meta plus `env(safe-area-inset-*)`
-  on the touch band (clearing a notch/home-indicator/rounded corner); `touch-action: none` on the
-  canvas and every touch control; `overscroll-behavior: none` while a run is active (no
-  pull-to-refresh/rubber-banding); `user-select: none` on the touch controls.
+  on the game screen's padding; `touch-action: none` on the canvas and every touch control;
+  `overflow: hidden` on the game screen and `overscroll-behavior: none` while a run is active (no
+  page scroll, no pull-to-refresh/rubber-banding); `user-select: none` on the touch controls.
 - **Short-viewport hint**: below 360px of viewport height, a dismissible "Rotate for a bigger view"
   banner appears over the canvas.
-- **Fullscreen toggle**: a button in the canvas's corner (Fullscreen API on the canvas's wrapper) —
-  hidden entirely when unsupported (e.g. iOS Safari, which has no Fullscreen API for arbitrary
-  elements).
+- **Fullscreen toggle**: requests fullscreen on the whole game container (`#session` — HUD, canvas,
+  log and controls together, not just the canvas), and re-runs `layoutGame()` on every
+  `fullscreenchange` so all four keep filling the fullscreen viewport correctly — hidden entirely
+  when the Fullscreen API is unsupported (e.g. iOS Safari, which has none for arbitrary elements).
 - **Screen Wake Lock**: requested while a run is active, released on leaving the room or at game
   over — best-effort, silently ignored wherever the API is missing or a lock is refused.
 - **Touch-operable overlays** at a 360px-wide viewport: the chest-picker, cutscene-skip and

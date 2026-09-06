@@ -97,6 +97,36 @@ test('a very short landscape band (controlsH=0, small hudH) still fills nearly t
   assert.ok(r.height > 300, `expected the canvas to use most of the remaining height, got ${r.height}`);
 });
 
+test('subtracts logH too (#42): a log strip shrinks the fitted canvas just like hudH/controlsH', () => {
+  // Height-bound (wide, short available box) so a smaller availH actually changes the fit — a
+  // width-bound fit wouldn't budge unless logH ate into the *width* side too, which it never does.
+  const noLog = computeCanvasLayout({ vw: 1200, vh: 400, hudH: 60, controlsH: 0, levelW: 640, levelH: 480 });
+  const withLog = computeCanvasLayout({ vw: 1200, vh: 400, hudH: 60, logH: 100, controlsH: 0, levelW: 640, levelH: 480 });
+  assert.ok(withLog.height < noLog.height, 'reserving log-strip space must shrink the fitted canvas');
+  assert.ok(withLog.width < noLog.width);
+});
+
+test('controlsAvailH (#42) is the true leftover height below the fitted canvas, independent of the controlsH estimate', () => {
+  // A generous controlsH estimate (200) shrinks the canvas to leave room for it, but the real
+  // grid-resolved band gets *everything* left over (vh - hudH - logH - height) once the canvas is
+  // actually fitted — controlsAvailH reports that true number, not the estimate fed in.
+  const r = computeCanvasLayout({ vw: 400, vh: 800, hudH: 50, logH: 40, controlsH: 200, levelW: 640, levelH: 480 });
+  assert.equal(r.controlsAvailH, 800 - 50 - 40 - r.height);
+  assert.ok(r.controlsAvailH > 0);
+});
+
+test('controlsAvailH matches controlsH exactly when the canvas fit is width-bound and used the full reserved height', () => {
+  // Portrait phone, no HUD/log: a width-bound fit uses whatever height that implies, and whatever's
+  // left after hudH(0)+logH(0)+that height is controlsAvailH.
+  const r = computeCanvasLayout({ vw: 320, vh: 640, controlsH: 100, levelW: 640, levelH: 480 });
+  assert.equal(r.controlsAvailH, 640 - r.height);
+});
+
+test('controlsAvailH is never negative even when hudH+logH+height would otherwise exceed vh', () => {
+  const r = computeCanvasLayout({ vw: 300, vh: 200, hudH: 150, logH: 100, controlsH: 0, levelW: 640, levelH: 480 });
+  assert.ok(r.controlsAvailH >= 0);
+});
+
 test('floors the canvas box so a fractional viewport never yields a box larger than the available space', () => {
   // 375.6 CSS px wide (a fractional getBoundingClientRect) -> width must be <= 375.6, i.e. 375, not 376.
   const r = computeCanvasLayout({ vw: 375.6, vh: 900, levelW: 640, levelH: 480 });

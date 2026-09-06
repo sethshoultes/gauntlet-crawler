@@ -112,11 +112,23 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
 }
 
 /* =========================================================================================
-   Game screen / mobile (#31 "Mobile: responsive game screen") — everything below is additive:
-   it only ever changes what happens once a media query below matches (a narrow and/or touch
-   viewport), never the plain desktop rules above. client/game.js's layoutGame() does the actual
-   canvas-fit math (client/layout.js) and only kicks in once the same "(max-width: 900px),
-   (pointer: coarse)" condition matches here, so the two stay in lock-step.
+   Game screen / mobile (#31 "Mobile: responsive game screen"; reworked by #42 "rework the
+   in-game phone layout") — everything below is additive: it only ever changes what happens once
+   a media query below matches (a narrow and/or touch viewport), never the plain desktop rules
+   above. client/game.js's layoutGame() does the actual canvas-fit math (client/layout.js) and
+   only kicks in once the same "(max-width: 900px), (pointer: coarse)" condition matches here, so
+   the two stay in lock-step.
+
+   #42 replaced the old flexbox column (#session > .stage{cv-wrap,#hud} + #log + .bar + .help)
+   with a CSS grid spanning the *whole* game screen while a run is active (`body.gc-playing`, set
+   by client/game.js alongside `#game.on`): one row each for the HUD strip, the canvas, the log
+   strip, and (portrait phones / tall-enough landscape) a controls band that gets whatever height
+   is left. `#game` and `.stage` go `display: contents` so their children — `.cv-wrap` and `#hud`
+   — become direct grid items alongside `#log` and `#touch` (moved into `#session` for exactly
+   this reason, and so a fullscreen request on `#session` keeps it visible — see the fullscreen
+   toggle in client/game.js). `.bar`/`.help` (chat input, Leave button, keyboard-shortcut legend)
+   have no room left in that layout, so they're hidden by default and shown as a floating panel
+   via `#hud-menu` (client/game.js) instead — the "keep Leave/menu reachable" part of the spec.
    ========================================================================================= */
 
 /* Belt-and-suspenders overflow guard (always on, not just under a breakpoint): a fixed-width HUD
@@ -124,60 +136,207 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
 .stage, .cv-wrap, #hud { max-width: 100%; }
 
 @media (max-width: 900px), (pointer: coarse) {
-  /* #session fills the viewport height so `#game`/`.stage`'s own `flex: 1 1 auto` genuinely gets
-     "whatever is left after the nav bar, main's padding, and the chat log/bar/help row below the
-     stage" — letting flexbox account for all of that page chrome instead of client/game.js
-     re-deriving it. 100dvh (falls back to 100vh where unsupported) tracks a mobile browser's
-     collapsing address bar so the reserved space doesn't overshoot as it hides.
-     Both #game and #session use `align-items: center` (fit-content cross-sizing) rather than the
-     default `stretch`, so every flex link in this chain needs its own explicit `width: 100%` —
-     a percentage width one level up that's still shrink-to-fit resolves to `auto`, not 100%. */
+  /* #session fills the viewport height on mobile even outside a run (the in-room lobby screen
+     still uses the old flexbox layout — only `body.gc-playing` below switches it to grid). 100dvh
+     (falls back to 100vh where unsupported) tracks a mobile browser's collapsing address bar so
+     the reserved space doesn't overshoot as it hides. */
   #session.on { min-height: 100vh; min-height: 100dvh; box-sizing: border-box; touch-action: manipulation; }
-  #game.on { width: 100%; flex: 1 1 auto; min-height: 0; }
-  .stage { width: 100%; flex-direction: column-reverse; flex: 1 1 auto; min-height: 0; }
-  /* width/aspect-ratio need !important here: they're overriding client/index.html's unconditional
-     (non-media) .cv-wrap rule, which — despite equal selector specificity — wins ties against an
-     external stylesheet's rule by sheer document position (the inline <style> block sits after
-     this stylesheet's <link>, so it's later in the cascade regardless of which rule has a media
-     condition). Same story for #hud's width just below. */
-  .cv-wrap {
-    width: 100% !important; flex: 1 1 auto; min-height: 0; aspect-ratio: auto !important;
-    display: flex; justify-content: center; align-items: flex-start;
+
+  body.gc-playing nav.top, body.gc-playing footer { display: none; } /* reclaim their height entirely while playing */
+  body.gc-playing main { padding: 0; }
+  body.gc-playing { overflow: hidden; height: 100vh; height: 100dvh; }
+  html:has(body.gc-playing) { overflow: hidden; } /* belt-and-suspenders against any residual scroll */
+
+  body.gc-playing #session.on {
+    display: grid;
+    /* minmax(0, 1fr), not a bare 1fr: a grid track's *automatic* minimum size is the min-content
+       contribution of whatever's placed in it (same "min-width: auto" default flex items have) —
+       with fixed-size buttons in the controls band that don't want to shrink, a bare 1fr let the
+       single column grow past the viewport to fit them rather than letting them overflow *inside*
+       a column sized to the viewport, which is what min-width:0 on every grid item below is for. */
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "hud" "cv" "log" "ctrl";
+    grid-template-rows: auto auto auto minmax(110px, 1fr);
+    /* No row gap: client/game.js's canvas-fit math (client/layout.js) accounts for hudH/logH but
+       has no way to know about a grid gap, so any nonzero gap here would make it fit the canvas
+       assuming slightly more room than the grid actually leaves once the gaps are subtracted —
+       invisible in portrait (the flexible "ctrl" 1fr row silently absorbs it) but a real overflow
+       in the fixed 3-row "gc-controls-overlay" layout below, which has no flexible row to hide it. */
+    gap: 0;
+    width: 100%; height: 100vh; height: 100dvh;
+    box-sizing: border-box; overflow: hidden;
+    /* All four safe-area insets, so the HUD strip never sits under a notch either -- the pinned
+       header buttons already respected the top inset, but the grid itself did not. */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
+  body.gc-playing #hud, body.gc-playing .cv-wrap, body.gc-playing #log, body.gc-playing #touch { min-width: 0; }
+  /* Short landscape phones: the d-pad/fire/potion float over the canvas edges instead of getting a
+     reserved row, so there is no "ctrl" track at all — client/game.js toggles this class from the
+     same `overlayControls` check that used to (#31) gate whether computeCanvasLayout() got a
+     nonzero controlsH. #log drops out of the grid here too (no "log" row): it overlays the top of
+     the canvas instead (further down) rather than sitting in a strip the floating pad could cover —
+     "cv" gets all the space "hud" doesn't take. */
+  body.gc-playing.gc-controls-overlay #session.on { grid-template-areas: "hud" "cv"; grid-template-rows: auto 1fr; }
+
+  body.gc-playing #game.on, body.gc-playing .stage { display: contents; }
+  body.gc-playing #hud { grid-area: hud; width: 100%; margin: 0; }
+  /* border: 0 + outline (#42): the "cv" grid row is `auto` — sized to .cv-wrap's own natural
+     height, not handed a size top-down the way the old flexbox `.stage` was — so *anything* about
+     .cv-wrap taller than the canvas itself (its unconditional 4px border, index.html) makes the
+     row (and the whole grid) taller than client/layout.js's computeCanvasLayout() assumed, which
+     only knows about hudH/logH/controlsH. An outline draws outside the box entirely rather than
+     adding to it, so .cv-wrap's rendered height is exactly the canvas's, keeping the two in sync;
+     negative outline-offset pulls it back onto the canvas edge for the same framed look as before. */
+  body.gc-playing .cv-wrap {
+    grid-area: cv; width: 100%; margin: 0 auto; aspect-ratio: auto; display: flex; justify-content: center;
+    border: 0; outline: 4px solid var(--line); outline-offset: -4px;
+  }
+  body.gc-playing:not(.gc-controls-overlay) #log { grid-area: log; width: 100%; margin: 0; height: 38px !important; }
+  /* Overlay mode (short landscape phones): #log shares the "cv" grid area with .cv-wrap instead of
+     getting its own row (two grid items can occupy the same area — they simply stack, ordered by
+     z-index) — align-self:start plus a fixed max-height keeps it a thin 2-line strip pinned to the
+     *top* of that shared cell rather than stretching to fill it, sitting safely above the d-pad/
+     fire/potion, which are anchored to the *bottom* of the viewport (client/index.html's .touch
+     rule) — the two can never collide. Translucent so the dungeon underneath still reads through;
+     pointer-events:none so a tap meant for the canvas beneath (e.g. the death screen's "continue")
+     isn't swallowed by it. */
+  body.gc-playing.gc-controls-overlay #log {
+    grid-area: cv; align-self: start; justify-self: stretch; z-index: 20;
+    width: 100%; margin: 0; max-height: 40px; font-size: 10px !important; line-height: 1.3;
+    background: rgba(0,0,0,.6); pointer-events: none;
+  }
+  /* Placement only: whether the controls are shown at all stays with client/index.html's `.touch.on`
+     rules (coarse pointer, or forced via ?touch=1), so a narrow fine-pointer window never grows a
+     d-pad just because it matches the mobile breakpoint. */
+  body.gc-playing:not(.gc-controls-overlay) #touch {
+    grid-area: ctrl; position: static;
+    width: 100%; height: 100%; margin: 0; inset: auto; box-sizing: border-box;
+    /* Every one of these numbers is read straight back out by client/game.js's
+       cellFromWidthBudget()/layoutTouchControls() (TOUCH_SIDE_PAD, TOUCH_COL_GAP, DPAD_PAD_V) —
+       change one place, change the other, or the cell-size math stops matching what's actually
+       rendered (the "no overflow" guarantee depends on the two agreeing exactly). ~16px bottom
+       padding + safe-area anchors the block to the bottom of the band; the dead space this can
+       leave *above* the pad when the band is much taller than the pad's own content is intentional
+       (see layoutTouchControls()'s doc comment): the pad is sized to be comfortably big first, not
+       to fill the whole band. Side padding (6px) and the gap between the d-pad/action columns
+       (4px) are deliberately tight — on a 412px-wide phone there isn't width to spare once a
+       110px-diameter fire button sits beside a 90px-cell d-pad. */
+    padding: 16px 6px calc(16px + env(safe-area-inset-bottom, 0px)) 6px;
+    gap: 4px;
+  }
+
+  /* .cv-wrap/#hud still need the same "!important wins a specificity tie against index.html's
+     unconditional inline rule" treatment #31 relied on (that inline <style> block is later in the
+     cascade, so it wins ties despite this being a media-scoped rule) — but only for the two
+     properties index.html sets unconditionally that would otherwise fight this grid layout. */
+  body.gc-playing .cv-wrap { aspect-ratio: auto !important; }
+  body.gc-playing #hud { flex-direction: column !important; }
   #cv { width: auto; height: auto; } /* client/game.js sets an explicit px size on the canvas itself */
-  /* flex-direction: row !important overrides index.html's unconditional #hud{flex-direction:column}
-     the same way width did just above — this is what turns the sidebar into a wrapping strip of
-     cards above the canvas instead of a much taller single column. */
-  #hud { width: 100% !important; max-width: 100%; flex: 0 0 auto; flex-direction: row !important; flex-wrap: wrap; gap: 6px; }
-  #hud .pp { flex: 1 1 150px; }
-}
 
-/* Compact HUD (<700px width): player cards drop the secondary hero/rank line and the key/potion
-   counts, keeping just the icon + health bar + HP/SCORE numbers — countdown/amulet/boost rows
-   (.lvl, #hud-time, .boosts, .runboosts, .amulets) are untouched, so those stay visible either way.
-   padding/font-size/height need !important for the same "unconditional inline rule wins ties"
-   reason as above (index.html sets #hud{padding:8px;font-size:13px} and #log{height:96px}). */
-@media (max-width: 700px) {
-  #hud { padding: 6px !important; font-size: 12px !important; }
-  #hud .pp { padding: 4px 6px; }
-  #hud .pp .sub, #hud .pp .kp { display: none; }
-  #hud .pp-nums { font-size: 11px; gap: 6px; }
-  #log { height: 34px !important; font-size: 11px; line-height: 1.3; }
-}
+  /* ---- Compact HUD: one thin header row (level/timer — buttons are the pinned #fs-toggle/
+     #hud-menu below) plus one single-line row per player (icon, name, health bar, HP/score) —
+     see client/game.js's renderHud() for the markup this targets. `.pp-head`/`.pp-vitals` go
+     `display: contents` so their children flatten into `.pp`'s own flex row instead of the two
+     stacked lines the desktop sidebar uses. */
+  body.gc-playing #hud {
+    display: flex; gap: 4px; padding: 4px 6px !important; font-size: 11px !important;
+    background: #000; border: 2px solid var(--line);
+  }
+  /* Overrides index.html's unconditional "#hud .hud-head{display:contents}" (desktop keeps
+     #hud-lvl/#hud-time as separate top/bottom flex items of #hud itself — see that rule's own
+     comment) so the two instead group into one visible header row here, with #hud-time's desktop-
+     only bottom-pinning (margin-top:auto, order:9999) reset since it's no longer promoted out.
+     Selector needs the "#hud" ancestor (not just "body.gc-playing .hud-head") to actually win: the
+     desktop rule it's overriding is itself ID-qualified ("#hud .hud-head"), and an ID anywhere in a
+     selector always outweighs any number of classes — dropping "#hud" here would silently lose to
+     it regardless of `!important`-free specificity intuitions about which rule "sounds" mobile. */
+  body.gc-playing #hud .hud-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    color: var(--yellow); text-transform: uppercase; letter-spacing: 1px;
+    min-height: 32px; padding-right: 84px; /* clear #fs-toggle + #hud-menu, pinned top-right */
+  }
+  body.gc-playing #hud-time { margin-top: 0; order: 0; text-align: right; }
+  body.gc-playing #hud .pp { display: flex; align-items: center; gap: 6px; padding: 3px 5px; border-width: 1px; }
+  body.gc-playing #hud .pp-head, body.gc-playing #hud .pp-vitals { display: contents; }
+  body.gc-playing #hud .pp-names { display: flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; }
+  body.gc-playing #hud .pp-names .nm { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+  body.gc-playing #hud .pp-names .sub { display: none; }
+  body.gc-playing #hud .ic { width: 16px; height: 16px; font-size: 9px; }
+  body.gc-playing #hud .hpbar { flex: 1 1 auto; height: 6px; min-width: 24px; }
+  body.gc-playing #hud .pp-nums { font-size: 10px; gap: 5px; white-space: nowrap; }
+  body.gc-playing #hud .kp, body.gc-playing #hud .boosts, body.gc-playing #hud .runboosts, body.gc-playing #hud .amulets { display: none; }
 
-/* Landscape phones (short viewport, e.g. a phone turned sideways): same compact HUD as above even
-   at a width the 700px rule alone wouldn't catch (a landscape phone is plenty *wide*, just short). */
-@media (orientation: landscape) and (max-height: 500px) {
-  #hud { padding: 4px 6px !important; font-size: 11px !important; }
-  #hud .pp { padding: 3px 5px; flex-basis: 110px; }
-  #hud .pp .sub, #hud .pp .kp { display: none; }
-  #hud .lvl { flex-basis: 100%; font-size: 11px; }
+  /* ---- Leave/chat, hidden by default (no room left for them in the grid) and reachable via
+     #hud-menu (client/game.js toggles body.gc-menu-open) as a small floating panel instead. */
+  body.gc-playing .bar, body.gc-playing .help { display: none; }
+  body.gc-playing.gc-menu-open .bar {
+    display: flex; position: fixed; z-index: 45;
+    top: calc(4px + env(safe-area-inset-top, 0px)); right: calc(4px + env(safe-area-inset-right, 0px));
+    background: #000; border: 2px solid var(--line); padding: 8px; width: min(280px, calc(100vw - 16px));
+  }
+
+  /* #fs-toggle/#hud-menu (client/index.html): overlay the canvas on desktop (#31, unchanged) but
+     pin to the top-right of the viewport on mobile — visually the right side of the HUD's thin
+     header row above, regardless of #hud-menu living in a different DOM subtree (.cv-wrap).
+     min-height overrides the 700px breakpoint's blanket "button{min-height:44px}" (below) — these
+     two are supplementary, icon-only controls next to a 44px+ d-pad/fire/potion, and matching the
+     header row's own 32px keeps it genuinely thin rather than the tallest thing in the HUD strip. */
+  body.gc-playing #fs-toggle, body.gc-playing #hud-menu {
+    position: fixed !important; z-index: 50; top: calc(4px + env(safe-area-inset-top, 0px)) !important;
+    min-height: 32px; padding: 4px 6px;
+  }
+  body.gc-playing #fs-toggle { right: calc(4px + env(safe-area-inset-right, 0px)) !important; }
+  body.gc-playing #hud-menu { right: calc(44px + env(safe-area-inset-right, 0px)) !important; }
 }
 
 /* Touch/scroll hygiene while actually playing (#31): no pull-to-refresh/rubber-banding, no
    double-tap zoom. Scoped to body.gc-playing (toggled by client/game.js alongside #game.on) rather
    than globally, so the lobby/settings/editor pages keep normal scrolling. */
 body.gc-playing { overscroll-behavior: none; }
+
+/* Short landscape phones (existing viewport, e.g. a phone turned sideways): the controls band has
+   no reserved row (see "gc-controls-overlay" above), so #touch simply keeps client/index.html's
+   base `.touch` rule (position: fixed, bottom/left/right offsets) — nothing to override here; the
+   d-pad/fire/potion float over the canvas edges, same fixed-overlay behaviour #31 originally gave
+   every mobile viewport, with a translucent backing (further down) to stay legible over whatever's
+   underneath. HUD becomes a single thin translucent strip across the very top instead of the
+   portrait card list. */
+@media (orientation: landscape) and (max-height: 500px) {
+  body.gc-playing #hud { padding: 3px 5px !important; font-size: 10px !important; background: rgba(0,0,0,.5); }
+  /* min-height: 32px (not the portrait/tablet header's 32px either, coincidentally the same value)
+     — #fs-toggle/#hud-menu are `position: fixed`, pinned to the viewport's top-right regardless of
+     where .hud-head itself sits in the flex column, so if the header row is shorter than the
+     buttons' own footprint (top:4px + ~32px tall) the buttons spill past it into the first player
+     card below — exactly what clipped that card's score in this mode before. Tall enough to
+     contain the buttons (plus #hud's own inter-row gap) keeps the cards starting *below* them
+     instead, the only other way to guarantee this (padding-right on every .pp row) would eat into
+     an already-compact landscape card's width for less benefit. */
+  body.gc-playing #hud .hud-head { min-height: 32px; padding-right: 84px; }
+  body.gc-playing #hud .pp { padding: 2px 4px; }
+
+  /* Overlay d-pad: 80px/gap-8 is a *ceiling* (3*80 + 2*8 = 256px square, small enough to leave the
+     middle of the map clear on every supported landscape phone) — client/game.js's
+     layoutTouchControls() still sets --dpad-cell here (unlike --fire-size, left alone in this
+     mode), shrinking it further whenever even 256px is too tall for the shortest supported
+     viewport (iPhone SE landscape, only 320px, HUD included) to fit without climbing over the HUD
+     strip above it. var()'s fallback (flat 80px) only matters for the one frame before that first
+     runs. */
+  body.gc-playing.gc-controls-overlay .input-dpad { grid-template-columns: repeat(3, var(--dpad-cell, 80px)); grid-template-rows: repeat(3, var(--dpad-cell, 80px)); gap: 8px; }
+
+  /* Idle vs. held opacity (previously a flat .8 regardless of press state, ie. "near-full" over the
+     map): faint until actually touched, so the dungeon underneath reads clearly, then opaque enough
+     to see which control is currently held. :active is the browser's own "pointer down on this
+     element" state — already correct per-control with no JS bookkeeping needed, and it clears on
+     pointerleave/up the same way input.js's own held-state tracking does. */
+  body.gc-playing.gc-controls-overlay .input-dir,
+  body.gc-playing.gc-controls-overlay .input-fire,
+  body.gc-playing.gc-controls-overlay .input-potion,
+  body.gc-playing.gc-controls-overlay .input-autofire { opacity: .45; }
+  body.gc-playing.gc-controls-overlay .input-dir:active,
+  body.gc-playing.gc-controls-overlay .input-fire:active,
+  body.gc-playing.gc-controls-overlay .input-potion:active,
+  body.gc-playing.gc-controls-overlay .input-autofire.on { opacity: .9; }
+}
 
 /* High-score initials modal (client/highscore.js) — must stay usable with no page scroll down to a
    360px-wide, short-landscape phone. */

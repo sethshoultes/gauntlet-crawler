@@ -297,7 +297,11 @@ async function main() {
     await scenario('12. Skip exit jumps the party ahead 4 levels via the normal chest intermission', async () => {
       const before = Number((await readSelfHud(pageD)).level.match(/\d+/)[0]);
       await loadFixture({ '5,1': '8' }); // skip exit
-      await pressFor(pageD, 'd', 700);
+      // Walk in bursts until the spy shows the hero on the exit tile, like scenario 11: one fixed
+      // 700ms press can land short on a slow runner. Stepping onto the exit completes the level,
+      // which may move the hero before the walker re-checks, so a missed final check is not fatal
+      // here -- the chest-offer wait below is the real assertion.
+      await walkUntilTile(pageD, spy, heroPid, 'd', 5, { targetY: 1, maxSteps: 90 }).catch(() => {});
       // The level-clear flow plays its banner/cutscene beat before the chest offer arrives, which
       // took ~5s locally and longer on CI, so this wait gets the same headroom as the level check.
       await logIncludes(pageD, 'Choose a chest', 20_000);

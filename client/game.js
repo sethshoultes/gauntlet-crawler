@@ -24,6 +24,14 @@ import * as Input from './input.js'; // touch d-pad, auto-fire and gamepad/local
 import { computeCanvasLayout } from './layout.js'; // canvas-fit math for the mobile game screen (#31)
 import { showInitialsModal } from './highscore.js';
 import { startIdleAttract } from './attract-idle.js';
+
+// Fullscreen calls go through a Promise chain so a missing API or a rejected request (user gesture
+// rules, iOS Safari) can never throw synchronously into the caller -- the whole expression, not
+// just the call, is inside the promise.
+function exitFullscreenQuietly() {
+  Promise.resolve().then(() => document.exitFullscreen()).catch(() => { /* nothing to leave, or denied */ });
+}
+
 const RESUME_KEY = 'gc_resume';
 const GUEST_KEY = 'gc_guest_id';
 // Durable guest identity (#7): minted by the server on our first join and echoed back in every
@@ -303,6 +311,9 @@ function leaveGame(reason) {
   $('#game').classList.remove('on'); $('#roomscreen').classList.remove('on'); $('#session').classList.remove('on');
   $('#lobby').style.display = ''; $('#touch').classList.remove('on');
   document.body.classList.remove('gc-playing'); // touch/scroll hygiene (#31), see client/style.css
+  document.body.classList.remove('gc-menu-open'); // close the mobile Leave/chat panel (#42) if it was open
+  { const mb = $('#hud-menu'); if (mb) setMenuState(mb, false); }
+  if (document.fullscreenElement) exitFullscreenQuietly(); // don't leave a run stuck in fullscreen
   releaseWakeLock();
   if (reason) toast('Left the dungeon', reason);
   loadRooms();
@@ -737,29 +748,49 @@ cv.addEventListener('click', (ev) => {
   if (mine && mine[8]) sendInput({ respawn: true });
 });
 
-// ---------------- mobile-responsive canvas fit, fullscreen, wake lock (#31) ----------------
+// ---------------- mobile-responsive canvas fit, fullscreen, wake lock (#31, reworked by #42) ----------------
 // Everything below is additive to the desktop rendering path above: on a wide, mouse-driven
 // viewport layoutGame() puts the canvas back to its native 640x480 backing store and lets the
 // existing CSS (.cv-wrap's aspect-ratio box) drive sizing exactly as before. Only once the
 // "(max-width: 900px), (pointer: coarse)" media query matches (phones/tablets, and desktop windows
-// narrow enough to be worth treating the same way) does it take over: `.stage`'s own measured box
-// already excludes the nav bar, main's padding and the chat log/bar/help row below it (CSS gives
-// `.stage` `flex: 1 1 auto` inside a viewport-height `#session`, see client/style.css's "game
-// screen / mobile" block), so the only two things this still has to measure itself are the HUD
-// strip's real rendered height and the touch-controls band's — the two inputs computeCanvasLayout()
-// actually needs (client/layout.js, unit-tested in test/layout.test.js).
-const stageEl = document.querySelector('.stage');
+// narrow enough to be worth treating the same way) does it take over. Before #42, `.stage`'s own
+// measured box already excluded the nav bar, main's padding and the chat log/bar/help row below it
+// (CSS gave `.stage` `flex: 1 1 auto` inside a viewport-height `#session`); #42 turned that flexbox
+// column into a CSS grid spanning the whole game screen instead (`#game`/`.stage` go `display:
+// contents` while playing — see client/style.css's "body.gc-playing" block — so their children
+// become direct grid items alongside `#log`/`#touch`), which means `.stage` no longer generates a
+// box to measure at all. `#session` (the grid container, and the fullscreen target below) takes
+// its place, and `#log`'s height now has to be measured and subtracted explicitly too (`logH`) —
+// see client/layout.js's computeCanvasLayout() doc comment for why.
+const sessionEl = $('#session');
 const cvWrap = document.querySelector('.cv-wrap');
 const hudEl = $('#hud');
+const logEl = $('#log');
 const touchEl = $('#touch');
 const fsBtn = $('#fs-toggle');
+const menuBtn = $('#hud-menu');
 const rotateHint = $('#rotate-hint');
 let rotateHintDismissed = false;
 let touchActive = false; // cached shouldShowTouch() result, refreshed in layoutGame() (see below)
+const CONTROLS_MIN_H = 130; // see layoutGame()'s controlsH — matches client/style.css's grid minmax(110px, 1fr) plus a small margin
 
 function viewportSize() {
   const vv = window.visualViewport;
   return vv ? { w: Math.round(vv.width), h: Math.round(vv.height) } : { w: window.innerWidth, h: window.innerHeight };
+}
+
+/** An element's *content* box — getBoundingClientRect() minus its own computed padding — for
+ *  elements like #session whose box-sizing is border-box and whose padding is a real, sometimes
+ *  nonzero safe-area inset (client/style.css's "env(safe-area-inset-*)" padding on #session while
+ *  playing): passing the raw bounding rect straight into computeCanvasLayout()/
+ *  cellFromWidthBudget() would size the canvas and touch controls into that padding — the exact
+ *  region the safe-area inset exists to keep clear of a notch/home-indicator/rounded corner. */
+function innerBox(el) {
+  const r = el.getBoundingClientRect();
+  const cs = getComputedStyle(el);
+  const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  return { width: Math.max(0, r.width - padX), height: Math.max(0, r.height - padY) };
 }
 
 function resetDesktopCanvas() {
@@ -768,17 +799,147 @@ function resetDesktopCanvas() {
   if (sceneCv && (sceneCv.width !== VIEW_W || sceneCv.height !== VIEW_H)) { sceneCv.width = VIEW_W; sceneCv.height = VIEW_H; }
 }
 
+// Portrait/tablet "band" sizing constants (post-#31 follow-up review). DPAD_GAP matches
+// .input-dpad's own CSS gap (client/index.html, also shared with the landscape "overlay" d-pad's
+// separate fixed 80px/gap-8 rule) — used for the *height* budget below pretty much as the review
+// specified. It stays a plain constant (unlike #touch's own padding/gap just below): it isn't
+// entangled with any safe-area inset, so there's no risk of it drifting out of sync the way #touch's
+// padding/gap could. The *width* budget is not the review's literal "floor((viewportW * 0.58 -
+// 2*gap) / 3)": on a 412px-wide phone (Pixel 7) 58% of the viewport can't fit three 90px cells no
+// matter how gap/padding are tuned (3*90 alone is already 270px, more than 0.58*412=239px) — short
+// of both the ">= 90px at a >= 380px band" requirement this same review adds to
+// test/e2e-mobile.mjs and the "~110px on Pixel 7" example it gives. What actually shares the row
+// with the d-pad is the fire/potion/auto-fire column, whose own width is itself cell-dependent
+// (FIRE_MULT below) — cellFromWidthBudget() solves that joint constraint directly (verified against
+// real devices below) rather than reserving an independent width fraction that can't account for it.
+const DPAD_GAP = 8, FIRE_CAP = 110, FIRE_MULT = 1.3;
+// .input-dpad's own CSS padding in overlay mode (client/index.html's "@media (orientation:
+// landscape) and (max-height: 500px)" rule — the translucent backing box around the pad) adds this
+// much on *both* top and bottom of the d-pad's rendered height, on top of the cells/gaps themselves
+// — forgetting it here undercounts the pad's real height by 2*OVERLAY_DPAD_PAD and reintroduces the
+// exact HUD-overlap this whole function exists to prevent. Like DPAD_GAP, not safe-area-entangled.
+const OVERLAY_DPAD_PAD = 6;
+// The actions column (fire, the auto-fire pill, potion, stacked) is bottom-anchored in the same
+// fixed box as the d-pad, so it needs the same "clear the HUD/#log strip stacked at the top" check
+// — its own non-fire overhead (auto-fire pill height + the column's own two internal gaps +
+// top/bottom padding, all from .input-actions's CSS) measured empirically at ~68px, since the
+// auto-fire label can wrap onto a second line at this column's width, making it awkward to derive
+// from the individual CSS values exactly.
+const OVERLAY_ACTIONS_OVERHEAD = 68;
+// Fallbacks only, one *side* each (matching what client/style.css actually sets #touch's padding/
+// gap to): read live off #touch's own computed style below instead (a #43 review fix) — #touch's
+// padding/gap (band mode) and its `bottom` offset (overlay mode) all resolve a real, sometimes
+// nonzero safe-area inset (client/style.css's "env(safe-area-inset-bottom)"), so a hardcoded
+// constant here could silently drift out of sync with whatever the CSS actually renders on a given
+// device — undersizing the controls (harmless) or, worse, oversizing them into the HUD/#log a
+// device with a real inset needs kept clear (exactly what these fallbacks used to risk). These only
+// apply if a computed style value can't be parsed at all (e.g. some future browser returning
+// something other than a plain "<n>px" length) — numOr() below, not `||`, so a *legitimately* zero
+// padding/gap is never mistaken for "unparseable" and overridden.
+const TOUCH_SIDE_PAD_FALLBACK = 6, TOUCH_PAD_V_FALLBACK = 16, TOUCH_COL_GAP_FALLBACK = 4, OVERLAY_BOTTOM_OFFSET_FALLBACK = 12;
+
+/** parseFloat(val), or `fallback` if that isn't a finite number — unlike `parseFloat(val) ||
+ *  fallback`, this never mistakes a *legitimately* zero computed style value (a valid, meaningful
+ *  padding/gap/offset) for a parse failure. */
+function numOr(val, fallback) {
+  const n = parseFloat(val);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** The largest d-pad cell (unfloored, uncapped) that leaves enough width for the fire/potion column
+ *  it sits beside — `sidePad + colGap + DPAD_GAP*2` is everything *else* horizontal in the row
+ *  (#touch's own left+right padding, the gap between the d-pad and action columns, and the d-pad's
+ *  own two internal gaps); what's left splits between `3` d-pad cells and one fire/potion circle
+ *  (`FIRE_MULT` cell-widths wide, per the spec, until it hits its own `FIRE_CAP`). Solved as two
+ *  linear regimes rather than guessed at: while the fire diameter implied by `cell` is still under
+ *  FIRE_CAP, growing cell grows both cell*3 and cell*FIRE_MULT together (denominator `3 +
+ *  FIRE_MULT`); once fire would exceed FIRE_CAP it's pinned there instead, so from that point only
+ *  the d-pad's own `3*cell` keeps growing against the remaining width. */
+function cellFromWidthBudget(vw, sidePad, colGap) {
+  const overhead = sidePad + colGap + DPAD_GAP * 2;
+  const uncappedFireCell = (vw - overhead) / (3 + FIRE_MULT);
+  if (uncappedFireCell * FIRE_MULT <= FIRE_CAP) return uncappedFireCell;
+  return (vw - overhead - FIRE_CAP) / 3;
+}
+
+/** Sizes the on-screen d-pad cells and fire/potion buttons from the *actual* height (and, via
+ *  cellFromWidthBudget(), width) available to them — never raw vw alone, which is what let a fire/
+ *  potion/auto-fire overflow off-screen on a narrow phone pre-#42 (client/index.html's clamp() is
+ *  now only a same-origin fallback for a frame where this hasn't run yet).
+ *
+ *  `availH` means two different things depending on `overlayControls`, both supplied by the
+ *  caller: in the normal portrait/tablet "band" layout it's `controlsAvailH` — computeCanvasLayout's
+ *  leftover height below the fitted canvas (client/layout.js); in the short-landscape "overlay"
+ *  layout (no reserved band — the pad floats over the canvas edges instead) it's `vh - hudH - logH`,
+ *  the room the *floating* d-pad and fire/potion/auto-fire column must fit inside without climbing
+ *  over the HUD strip and the translucent #log strip stacked right under it (both real, opaque
+ *  content there too — only the canvas is meant to be floated over). Overlay's own 80px/gap-8 CSS
+ *  cap (client/style.css's ".gc-controls-overlay .input-dpad" rule) and fire/potion's existing
+ *  ~84px CSS fallback are both a *ceiling* ("may stay in the right margin as they are" per the #42
+ *  follow-up review) — this only shrinks either *below* that on the tightest supported viewport
+ *  (iPhone SE landscape, 320px tall total), where even those defaults don't clear the HUD/#log
+ *  stacked at the top.
+ *
+ *  Reads #touch's own padding/gap (band mode) and `bottom` offset (overlay mode) live off its
+ *  computed style rather than assuming client/style.css's numbers as JS constants (a #43 review
+ *  fix) — #session already pads for the bottom safe-area inset, and #touch's own band-mode padding
+ *  and overlay-mode `bottom` offset each add the *same* inset again (intentional layering, not a
+ *  bug: #touch is a real content box, not just decoration, so it gets its own clearance too) —
+ *  hardcoding what those resolve to risked exactly the drift that let a nonzero inset size the
+ *  controls into the HUD/#log this function exists to keep them clear of. */
+function layoutTouchControls(touchShown, overlayControls, availH, vw) {
+  if (!touchEl) return;
+  if (!touchShown) { touchEl.style.removeProperty('--dpad-cell'); touchEl.style.removeProperty('--fire-size'); return; }
+  const cs = getComputedStyle(touchEl);
+  if (overlayControls) {
+    const bottomOffset = numOr(cs.bottom, OVERLAY_BOTTOM_OFFSET_FALLBACK);
+    const overlayCell = Math.max(1, Math.min(80, Math.floor((availH - bottomOffset - OVERLAY_DPAD_PAD * 2 - DPAD_GAP * 2) / 3)));
+    touchEl.style.setProperty('--dpad-cell', overlayCell + 'px');
+    const overlayFire = Math.max(1, Math.min(84, Math.floor((availH - bottomOffset - OVERLAY_ACTIONS_OVERHEAD) / 2)));
+    touchEl.style.setProperty('--fire-size', overlayFire + 'px');
+    return;
+  }
+  const padV = numOr(cs.paddingTop, TOUCH_PAD_V_FALLBACK) + numOr(cs.paddingBottom, TOUCH_PAD_V_FALLBACK);
+  const padH = numOr(cs.paddingLeft, TOUCH_SIDE_PAD_FALLBACK) + numOr(cs.paddingRight, TOUCH_SIDE_PAD_FALLBACK);
+  const colGap = numOr(cs.columnGap, TOUCH_COL_GAP_FALLBACK);
+  const cellFromHeight = (availH - padV - DPAD_GAP * 2) / 3;
+  const cellFromWidth = cellFromWidthBudget(vw, padH, colGap);
+  // No lower floor: the #42 spec's cap (120px) is only ever a *ceiling* here (`Math.min(120, ...)`)
+  // — clamping a *minimum* on top, as an earlier version of this did, would force cells back up
+  // past whatever space the math just proved is actually available, overflowing on the smallest
+  // supported viewport (iPhone SE) exactly the way raw vw units used to everywhere. iPhone SE's
+  // own ~211px band naturally degrades this to its old ~50-55px cells (height-bound there, not
+  // width-bound) without any special-casing.
+  const cell = Math.max(1, Math.min(120, Math.floor(Math.min(cellFromHeight, cellFromWidth))));
+  touchEl.style.setProperty('--dpad-cell', cell + 'px');
+  const fire = Math.max(1, Math.min(FIRE_CAP, Math.floor(cell * FIRE_MULT)));
+  touchEl.style.setProperty('--fire-size', fire + 'px');
+}
+
 function layoutGame() {
   touchActive = Input.shouldShowTouch(location.search, matchMedia('(pointer: coarse)').matches);
-  if (!$('#game').classList.contains('on') || !stageEl || !cvWrap) return;
+  if (!$('#game').classList.contains('on') || !sessionEl || !cvWrap) { if (menuBtn) menuBtn.hidden = true; return; }
   const mobile = matchMedia('(max-width: 900px), (pointer: coarse)').matches;
-  if (!mobile) { resetDesktopCanvas(); if (rotateHint) rotateHint.hidden = true; return; }
+  if (menuBtn) menuBtn.hidden = !mobile; // the mobile-only "reach Leave/Chat" button (#42) — see client/style.css
+  if (!mobile) {
+    resetDesktopCanvas(); if (rotateHint) rotateHint.hidden = true;
+    document.body.classList.remove('gc-controls-overlay');
+    if (touchEl) { touchEl.style.removeProperty('--dpad-cell'); touchEl.style.removeProperty('--fire-size'); }
+    // #hud-menu (and the Leave/chat panel it opens) is a mobile-only affordance — desktop always
+    // shows .bar unconditionally instead (client/style.css only gates it under the mobile media
+    // query). Reset all of its open-state here rather than leaving it for the next mobile pass: a
+    // menu opened on mobile, then resized/rotated wide enough to cross this branch and narrow again
+    // without ever calling menuBtn.onclick, would otherwise land back in mobile mode still carrying
+    // "gc-menu-open" — reappearing the panel with no tap, and an aria-expanded that no longer
+    // matches it (the button itself is about to be hidden by the `menuBtn.hidden = !mobile` above
+    // regardless, but its state shouldn't be stale for whenever it's shown again either).
+    document.body.classList.remove('gc-menu-open');
+    if (menuBtn) setMenuState(menuBtn, false);
+    return;
+  }
 
   const { w: vw, h: vh } = viewportSize();
   const portrait = vh >= vw;
-  const stageBox = stageEl.getBoundingClientRect();
-  const hudH = hudEl ? hudEl.getBoundingClientRect().height : 0;
-  const touchShown = !!touchEl && touchEl.classList.contains('on') && getComputedStyle(touchEl).display !== 'none';
   // Portrait reserves a band below the canvas for the d-pad; landscape *phones* (short viewport)
   // instead let it overlay the canvas edges, matching the CSS "@media (orientation: landscape) and
   // (max-height: 500px)" rule that gives the pad a translucent backing specifically so it stays
@@ -788,12 +949,45 @@ function layoutGame() {
   // portrait gets — treating every landscape viewport as "overlay" regardless of height used to
   // leave a fully-opaque d-pad sitting on top of the canvas there with nothing subtracted from the
   // fit, genuinely overlapping it (caught by test/e2e-mobile.mjs's #34 canvas-geometry scenario on
-  // a landscape iPad).
+  // a landscape iPad). client/style.css keys its own grid-vs-overlay split off this same class.
+  // Toggled *before* measuring #hud/#log below (rather than after, as an earlier version of this
+  // did) so a portrait->landscape-overlay transition never measures a stale, previous-mode #log
+  // height — #log's own rendered size differs between the two (client/style.css).
   const overlayControls = !portrait && vh <= 500;
-  const controlsH = touchShown && !overlayControls ? touchEl.getBoundingClientRect().height + 12 : 0;
+  document.body.classList.toggle('gc-controls-overlay', overlayControls);
+
+  // The grid container's *content* box, not its raw bounding rect: #session's own padding while
+  // playing (client/style.css) is a real, sometimes nonzero safe-area inset, not decoration — the
+  // canvas fit (and, further below, the touch controls' own width budget) must size into what's
+  // left *after* that padding, or a device that actually reports one would get a canvas/touch band
+  // sized straight into the notch/home-indicator/rounded-corner area the inset exists to avoid.
+  const sessionInner = innerBox(sessionEl);
+  const hudH = hudEl ? hudEl.getBoundingClientRect().height : 0;
+  const logH = logEl ? logEl.getBoundingClientRect().height : 0;
+  const touchShown = !!touchEl && touchEl.classList.contains('on') && getComputedStyle(touchEl).display !== 'none';
+  // A fixed reservation, not touchEl's own measured height (#31's original approach): #42 sizes
+  // the d-pad/fire/potion *from* the band's leftover height (layoutTouchControls() below), so
+  // feeding that same rendered height back in here as the *estimate* for how much to reserve would
+  // be circular — a slightly-too-generous reservation on one pass shrinks the canvas, which grows
+  // the leftover, which grows the controls, which grows next pass's reservation, and so on, with no
+  // guarantee of converging back to "use the full width". CONTROLS_MIN_H matches the grid's own
+  // `minmax(110px, 1fr)` floor (client/style.css) plus a little breathing room: the fit only needs
+  // to guarantee *at least* that much room exists, since the grid's flexible row gives the band
+  // whatever's actually left — always >= this minimum, usually quite a bit more on anything but the
+  // shortest phones. Irrelevant in overlay mode: the pad there is a fixed-size CSS overlay (below),
+  // not sized from any reserved band, so nothing needs reserving from the canvas fit at all.
+  // Reserved whenever the band grid is active, not only when the controls are visible: the grid's
+  // `ctrl` row exists regardless (a narrow fine-pointer window hides #touch but still has the row),
+  // so fitting the canvas as if that row were absent would push the log/controls rows under the
+  // container's overflow:hidden.
+  const controlsH = overlayControls ? 0 : CONTROLS_MIN_H;
+  // In overlay mode #log no longer claims its own grid row (client/style.css) — it floats over the
+  // top of the canvas instead (translucent, 2 lines) — so the canvas fit shouldn't reserve room
+  // for it there; only in the normal band layout does logH still need subtracting.
+  const fitLogH = overlayControls ? 0 : logH;
 
   const layout = computeCanvasLayout({
-    vw: stageBox.width, vh: stageBox.height, hudH, controlsH,
+    vw: sessionInner.width, vh: sessionInner.height, hudH, logH: fitLogH, controlsH,
     levelW: VIEW_W, levelH: VIEW_H, dpr: window.devicePixelRatio || 1,
   });
   cv.style.width = layout.width + 'px';
@@ -804,6 +998,16 @@ function layoutGame() {
   if (sceneCv && (sceneCv.width !== layout.backingWidth || sceneCv.height !== layout.backingHeight)) {
     sceneCv.width = layout.backingWidth; sceneCv.height = layout.backingHeight;
   }
+
+  // Overlay mode reserves nothing in the canvas fit (controlsH is 0 there, see above) — the canvas
+  // itself gets the full vh-hudH, since #log there is a translucent overlay drawn *over* the top of
+  // it (client/style.css), not a reserved row. But the bottom-anchored d-pad still has to clear
+  // both real, opaque strips stacked at the top of the screen (HUD, then #log right under it) —
+  // its own budget is `vh - hudH - logH`, not just `vh - hudH`. The width budget passed for the
+  // band-mode d-pad/fire (cellFromWidthBudget(), inside layoutTouchControls()) is #session's own
+  // inner width — same reasoning as the canvas fit above, not the raw viewport, so a real safe-area
+  // inset can only ever shrink the controls, never let them size into it.
+  layoutTouchControls(touchShown, overlayControls, overlayControls ? Math.max(0, vh - hudH - logH) : layout.controlsAvailH, sessionInner.width);
 
   if (rotateHint) {
     const tooShort = vh < 360;
@@ -819,23 +1023,38 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('scroll', layoutGame);
 }
 
-// ---------------- fullscreen toggle (#31) ----------------
+// ---------------- fullscreen + mobile menu toggles (#31, reworked by #42) ----------------
 // Feature-detected rather than assumed: iOS Safari has no Fullscreen API for arbitrary elements
-// (only <video>), so the button stays hidden there instead of doing nothing when tapped.
+// (only <video>), so the button stays hidden there instead of doing nothing when tapped. Requests
+// fullscreen on #session (HUD + canvas + log + controls) rather than .cv-wrap (canvas alone, the
+// pre-#42 target) — the whole reason the old fullscreen view went black outside the canvas.
 if (fsBtn) {
-  const fsSupported = !!(cvWrap?.requestFullscreen && document.fullscreenEnabled);
+  const fsSupported = !!(sessionEl?.requestFullscreen && document.fullscreenEnabled);
   fsBtn.hidden = !fsSupported;
   if (fsSupported) {
     fsBtn.onclick = () => {
-      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-      else cvWrap.requestFullscreen?.().catch(() => {});
+      if (document.fullscreenElement) exitFullscreenQuietly();
+      else Promise.resolve().then(() => sessionEl.requestFullscreen()).catch(() => { /* denied or unsupported: stay inline */ });
     };
     document.addEventListener('fullscreenchange', () => {
       fsBtn.classList.toggle('on', !!document.fullscreenElement);
       fsBtn.title = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
-      layoutGame();
+      layoutGame(); // re-lay-out on every transition, per #42 — HUD/log/controls must reflow to the new box, not just the canvas
     });
   }
+}
+/** Keep the toggle's accessible name in step with its state: "Open menu" when closed, "Close menu"
+ *  when open, so a screen reader announces the action the next press performs. */
+function setMenuState(btn, open) {
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+  btn.title = open ? 'Close menu' : 'Menu';
+}
+if (menuBtn) {
+  menuBtn.onclick = () => {
+    const open = document.body.classList.toggle('gc-menu-open');
+    setMenuState(menuBtn, open);
+  };
 }
 
 // ---------------- Screen Wake Lock (#31) ----------------
@@ -1180,7 +1399,13 @@ function drawEntity(img, x, y, dir, bob = 0, isHero = false) {
 // ---------------- HUD ----------------
 function renderHud() {
   const hud = $('#hud');
-  hud.innerHTML = `<div class="lvl" id="hud-lvl"></div>` + [...G.players.values()].map((p) => {
+  // Header row (#42): level + timer together at the top, ahead of the player rows — the mobile
+  // grid layout (client/style.css's "body.gc-playing" block) turns this into the HUD strip's thin
+  // header, with #fs-toggle/#hud-menu pinned over its right side (they're separate static
+  // elements, not part of this regenerated markup, so their click handlers survive every
+  // renderHud() call — see the fullscreen/menu wiring below). Desktop keeps #hud-time pinned to
+  // the sidebar's bottom via CSS (`.hud-head` only changes layout under the mobile media query).
+  hud.innerHTML = `<div class="hud-head"><span class="lvl" id="hud-lvl"></span><span id="hud-time"></span></div>` + [...G.players.values()].map((p) => {
     const color = playerColor(p);
     // Compact HUD (#31, <700px width or a short landscape phone): the icon badge + health bar
     // stand in for the full name/HEALTH/SCORE block that the wide layout shows instead — see
@@ -1204,7 +1429,7 @@ function renderHud() {
       <div class="runboosts" title="Permanent run boosts"></div>
       <div class="amulets" title="Active amulets"></div>
     </div>`;
-  }).join('') + `<div class="muted" style="font-size:11px;text-align:center;margin-top:auto" id="hud-time"></div>`;
+  }).join('');
   layoutGame(); // the HUD's own height feeds the canvas-fit math (#31) — re-measure after it changes
 }
 function updateHudValues(s) {
