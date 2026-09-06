@@ -97,7 +97,8 @@ function loadSfxBuffer(id, file) {
     .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`sfx fetch ${r.status}`))))
     .then((buf) => a.decodeAudioData(buf))
     .then((decoded) => { sfxBuffers.set(id, decoded); return decoded; })
-    .catch(() => { sfxBuffers.set(id, null); return null; });
+    .catch(() => { sfxBuffers.set(id, null); return null; })
+    .finally(() => { sfxBufferPromises.delete(id); });
   sfxBufferPromises.set(id, p);
   return p;
 }
