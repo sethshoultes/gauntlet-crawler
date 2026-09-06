@@ -438,12 +438,14 @@ async function main() {
         await pageF.evaluate((t) => localStorage.setItem('gc_token', t), token);
         await pageF.goto(`${baseUrl}/heroes.html?nosw=1`, { waitUntil: 'load' });
         await pageF.waitForSelector('#builder:not([hidden])', { timeout: 10_000 });
+        // Wait for the page's own boot to finish (client/heroes.js exposes window.__hb.ready) so its
+        // async /api/ai/status note cannot land mid-scenario and be mistaken for the result.
+        await pageF.evaluate(() => window.__hb?.ready ?? null);
         await pageF.fill('#ai-prompt', 'A shadowy archer who lives on treasure');
         await pageF.click('#ai-gen');
-        await pageF.waitForFunction(() => {
-          const t = document.querySelector('#ai-note')?.textContent || '';
-          return t.length > 0 && !t.includes('Conjuring') && !t.includes('Asking the AI');
-        }, { timeout: 20_000 });
+        // The observable that matters is the form being populated, not the note text: the boot's
+        // "No AI key configured" note has the same shape as a result note and raced this check on CI.
+        await pageF.waitForFunction(() => (document.querySelector('#hname')?.value || '').trim().length > 0, undefined, { timeout: 20_000 });
         const heroName = await pageF.inputValue('#hname');
         if (!heroName) throw new Error('AI assist (fallback preset) did not populate a hero name');
         await pageF.click('#save-btn');
