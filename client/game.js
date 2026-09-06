@@ -341,7 +341,7 @@ function onMessage(m) {
         document.body.classList.add('gc-playing');
         acquireWakeLock();
       }
-      layoutGame();
+      layoutGame(); // also drops any room-screen scroll offset once gc-playing is on (#46), see layoutGame()
       $('#log').innerHTML = '';
       log(`<span class="n">Welcome to ${esc(m.room.name)}. ${m.room.source === 'custom' ? 'Custom dungeon: ' + esc(m.room.customName || '') : ''}</span>`);
       history.replaceState(null, '', `/?room=${m.room.id}`);
@@ -356,7 +356,7 @@ function onMessage(m) {
     case 'start':
       $('#roomscreen').classList.remove('on'); $('#game').classList.add('on'); $('#touch').classList.add('on');
       document.body.classList.add('gc-playing'); // touch/scroll hygiene (#31)
-      layoutGame();
+      layoutGame(); // also drops any room-screen scroll offset (#46), see layoutGame()
       acquireWakeLock();
       renderCountdown(null);
       if (G.room?.mode === 'death' && !hasSeen('death_mode')) playScene('death_mode', { onDone: () => markSeen('death_mode') });
@@ -937,6 +937,14 @@ function layoutGame() {
     if (menuBtn) setMenuState(menuBtn, false);
     return;
   }
+
+  // The playing grid is sized to exactly the dynamic viewport (client/style.css, #46), so the
+  // document should have no scroll range at all while a run is on — but the class flip that makes
+  // that true happens in the same tick as the room screen (which *can* scroll, its Start button
+  // sits below the fold on short phones) goes away, and the browser is not obliged to clamp a
+  // pre-existing scroll offset the instant the range shrinks. Any nonzero offset here would show
+  // up as the HUD strip sliding up under the address bar, so put the viewport back at the origin.
+  if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
 
   const { w: vw, h: vh } = viewportSize();
   const portrait = vh >= vw;

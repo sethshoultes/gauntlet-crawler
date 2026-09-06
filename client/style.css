@@ -144,8 +144,16 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
 
   body.gc-playing nav.top, body.gc-playing footer { display: none; } /* reclaim their height entirely while playing */
   body.gc-playing main { padding: 0; }
-  body.gc-playing { overflow: hidden; height: 100vh; height: 100dvh; }
-  html:has(body.gc-playing) { overflow: hidden; } /* belt-and-suspenders against any residual scroll */
+  /* min-height: 0 overrides the page-wide `body { min-height: 100vh }` above (#46): on a mobile
+     browser 100vh is the *large* viewport (address bar collapsed) while 100dvh is whatever is
+     actually visible right now, so leaving that min-height in place made the body about one
+     address-bar taller than the screen during a run. overflow:hidden only stops the *user* from
+     scrolling that extra range — a scroll offset left over from the room screen (reached by
+     scrolling down to its Start button) survives into the run and pushes the HUD strip up under
+     the address bar, with a matching blank strip appearing below the controls band. Sizing the body
+     to exactly 100dvh leaves the document with no scroll range at all, so no offset can persist. */
+  body.gc-playing { overflow: hidden; min-height: 0; height: 100vh; height: 100dvh; }
+  html:has(body.gc-playing) { overflow: hidden; height: 100%; } /* belt-and-suspenders against any residual scroll */
 
   body.gc-playing #session.on {
     display: grid;

@@ -291,6 +291,11 @@ async function main() {
         await page.locator('#create').tap();
         await page.waitForSelector('#roomscreen.on', { timeout: 15_000 });
         await page.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 });
+        // Start the run from a *scrolled* room screen (#46): on a real phone the Start button sits
+        // below the fold, so the page carries a scroll offset into the run. That offset used to
+        // survive (the body was taller than the visible viewport, see client/style.css) and slid
+        // the HUD strip up under the address bar — assertLayout() below checks it cannot any more.
+        await page.evaluate(() => window.scrollTo(0, Math.max(0, document.scrollingElement.scrollHeight - window.innerHeight)));
         await page.locator('#rs-start').tap();
         await page.waitForSelector('#game.on', { timeout: 15_000 });
         await page.waitForSelector('#touch.touch-force', { timeout: 5_000 });
@@ -312,17 +317,27 @@ async function main() {
         // though the *unscrolled* page clearly does; (2) it never looked at any individual button —
         // a fire/potion/auto-fire pushed off the right edge of the screen (the phone screenshots'
         // literal first complaint) never showed up in a check that only ever measured the
-        // container's own (possibly differently-sized) box. This version pins scrollY to 0 before
-        // every measurement and checks the real button elements themselves.
+        // container's own (possibly differently-sized) box. This version checks the real button
+        // elements themselves, and (#46) measures the page exactly as the player sees it: an
+        // earlier version pinned scrollY to 0 first, which is precisely what hid the "HUD slides
+        // under the address bar" bug — a leftover room-screen scroll offset is what this must catch.
         const assertLayout = async (whenLabel) => {
-          await page.evaluate(() => window.scrollTo(0, 0));
-
           const overflow = await page.evaluate(() => ({
+            scrollX: window.scrollX, scrollY: window.scrollY,
             scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth,
             scrollHeight: document.scrollingElement.scrollHeight, innerHeight: window.innerHeight,
+            bodyHeight: document.body.getBoundingClientRect().height,
+            // Headless Chromium has no collapsing address bar, so 100vh and 100dvh agree here and
+            // the body's *rendered* height alone cannot show the real-device bug. Its computed
+            // min-height can: the page-wide `body { min-height: 100vh }` is what made the body
+            // taller than the dynamic viewport on a phone, so it must resolve to 0 during a run.
+            bodyMinHeight: getComputedStyle(document.body).minHeight,
           }));
+          if (overflow.scrollX || overflow.scrollY) throw new Error(`${spec.label} ${whenLabel}: page is scrolled during play (scrollX=${overflow.scrollX} scrollY=${overflow.scrollY}) — the HUD strip would sit above the viewport`);
           if (overflow.scrollWidth > overflow.innerWidth + 1) throw new Error(`${spec.label} ${whenLabel}: horizontal scroll (scrollWidth=${overflow.scrollWidth} innerWidth=${overflow.innerWidth})`);
           if (overflow.scrollHeight > overflow.innerHeight + 1) throw new Error(`${spec.label} ${whenLabel}: page scrolls vertically during play (scrollHeight=${overflow.scrollHeight} innerHeight=${overflow.innerHeight})`);
+          if (Math.abs(overflow.bodyHeight - overflow.innerHeight) > 1) throw new Error(`${spec.label} ${whenLabel}: body is not exactly viewport-height during play (body=${overflow.bodyHeight} innerHeight=${overflow.innerHeight})`);
+          if (overflow.bodyMinHeight !== '0px') throw new Error(`${spec.label} ${whenLabel}: body.gc-playing min-height is ${overflow.bodyMinHeight}, expected 0px (a 100vh floor makes the body taller than the dynamic viewport on phones, #46)`);
 
           const cvBox = await page.locator('#cv').boundingBox();
           if (!cvBox) throw new Error(`${spec.label} ${whenLabel}: #cv has no bounding box`);
@@ -331,6 +346,18 @@ async function main() {
 
           const hudBox = await page.locator('#hud').boundingBox();
           if (!hudBox) throw new Error(`${spec.label} ${whenLabel}: #hud has no bounding box`);
+          if (!inViewport(hudBox, viewport)) throw new Error(`${spec.label} ${whenLabel}: #hud is not fully inside the viewport: box=${JSON.stringify(hudBox)} viewport=${JSON.stringify(viewport)}`);
+          // The pinned menu/fullscreen buttons are position:fixed at the viewport's top edge while
+          // the HUD header row is in-flow (client/style.css): the two only line up when the page
+          // is not scrolled, which is exactly what the user saw broken (#46) — buttons floating over
+          // the map with the header row itself cut off above them.
+          for (const id of ['#hud-menu', '#fs-toggle']) {
+            const btn = await page.locator(id).boundingBox();
+            if (!btn) continue; // hidden in this mode (e.g. #fs-toggle without Fullscreen API support)
+            if (btn.y < hudBox.y - 0.5 || btn.y + btn.height > hudBox.y + hudBox.height + 0.5) {
+              throw new Error(`${spec.label} ${whenLabel}: ${id} is not inside the HUD strip vertically: button=${JSON.stringify(btn)} hud=${JSON.stringify(hudBox)}`);
+            }
+          }
           const portrait = viewport.height >= viewport.width;
           if (portrait && hudBox.height > viewport.height * 0.25 + 0.5) {
             throw new Error(`${spec.label} ${whenLabel}: HUD is taller than 25% of the viewport (hud height=${hudBox.height}, viewport height=${viewport.height})`);
