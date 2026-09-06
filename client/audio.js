@@ -106,12 +106,22 @@ const sfxBufferPromises = new Map(); // manifest file -> in-flight decode Promis
  *  sfxBuffers for this file (permanently for the session) so sfx(name) falls through to the synth
  *  without ever retrying the fetch -- a missing/undecodable clip doesn't get re-requested on every
  *  call. */
+/** decodeAudioData() has had a Promise-returning form since ~2014, but its original signature
+ *  (still valid everywhere, including browsers that never added the Promise form) takes explicit
+ *  success/error callbacks -- so pass them ourselves rather than relying on a return value that a
+ *  callback-only implementation would resolve as `undefined` (which loadSfxBuffer() below would
+ *  then cache in sfxBuffers as if it were a real decode, permanently disabling that clip). */
+function decodeAudioData(a, arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    a.decodeAudioData(arrayBuffer, resolve, (err) => reject(err || new Error('decodeAudioData failed')));
+  });
+}
 function loadSfxBuffer(file) {
   const a = ac();
   if (!a) return Promise.resolve(null);
   const p = fetch(`/audio/sfx/${file}`)
     .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`sfx fetch ${r.status}`))))
-    .then((buf) => a.decodeAudioData(buf))
+    .then((buf) => decodeAudioData(a, buf))
     .then((decoded) => { sfxBuffers.set(file, decoded); return decoded; })
     .catch(() => { sfxBuffers.set(file, null); return null; })
     .finally(() => { sfxBufferPromises.delete(file); });
