@@ -320,3 +320,29 @@ test('the missing-exit error names every exit-like tile, including the hidden ex
   const rows = Array.from({ length: 12 }, (_, y) => (y === 0 || y === 11 ? '############' : y === 1 ? '#S.........#' : '#..........#'));
   assert.throws(() => parseLevel({ rows }), /E, 8, or H/);
 });
+
+// A grid with far more door clusters than the exact search is allowed to enumerate (see
+// MAX_EXACT_DOOR_GROUPS in shared/level.js): a corridor of 30 single doors in series with 30 keys
+// scattered before them. The greedy fallback must still say "solvable", quickly, and its mirror
+// with no keys at all must still say "not solvable".
+function manyDoorsLevel({ keys }) {
+  const w = 64; // parseLevel's MAX_SIZE: '#S' + 30 x '.D' + 'E#' fills it exactly
+  const wall = '#'.repeat(w);
+  const doorRow = '#S' + '.D'.repeat(30) + 'E#';
+  // A 4x8 pocket of keys (32, enough for the 30 doors) hanging below the start, walled off from
+  // the corridor everywhere else so the doors cannot simply be walked around.
+  const pocketRow = '#' + (keys ? 'KKKK' : '....') + '#'.repeat(w - 6) + '#';
+  const rows = [wall, wall, doorRow];
+  while (rows.length < 11) rows.push(pocketRow);
+  rows.push(wall); // 12 rows: parseLevel's MIN_SIZE
+  return { name: 'many doors', rows };
+}
+
+test('exitReachable stays bounded on a level with dozens of door clusters (greedy fallback)', () => {
+  const lvl = parseLevel(manyDoorsLevel({ keys: true }));
+  assert.ok(lvl.rows[2].split('D').length - 1 === 30, 'fixture has 30 door tiles');
+  const t0 = Date.now();
+  assert.equal(exitReachable(lvl), true);
+  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0}ms`);
+  assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false }))), false);
+});
