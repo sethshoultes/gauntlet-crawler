@@ -664,8 +664,20 @@ async function main() {
         await page.locator('#publish').tap();
         await page.waitForFunction(() => document.querySelector('#publish')?.textContent.trim() === 'Unpublish', undefined, { timeout: 10_000 });
 
-        const pubText = await page.locator('#pub').textContent();
-        if (!pubText.includes(levelName)) throw new Error(`level-${spec.label}: published level "${levelName}" did not appear in the community browse list`);
+        // The "Unpublish" label flips synchronously off the publish response, but the browse list
+        // (#pub) is refilled by a *separate* fetch client/editor.js fires right after it
+        // (loadPublished()), so the name can land a beat later than the button — reading #pub
+        // once, straight away, raced that fetch and flaked on CI.
+        try {
+          await page.waitForFunction((name) => (document.querySelector('#pub')?.textContent || '').includes(name), levelName, { timeout: 10_000 });
+        } catch (err) {
+          if (err?.name !== 'TimeoutError') throw err;
+          // A synchronous DOM read, not a locator: a locator's textContent() would wait out its own
+          // default timeout if #pub were detached, unbounding this "within 10s" failure; and it
+          // normalises a missing/empty node so the diagnostic itself can never throw.
+          const pubText = await page.evaluate(() => document.querySelector('#pub')?.textContent ?? '<missing>').catch(() => '<unreadable>');
+          throw new Error(`level-${spec.label}: published level "${levelName}" did not appear in the community browse list within 10s (#pub="${pubText.trim().slice(0, 200)}")`);
+        }
       } finally { await ctx.close().catch(() => {}); }
     }
 
