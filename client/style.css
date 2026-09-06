@@ -165,7 +165,9 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
     gap: 0;
     width: 100%; height: 100vh; height: 100dvh;
     box-sizing: border-box; overflow: hidden;
-    padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+    /* All four safe-area insets, so the HUD strip never sits under a notch either -- the pinned
+       header buttons already respected the top inset, but the grid itself did not. */
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   }
   body.gc-playing #hud, body.gc-playing .cv-wrap, body.gc-playing #log, body.gc-playing #touch { min-width: 0; }
   /* Short landscape phones: the d-pad/fire/potion float over the canvas edges instead of getting a
@@ -203,8 +205,11 @@ nav.top .nav-links { display: flex; align-items: center; gap: 18px; flex: 1 1 au
     width: 100%; margin: 0; max-height: 40px; font-size: 10px !important; line-height: 1.3;
     background: rgba(0,0,0,.6); pointer-events: none;
   }
+  /* Placement only: whether the controls are shown at all stays with client/index.html's `.touch.on`
+     rules (coarse pointer, or forced via ?touch=1), so a narrow fine-pointer window never grows a
+     d-pad just because it matches the mobile breakpoint. */
   body.gc-playing:not(.gc-controls-overlay) #touch {
-    grid-area: ctrl; position: static; display: flex !important;
+    grid-area: ctrl; position: static;
     width: 100%; height: 100%; margin: 0; inset: auto; box-sizing: border-box;
     /* Every one of these numbers is read straight back out by client/game.js's
        cellFromWidthBudget()/layoutTouchControls() (TOUCH_SIDE_PAD, TOUCH_COL_GAP, DPAD_PAD_V) —
