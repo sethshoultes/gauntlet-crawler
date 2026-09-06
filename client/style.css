@@ -298,7 +298,15 @@ body.gc-playing { overscroll-behavior: none; }
    portrait card list. */
 @media (orientation: landscape) and (max-height: 500px) {
   body.gc-playing #hud { padding: 3px 5px !important; font-size: 10px !important; background: rgba(0,0,0,.5); }
-  body.gc-playing #hud .hud-head { min-height: 22px; padding-right: 84px; }
+  /* min-height: 32px (not the portrait/tablet header's 32px either, coincidentally the same value)
+     — #fs-toggle/#hud-menu are `position: fixed`, pinned to the viewport's top-right regardless of
+     where .hud-head itself sits in the flex column, so if the header row is shorter than the
+     buttons' own footprint (top:4px + ~32px tall) the buttons spill past it into the first player
+     card below — exactly what clipped that card's score in this mode before. Tall enough to
+     contain the buttons (plus #hud's own inter-row gap) keeps the cards starting *below* them
+     instead, the only other way to guarantee this (padding-right on every .pp row) would eat into
+     an already-compact landscape card's width for less benefit. */
+  body.gc-playing #hud .hud-head { min-height: 32px; padding-right: 84px; }
   body.gc-playing #hud .pp { padding: 2px 4px; }
 
   /* Overlay d-pad: 80px/gap-8 is a *ceiling* (3*80 + 2*8 = 256px square, small enough to leave the

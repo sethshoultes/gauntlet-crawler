@@ -376,15 +376,23 @@ async function main() {
             if (overlaps(box, logBox)) throw new Error(`${spec.label} ${whenLabel}: "${name}" overlaps #log: box=${JSON.stringify(box)} log=${JSON.stringify(logBox)}`);
           }
 
-          // Fullscreen + menu: pinned to the top-right, deliberately over the HUD strip they're
-          // visually part of (so no HUD-overlap check for these two) — but they must never reach
-          // down into the canvas, and must stay on-screen.
+          // Fullscreen + menu: pinned to the top-right, deliberately over the *header row* of the
+          // HUD strip they're visually part of (so no whole-#hud overlap check for these two) —
+          // but they must never reach down into the canvas, must stay on-screen, and — landscape
+          // specifically, where the header row is short enough for this to have actually happened
+          // (a player card's score sat right under the buttons' bottom edge) — must never cover any
+          // individual player card either. client/style.css's ".hud-head" gets a min-height tall
+          // enough to contain the buttons for exactly this reason; this is the regression check.
+          const ppBoxes = await Promise.all((await page.locator('#hud .pp').all()).map((el) => el.boundingBox()));
           for (const sel of ['#fs-toggle', '#hud-menu']) {
             const box = await page.locator(sel).boundingBox();
             if (!box) continue; // #fs-toggle legitimately hides itself when the Fullscreen API is unsupported (client/game.js)
             if (!inViewport(box, viewport)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" is not fully inside the viewport: box=${JSON.stringify(box)}`);
             if (overlaps(box, cvBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps the canvas: box=${JSON.stringify(box)}`);
             if (overlaps(box, logBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps #log: box=${JSON.stringify(box)} log=${JSON.stringify(logBox)}`);
+            ppBoxes.forEach((ppBox, i) => {
+              if (ppBox && overlaps(box, ppBox)) throw new Error(`${spec.label} ${whenLabel}: "${sel}" overlaps player card ${i}: box=${JSON.stringify(box)} card=${JSON.stringify(ppBox)}`);
+            });
           }
 
           // Portrait/tablet "band" mode only (#42 follow-up review): once the controls band is
