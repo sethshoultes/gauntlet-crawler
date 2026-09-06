@@ -284,7 +284,10 @@ async function main() {
         await pageD.waitForTimeout(200);
       }
       const after = hud?.level;
-      if (after == null || after === before) throw new Error(`expected clearing a treasure room's exit to advance the level (stuck at "${before}")`);
+      // Distinguish "the HUD could not be read at all" from "the level really did not advance", so
+      // a failure here names the actual problem.
+      if (after == null) throw new Error(`could not read the self HUD after clearing the treasure room's exit (last level seen: "${before}")`);
+      if (after === before) throw new Error(`expected clearing a treasure room's exit to advance the level (stuck at "${before}")`);
       if (sawChestPrompt) knownBug('11. Treasure room: bonus banner, any exit clears without a chest pick', 'a treasure room offered a chest pick — it should skip the intermission entirely (see Room#onLevelComplete\'s wasTreasure branch)');
     });
 

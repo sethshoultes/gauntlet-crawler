@@ -422,13 +422,14 @@ async function main() {
       await leaderboardLoaded;
       // Confirms dashboard.js reached its post-fetch wiring (tab buttons' onclick + the initial
       // render('scores')), not merely that the response landed on the wire.
-      await pageA.waitForFunction(() => (document.querySelector('#lb')?.innerHTML || '').includes('<th'), { timeout: 15_000 });
+      await pageA.locator('#lb th').first().waitFor({ state: 'attached', timeout: 15_000 });
 
       for (const tab of ['death', 'rank', 'depth', 'kills', 'achievements', 'scores']) {
         await pageA.click(`#tabs button[data-t="${tab}"]`);
-        await pageA.waitForFunction(() => (document.querySelector('#lb')?.innerHTML || '').includes('<th'), { timeout: 10_000 });
-        const lbHtml = await pageA.locator('#lb').innerHTML();
-        if (!lbHtml || !lbHtml.includes('<th')) throw new Error(`leaderboard tab "${tab}" did not render a header row`);
+        // Wait on real header elements, not an innerHTML substring: the table is re-rendered per
+        // tab, and a DOM query is stable against harmless markup changes.
+        await pageA.locator('#lb th').first().waitFor({ state: 'attached', timeout: 10_000 }).catch(() => {});
+        if ((await pageA.locator('#lb th').count()) === 0) throw new Error(`leaderboard tab "${tab}" did not render a header row`);
       }
     });
 
