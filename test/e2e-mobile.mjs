@@ -94,6 +94,19 @@ async function main() {
       await page.reload({ waitUntil: 'load' });
     }
 
+    /** Waits for client/heroes.js's `window.__hb.ready` (resolved once boot() has picked a branch
+     *  and, when unlocked, already reset the form via newHero()) rather than inferring readiness
+     *  from `#builder:not([hidden])` becoming visible — that inference only holds because boot()
+     *  today never awaits between unhiding #builder and calling newHero(), an invariant this test
+     *  shouldn't have to trust. Bounded with its own timeout via Promise.race so a `ready` that
+     *  never resolves fails loudly instead of hanging the whole run. */
+    async function waitForHbReady(page, timeoutMs = 10_000) {
+      await page.evaluate((ms) => Promise.race([
+        window.__hb.ready,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('window.__hb.ready did not resolve in time')), ms)),
+      ]), timeoutMs);
+    }
+
     /** #nav-login/#nav-logout live inside #nav-links, which the phones' <=700px breakpoint keeps
      *  display:none until #nav-toggle is tapped (the iPad's 810px portrait width never hides it in
      *  the first place — see the lobby scenario's own nav-toggle check). Tapping a hidden element
@@ -118,7 +131,7 @@ async function main() {
         if (scrollWidth > innerWidth + 1) throw new Error(`${spec.label}: lobby has horizontal overflow (scrollWidth=${scrollWidth} innerWidth=${innerWidth})`);
         if (!(await page.locator('#heroes .hero').first().isVisible())) throw new Error(`${spec.label}: hero picker not visible`);
 
-        await page.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').trim().length > 0, { timeout: 10_000 });
+        await page.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').trim().length > 0, undefined, { timeout: 10_000 });
         if (!(await page.locator('#lobby-highscores').isVisible())) throw new Error(`${spec.label}: high-score table not visible`);
 
         // Nav toggle: on the two phones (<=700px, see client/style.css's "@media (max-width:
@@ -162,7 +175,7 @@ async function main() {
             page.waitForNavigation({ waitUntil: 'load' }),
             page.locator('#a-reg').tap(),
           ]);
-          await page.waitForFunction(() => { try { return !!localStorage.getItem('gc_token'); } catch { return false; } }, { timeout: 10_000 });
+          await page.waitForFunction(() => { try { return !!localStorage.getItem('gc_token'); } catch { return false; } }, undefined, { timeout: 10_000 });
           gameplayToken = await page.evaluate(() => { try { return localStorage.getItem('gc_token'); } catch { return null; } });
           if (!gameplayToken) throw new Error('touch registration did not leave a session token in localStorage');
         } else {
@@ -273,7 +286,7 @@ async function main() {
         await page.locator('#rs-start').tap();
         await page.waitForSelector('#game.on', { timeout: 15_000 });
         await page.waitForSelector('#touch.touch-force', { timeout: 5_000 });
-        await page.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, { timeout: 10_000 });
+        await page.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, undefined, { timeout: 10_000 });
         await page.waitForTimeout(200); // let layoutGame() run at least once post-HUD
 
         const assertLayout = async (whenLabel) => {
@@ -360,7 +373,7 @@ async function main() {
 
         // The lobby high-score table lists it too, not just the API.
         await page.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
-        await page.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').includes('BAA'), { timeout: 10_000 });
+        await page.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').includes('BAA'), undefined, { timeout: 10_000 });
       } finally {
         try { helperWs?.send(JSON.stringify({ t: 'leave' })); helperWs?.close(); } catch { /* best effort */ }
         await ctx.close().catch(() => {});
@@ -370,9 +383,20 @@ async function main() {
     async function heroBuilderScenario(spec) {
       const ctx = await browser.newContext({ ...spec.device });
       const page = await ctx.newPage(); attach(page, `hero-${spec.label}`, bags);
+      // Diagnostics (#40): every POST/PUT /api/heroes response this page gets, method+status+body,
+      // so a save failure's thrown error can name the actual validateHero rule that fired instead
+      // of just "waitForFunction timed out".
+      const heroResponses = [];
+      page.on('response', (resp) => {
+        const req = resp.request();
+        if (!/^\/api\/heroes(\/|$)/.test(new URL(resp.url()).pathname)) return;
+        if (req.method() !== 'POST' && req.method() !== 'PUT') return;
+        resp.text().then((body) => heroResponses.push(`${req.method()} ${resp.url()} -> ${resp.status()} ${body}`)).catch(() => {});
+      });
       try {
         await loginAs(page, heroToken, '/heroes.html');
-        await page.waitForSelector('#builder:not([hidden])', { timeout: 10_000 });
+        await waitForHbReady(page);
+        if (!(await page.locator('#builder').isVisible())) throw new Error(`hero-${spec.label}: Hero Builder is locked/hidden for this account (not rank 3+?)`);
 
         const heroName = `Mob${spec.label.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}`; // NAME_RE: 2-12 letters/digits/spaces
         await page.fill('#hname', heroName);
@@ -396,7 +420,13 @@ async function main() {
         if (painted < 8) throw new Error(`hero-${spec.label}: touch-drag only painted ${painted} pixel(s), expected >= 8`);
 
         await page.locator('#save-btn').tap();
-        await page.waitForFunction(() => (document.querySelector('#save-status')?.textContent || '') === 'Saved.', { timeout: 10_000 });
+        try {
+          await page.waitForFunction(() => (document.querySelector('#save-status')?.textContent || '') === 'Saved.', undefined, { timeout: 10_000 });
+        } catch (waitErr) {
+          const status = await page.locator('#save-status').textContent().catch(() => '<unreadable>');
+          const responses = heroResponses.length ? heroResponses.join(' | ') : '<no /api/heroes POST/PUT response captured>';
+          throw new Error(`hero-${spec.label}: save did not complete — #save-status="${status}"; ${responses}`);
+        }
 
         await loginAs(page, heroToken, '/');
         await page.waitForSelector('#heroes .hero', { timeout: 10_000 });
@@ -434,9 +464,9 @@ async function main() {
         const levelName = `MobLvl${spec.label.replace(/[^A-Za-z0-9]/g, '').slice(0, 6)}`;
         await page.fill('#name', levelName);
         await page.locator('#save').tap();
-        await page.waitForFunction(() => document.querySelector('#publish') && !document.querySelector('#publish').disabled, { timeout: 10_000 });
+        await page.waitForFunction(() => document.querySelector('#publish') && !document.querySelector('#publish').disabled, undefined, { timeout: 10_000 });
         await page.locator('#publish').tap();
-        await page.waitForFunction(() => document.querySelector('#publish')?.textContent.trim() === 'Unpublish', { timeout: 10_000 });
+        await page.waitForFunction(() => document.querySelector('#publish')?.textContent.trim() === 'Unpublish', undefined, { timeout: 10_000 });
 
         const pubText = await page.locator('#pub').textContent();
         if (!pubText.includes(levelName)) throw new Error(`level-${spec.label}: published level "${levelName}" did not appear in the community browse list`);
@@ -466,7 +496,7 @@ async function main() {
         const volumeAfterTap = await page.locator('#p-voice-volume').inputValue();
 
         await page.locator('#save-prefs').tap();
-        await page.waitForFunction(() => (document.querySelector('#prefs-msg')?.textContent || '') === 'Saved.', { timeout: 10_000 });
+        await page.waitForFunction(() => (document.querySelector('#prefs-msg')?.textContent || '') === 'Saved.', undefined, { timeout: 10_000 });
 
         await page.reload({ waitUntil: 'load' });
         await page.waitForSelector('#mine', { timeout: 10_000 });
@@ -507,7 +537,7 @@ async function main() {
         });
         if (!reg) throw new Error(`pwa-${spec.label}: navigator.serviceWorker.getRegistration() resolved to nothing after load`);
 
-        await page.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 15_000 });
+        await page.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 15_000 });
 
         offline = true;
         await ctx.setOffline(true);
