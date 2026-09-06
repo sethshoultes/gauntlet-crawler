@@ -325,10 +325,13 @@ test('the missing-exit error names every exit-like tile, including the hidden ex
 // MAX_EXACT_DOOR_GROUPS in shared/level.js): a corridor of 30 single doors in series with a pocket
 // of keys before them. The optimistic fallback must still say "solvable", quickly, and its mirror
 // with no keys at all must still say "not solvable".
-function manyDoorsLevel({ keys }) {
+function manyDoorsLevel({ keys, keyBehindFirstDoor = false }) {
   const w = 64; // parseLevel's MAX_SIZE: '#S' + 30 x '.D' + 'E#' fills it exactly
   const wall = '#'.repeat(w);
-  const doorRow = '#S' + '.D'.repeat(30) + 'E#';
+  // Optionally the only key sits past the second door (column 6, clear of the key pocket's
+  // columns 1-4 below): unreachable with every door shut, so even the optimistic check must
+  // reject it.
+  const doorRow = '#S' + '.D.D' + (keyBehindFirstDoor ? 'KD' : '.D') + '.D'.repeat(27) + 'E#';
   // A 4x8 pocket of keys (32, enough for the 30 doors) hanging below the start, walled off from
   // the corridor everywhere else so the doors cannot simply be walked around.
   const pocketRow = '#' + (keys ? 'KKKK' : '....') + '#'.repeat(w - 6) + '#';
@@ -338,11 +341,12 @@ function manyDoorsLevel({ keys }) {
   return { name: 'many doors', rows };
 }
 
-test('exitReachable stays bounded on a level with dozens of door clusters (optimistic all-open check)', () => {
+// The per-test timeout (not a wall-clock assertion) is what guards against the exact search being
+// used here by mistake: 2^30 door states would never finish inside it.
+test('exitReachable stays bounded on a level with dozens of door clusters (optimistic all-open check)', { timeout: 5000 }, () => {
   const lvl = parseLevel(manyDoorsLevel({ keys: true }));
-  assert.ok(lvl.rows[2].split('D').length - 1 === 30, 'fixture has 30 door tiles');
-  const t0 = Date.now();
+  assert.equal(lvl.rows[2].split('D').length - 1, 30, 'fixture has 30 door tiles');
   assert.equal(exitReachable(lvl), true);
-  assert.ok(Date.now() - t0 < 2000, `took ${Date.now() - t0}ms`);
-  assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false }))), false);
+  assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false }))), false, 'no key anywhere');
+  assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false, keyBehindFirstDoor: true }))), false, 'the only key is behind a door');
 });

@@ -49,7 +49,7 @@ export function validateLevel(raw) {
   for (let y = 0; y < h; y++) {
     if (rows[y][0] !== T.WALL || rows[y][w - 1] !== T.WALL) { problems.push('border must be walls'); break; }
   }
-  if (!exitReachable(lvl)) problems.push('exit is not reachable from the start (not enough keys are reachable to open the doors in the way)');
+  if (!exitReachable(lvl)) problems.push('exit is not reachable from the start (walled off, behind doors without enough reachable keys, or a hidden exit that cannot be revealed)');
   return problems;
 }
 
@@ -173,16 +173,18 @@ export function exitReachable(lvl) {
   // mask. Hand-built and procedural levels have a handful of clusters, but an editor-drawn or
   // AI-generated one can scatter dozens of single doors, so past this bound the check turns
   // deliberately optimistic instead: the exit counts as reachable if it can be reached with every
-  // door cluster open AND at least one key is collectable in that fully-open region (with no key
-  // anywhere, no door ever opens, so the doors-closed region is all a hero will ever see). This
-  // can accept a level the exact search would reject (a key spent on the wrong door) but never
-  // rejects one it would accept — the safe direction for a validator whose "false" discards or
-  // rewrites a level. An earlier greedy-with-budget variant was order-dependent and could do the
-  // opposite (review on #48).
+  // door cluster open AND at least one key is collectable *before* any door is opened (a hero who
+  // can't reach a single key with every door still shut never opens the first one, so the
+  // doors-closed region is all they will ever see). This can accept a level the exact search would
+  // reject (a key spent on the wrong door, or too few keys for a long chain) but never rejects one
+  // it would accept — the safe direction for a validator whose "false" discards or rewrites a
+  // level. An earlier greedy-with-budget variant was order-dependent and could do the opposite
+  // (review on #48).
   if (doorGroups.length > MAX_EXACT_DOOR_GROUPS) {
-    if (exploreRegion(0).exitSatisfied) return true;
-    const allOpen = exploreRegion(new Set(doorGroups.map((_, gi) => gi)));
-    return allOpen.exitSatisfied && allOpen.keysInRegion >= 1;
+    const closed = exploreRegion(0);
+    if (closed.exitSatisfied) return true;
+    if (closed.keysInRegion < 1) return false;
+    return exploreRegion(new Set(doorGroups.map((_, gi) => gi))).exitSatisfied;
   }
 
   const popcount = (mask) => { let n = 0; for (let m = mask; m; m >>>= 1) n += m & 1; return n; };
