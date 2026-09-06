@@ -67,14 +67,26 @@ export function initAudio() {
 // client/audio.js's synth engine above remains the always-available fallback: sfx(name) plays a
 // pre-rendered clip when one has been generated and decoded, otherwise falls straight through to
 // the WebAudio synth switch below, exactly as before this pipeline existed.
-let sfxManifest = null; // null until the fetch below resolves; {} on 404/error (tolerated)
+let sfxManifest = null; // null until the fetch below resolves to a real (possibly empty) object;
+                         // reset back to null on a fetch/parse failure too (see the .catch below)
+                         // rather than left at a permanent {}, so sfxManifest === null unambiguously
+                         // means "not currently loaded" -- either never attempted or the last
+                         // attempt failed -- which sfx()'s lazy kick-off below uses to retry.
 let sfxManifestPromise = null;
 function loadSfxManifest() {
   if (!sfxManifestPromise) {
     sfxManifestPromise = fetch('/audio/sfx/manifest.json')
       .then((r) => (r.ok ? r.json() : {}))
       .then((m) => { sfxManifest = (m && typeof m === 'object' && !Array.isArray(m)) ? m : {}; return sfxManifest; })
-      .catch(() => { sfxManifest = {}; return sfxManifest; });
+      .catch(() => {
+        // A transient failure here (offline at page load, a flaky network blip, malformed JSON)
+        // shouldn't disable pre-rendered clip playback for the rest of the session: clear both
+        // the manifest and the in-flight promise so a later sfx() call retries the fetch instead
+        // of being stuck with an empty manifest until a full page reload.
+        sfxManifest = null;
+        sfxManifestPromise = null;
+        return null;
+      });
   }
   return sfxManifestPromise;
 }
@@ -173,6 +185,11 @@ export function sfx(name) {
   sfxLast.set(name, now);
 
   if (!muted) {
+    // initAudio() kicks off the first manifest fetch, but if that attempt (or any later one)
+    // failed, loadSfxManifest() resets sfxManifest to null -- retry it lazily here so a transient
+    // failure doesn't disable clip playback for the rest of the session (loadSfxManifest() itself
+    // dedupes against a second attempt while one is already in flight).
+    if (sfxManifest === null) loadSfxManifest();
     // Own-property check: the manifest is parsed JSON, so a name like "__proto__" would otherwise
     // resolve through the prototype chain to a truthy non-entry.
     const entry = sfxManifest && Object.prototype.hasOwnProperty.call(sfxManifest, name) ? sfxManifest[name] : null;
