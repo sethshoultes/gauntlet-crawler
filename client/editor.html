@@ -20,7 +20,9 @@
   .pal button { padding: 4px; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 9px; text-transform: none; letter-spacing: 0; }
   .pal button canvas { width: 24px; height: 24px; }
   .pal button.on { border-color: var(--yellow); }
-  #ecv-wrap { max-width: 100%; overflow-x: auto; touch-action: none; } /* grid-only touch-action: painting drags never hijack the page scroll */
+  /* The wrapper is the zoom scroller, so it must keep touch panning; only the canvas itself takes
+     touch-action: none so painting drags never hijack the page scroll. */
+  #ecv-wrap { max-width: 100%; overflow-x: auto; touch-action: pan-x pan-y; }
   #ecv { background: #000; border: 3px solid var(--line); max-width: 100%; height: auto; cursor: crosshair; touch-action: none; }
   #zoom-controls { display: none; align-items: center; gap: 8px; margin-top: 8px; }
   #zoom-controls button { min-width: 44px; min-height: 44px; font-size: 16px; padding: 0; }
