@@ -554,10 +554,11 @@ instead, run `tools/generate-voice.mjs`:
 node tools/generate-voice.mjs
 
 # with an ElevenLabs account:
-ELEVENLABS_API_KEY=sk-...            \  # ELEVENLABS_API also works, as an alias
-ELEVENLABS_VOICE_ID=voice_id_here    \  # optional — defaults to a documented placeholder voice
-ELEVENLABS_MODEL_ID=model_id_here    \  # optional — defaults to eleven_multilingual_v2
-node tools/generate-voice.mjs [id ...]  # omit ids to (re)generate every line
+# ELEVENLABS_VOICE_ID is optional (defaults to a documented placeholder voice);
+# ELEVENLABS_MODEL_ID is optional (defaults to eleven_multilingual_v2);
+# omit the ids to (re)generate every line.
+ELEVENLABS_API_KEY=sk-... ELEVENLABS_VOICE_ID=voice_id_here ELEVENLABS_MODEL_ID=model_id_here \
+  node tools/generate-voice.mjs [id ...]
 ```
 
 It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
