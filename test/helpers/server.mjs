@@ -28,11 +28,18 @@ function findFreePort() {
   });
 }
 
-function waitForServer(url, timeoutMs) {
+// Polls `url` until it answers or `timeoutMs` passes. `signal` lets the caller stop the poll early
+// (the child exited before ever serving) so the pending timer does not keep the test process
+// alive for the rest of the readiness window.
+function waitForServer(url, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
-      fetch(url).then(resolve).catch((err) => {
+      if (signal.aborted) return reject(signal.reason);
+      // Per-request timeout: a port that accepts TCP but never answers (something else holding it)
+      // must not park this probe forever, or the surrounding race can never settle cleanly.
+      fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(2000)]) }).then(resolve).catch((err) => {
+        if (signal.aborted) return reject(signal.reason);
         if (Date.now() > deadline) return reject(err);
         setTimeout(attempt, 200);
       });
@@ -71,18 +78,39 @@ export async function waitExit(child, exited, timeoutMs = 10_000) {
  * Spawn server/index.js on a free port against a fresh temp DATA_DIR, and wait until it is either
  * ready to serve requests or has exited early (whichever comes first) before resolving.
  *
+ * node:test runs test files in parallel processes, and findFreePort() has an unavoidable window
+ * between closing its probe socket and the child actually binding the port. Two files probing at
+ * once can therefore be handed the same port, and the loser dies at startup with EADDRINUSE (seen
+ * on CI in test/pwa.test.js). That failure is retried here with a fresh port rather than surfaced,
+ * because it says nothing about the code under test.
+ *
  * @param {object} [opts]
  * @param {Record<string,string>} [opts.env] extra environment variables merged over process.env
  *   (e.g. `{ GAUNTLET_DEBUG: '1' }`, `{ GAUNTLET_ADMINS: 'boss' }`).
  * @param {number} [opts.timeoutMs] readiness timeout in ms (default 20s).
+ * @param {number} [opts.attempts] how many EADDRINUSE startups to tolerate before giving up.
+ * @param {() => Promise<number>} [opts.pickPort] port chooser, injectable so the retry path can
+ *   be exercised deterministically by test/helpers/server.test.js.
  * @returns {Promise<{
  *   baseUrl: string, port: number, pid: number, dataDir: string,
  *   exitCode: number|null, output: () => string, stop: () => Promise<void>,
  * }>}
  */
-export async function startServer({ env = {}, timeoutMs = 20_000 } = {}) {
+export async function startServer({ env = {}, timeoutMs = 20_000, attempts = 5, pickPort = findFreePort } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await startServerOnce({ env, timeoutMs, port: await pickPort() });
+    } catch (err) {
+      lastErr = err;
+      if (!err?.portInUse) throw err;
+    }
+  }
+  throw lastErr;
+}
+
+async function startServerOnce({ env, timeoutMs, port }) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'gauntlet-test-'));
-  const port = await findFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
     cwd: ROOT,
@@ -106,14 +134,22 @@ export async function startServer({ env = {}, timeoutMs = 20_000 } = {}) {
     await rm(dataDir, { recursive: true, force: true }).catch(() => {});
   }
 
+  const probe = new AbortController();
   try {
     await Promise.race([
-      waitForServer(baseUrl, timeoutMs),
-      exited.then(([code]) => { throw new Error(`server exited early (code ${code}):\n${out}`); }),
+      waitForServer(baseUrl, timeoutMs, probe.signal),
+      exited.then(([code]) => {
+        const err = new Error(`server exited early (code ${code}):\n${out}`);
+        // Mark the lost-the-port-race case so startServer() can retry it on a different port.
+        err.portInUse = out.includes('EADDRINUSE');
+        throw err;
+      }),
     ]);
   } catch (err) {
     await stop();
     throw err;
+  } finally {
+    probe.abort(new Error('readiness poll cancelled'));
   }
 
   return {

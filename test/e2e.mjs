@@ -237,8 +237,8 @@ async function main() {
       await pageA.waitForSelector('#game.on', { timeout: 15_000 });
       await pageB.waitForSelector('#game.on', { timeout: 15_000 });
 
-      await pageA.waitForFunction(() => document.querySelectorAll('#hud .pp').length === 2, { timeout: 10_000 });
-      await pageB.waitForFunction(() => document.querySelectorAll('#hud .pp').length === 2, { timeout: 10_000 });
+      await pageA.waitForFunction(() => document.querySelectorAll('#hud .pp').length === 2, undefined, { timeout: 10_000 });
+      await pageB.waitForFunction(() => document.querySelectorAll('#hud .pp').length === 2, undefined, { timeout: 10_000 });
 
       const hud0A = await readSelfHud(pageA);
       const hud0B = await readSelfHud(pageB);
@@ -272,16 +272,16 @@ async function main() {
       await new Promise((r) => setTimeout(r, 400)); // let the join land before the debug action
       helperWs.send(JSON.stringify({ t: 'debug', action: 'clear' }));
 
-      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Choose a chest'), { timeout: 10_000 });
-      await pageB.waitForFunction(() => document.querySelector('#log').textContent.includes('Choose a chest'), { timeout: 10_000 });
+      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Choose a chest'), undefined, { timeout: 10_000 });
+      await pageB.waitForFunction(() => document.querySelector('#log').textContent.includes('Choose a chest'), undefined, { timeout: 10_000 });
 
       await pageA.keyboard.press('1');
       await pageB.keyboard.press('1');
 
-      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Level 2:'), { timeout: 15_000 });
-      await pageB.waitForFunction(() => document.querySelector('#log').textContent.includes('Level 2:'), { timeout: 15_000 });
-      await pageA.waitForFunction(() => (document.querySelector('#hud-lvl')?.textContent || '').trim() === 'Level 2', { timeout: 5_000 });
-      await pageB.waitForFunction(() => (document.querySelector('#hud-lvl')?.textContent || '').trim() === 'Level 2', { timeout: 5_000 });
+      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Level 2:'), undefined, { timeout: 15_000 });
+      await pageB.waitForFunction(() => document.querySelector('#log').textContent.includes('Level 2:'), undefined, { timeout: 15_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#hud-lvl')?.textContent || '').trim() === 'Level 2', undefined, { timeout: 5_000 });
+      await pageB.waitForFunction(() => (document.querySelector('#hud-lvl')?.textContent || '').trim() === 'Level 2', undefined, { timeout: 5_000 });
 
       try { helperWs.send(JSON.stringify({ t: 'leave' })); helperWs.close(); } catch { /* best effort */ }
     });
@@ -317,13 +317,13 @@ async function main() {
       if (!deathRoomId) throw new Error(`browser A URL did not carry a room id for the death-mode room: ${pageA.url()}`);
 
       await pageA.selectOption('#rs-mode', 'death');
-      await pageA.waitForFunction(() => document.querySelector('#rs-death-help')?.style.display !== 'none', { timeout: 5_000 });
+      await pageA.waitForFunction(() => document.querySelector('#rs-death-help')?.style.display !== 'none', undefined, { timeout: 5_000 });
       await pageA.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 }); // solo host, no ready-up needed
       await pageA.click('#rs-start');
       await pageA.waitForSelector('#game.on', { timeout: 15_000 });
 
-      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Wave 1 of'), { timeout: 8_000 });
-      await pageA.waitForFunction(() => (document.querySelector('#hud-lvl')?.textContent || '').includes('/ 99'), { timeout: 8_000 });
+      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Wave 1 of'), undefined, { timeout: 8_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#hud-lvl')?.textContent || '').includes('/ 99'), undefined, { timeout: 8_000 });
 
       // WAVE_BANNER_SECONDS (3s) must elapse before the wave's monsters actually spawn — only
       // then does a debug "killall" have anything to clear (and so anything to advance from).
@@ -335,7 +335,7 @@ async function main() {
       await new Promise((r) => setTimeout(r, 400));
       helperWs2.send(JSON.stringify({ t: 'debug', action: 'killall' }));
 
-      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Wave 2 of'), { timeout: 8_000 });
+      await pageA.waitForFunction(() => document.querySelector('#log').textContent.includes('Wave 2 of'), undefined, { timeout: 8_000 });
 
       try { helperWs2.send(JSON.stringify({ t: 'leave' })); helperWs2.close(); } catch { /* best effort */ }
     });
@@ -347,7 +347,7 @@ async function main() {
       await pageA.waitForSelector('#gen', { timeout: 10_000 });
       await pageA.fill('#prompt', 'A small crypt guarded by ghosts with a treasure vault behind a locked door');
       await pageA.click('#gen');
-      await pageA.waitForFunction(() => (document.querySelector('#status')?.textContent || '').includes('Playable'), { timeout: 20_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#status')?.textContent || '').includes('Playable'), undefined, { timeout: 20_000 });
 
       // #17 AI assist: "Make harder" + undo, all logged in as pageA. Remix/harder/easier/explain
       // share one per-user rate-limit bucket with the "Generate with AI" call just above (1 AI
@@ -363,7 +363,7 @@ async function main() {
       };
       const genBefore = await genCountFromStatus();
       await pageA.click('#harder');
-      await pageA.waitForFunction(() => (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('harder'), { timeout: 20_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('harder'), undefined, { timeout: 20_000 });
       const genAfterHarder = await genCountFromStatus();
       if (!(genAfterHarder > genBefore)) throw new Error(`"Make harder" should increase the generator count (before ${genBefore}, after ${genAfterHarder})`);
       if (!(await pageA.locator('#undoRemix').isVisible())) throw new Error('undo button should appear after a remix/tune action');
@@ -379,13 +379,13 @@ async function main() {
       // the harder/undo calls' own 10s window.
       await pageA.waitForTimeout(10_500);
       await pageA.click('#explain');
-      await pageA.waitForFunction(() => (document.querySelector('#explain-panel')?.textContent || '').length > 10, { timeout: 20_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#explain-panel')?.textContent || '').length > 10, undefined, { timeout: 20_000 });
 
       await pageA.click('#save');
-      await pageA.waitForFunction(() => document.querySelector('#publish') && !document.querySelector('#publish').disabled, { timeout: 10_000 });
+      await pageA.waitForFunction(() => document.querySelector('#publish') && !document.querySelector('#publish').disabled, undefined, { timeout: 10_000 });
 
       await pageA.click('#publish');
-      await pageA.waitForFunction(() => document.querySelector('#publish')?.textContent.trim() === 'Unpublish', { timeout: 10_000 });
+      await pageA.waitForFunction(() => document.querySelector('#publish')?.textContent.trim() === 'Unpublish', undefined, { timeout: 10_000 });
 
       await Promise.all([
         pageA.waitForURL(/room=/, { timeout: 15_000 }),
@@ -414,7 +414,7 @@ async function main() {
       const progTitle = (await pageA.locator('#prog-title').textContent()).trim();
       if (!progTitle) throw new Error('progression panel (#prog-title) is empty');
 
-      await pageA.waitForFunction(() => document.querySelectorAll('.ach').length > 0, { timeout: 10_000 });
+      await pageA.waitForFunction(() => document.querySelectorAll('.ach').length > 0, undefined, { timeout: 10_000 });
       const unlockedCount = await pageA.locator('.ach.on').count();
       if (unlockedCount < 1) throw new Error('expected at least one unlocked achievement (e.g. Architect, from publishing a level)');
       const achNames = await pageA.locator('.ach.on .n').allTextContents();
@@ -587,7 +587,7 @@ async function main() {
       // completion (and the initials-entry modal) through two browser contexts.
       await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#lobby-highscores', { timeout: 10_000 });
-      await pageA.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').trim().length > 0, { timeout: 10_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').trim().length > 0, undefined, { timeout: 10_000 });
       const text = await pageA.textContent('#lobby-highscores');
       if (!/no high scores yet/i.test(text)) throw new Error(`expected the empty-board message, got: ${text}`);
 
@@ -619,7 +619,7 @@ async function main() {
 
         // Give the worker a moment to finish installing/activating and precaching the shell
         // before pulling the network out from under it.
-        await pageD.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 15_000 });
+        await pageD.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 15_000 });
 
         await ctxD.setOffline(true);
         await pageD.reload({ waitUntil: 'load' });
@@ -667,7 +667,7 @@ async function main() {
       await pageM.waitForFunction(() => {
         const app = document.querySelector('#app'), denied = document.querySelector('#denied');
         return (app && app.style.display !== 'none') || (denied && denied.style.display !== 'none');
-      }, { timeout: 10_000 });
+      }, undefined, { timeout: 10_000 });
       if (await pageM.locator('#denied').isVisible()) throw new Error('mobile admin test user was denied access to /admin.html — GAUNTLET_ADMINS wiring is broken');
       if (!(await pageM.locator('#app').isVisible())) throw new Error('#app should be visible for an admin user on /admin.html');
 
@@ -817,7 +817,7 @@ async function main() {
       await pageD.waitForSelector('#touch.touch-force', { timeout: 5_000 });
       // Let client/game.js's layoutGame() run at least one resize/HUD pass (it also fires from the
       // 'players' packet renderHud() handles) before reading boxes back.
-      await pageD.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, { timeout: 10_000 });
+      await pageD.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, undefined, { timeout: 10_000 });
       await pageD.waitForTimeout(200);
 
       // Scoped to the game view (#session) + the touch band, not document.documentElement.scrollWidth
@@ -864,7 +864,7 @@ async function main() {
       const pageU = await ctxU.newPage(); attach(pageU, 'U');
       try {
         await pageU.goto(`${baseUrl}/`, { waitUntil: 'load' });
-        await pageU.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 15_000 });
+        await pageU.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 15_000 });
         // client/sw.js's activate() posts its "updated" message on every activation, including this
         // very first install (there's no previous version to distinguish it from) — so a real toast
         // is expected here too, before this scenario's own check even starts. Wait for and clear it
