@@ -9,12 +9,12 @@
 // lines are NOT added to the manifest, so the game keeps using speechSynthesis for them until
 // ffmpeg is installed and the script is re-run.
 //
-// If ELEVENLABS_API_KEY is not set, this prints setup instructions and exits 0 (not an error —
-// the game already falls back to speechSynthesis for any line with no pre-rendered clip, so a
-// fresh checkout works fine without ever running this script).
+// If ELEVENLABS_API_KEY is not set, this prints setup instructions and
+// exits 0 (not an error — the game already falls back to speechSynthesis for any line with no
+// pre-rendered clip, so a fresh checkout works fine without ever running this script).
 //
 // Usage:
-//   ELEVENLABS_API_KEY=... [ELEVENLABS_VOICE_ID=...] node tools/generate-voice.mjs [id ...]
+//   ELEVENLABS_API_KEY=... [ELEVENLABS_VOICE_ID=...] [ELEVENLABS_MODEL_ID=eleven_multilingual_v2] node tools/generate-voice.mjs [id ...]
 // With no ids given, every line in voice-lines.json is (re)generated.
 
 import fs from 'node:fs/promises';
@@ -43,7 +43,7 @@ async function synthesize(voiceId, apiKey, text) {
   const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
     method: 'POST',
     headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', accept: 'audio/mpeg' },
-    body: JSON.stringify({ text, model_id: 'eleven_monolingual_v1', voice_settings: { stability: 0.5, similarity_boost: 0.6 } }),
+    body: JSON.stringify({ text, model_id: process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2', voice_settings: { stability: 0.5, similarity_boost: 0.6 } }),
   });
   if (!res.ok) throw new Error(`ElevenLabs API ${res.status}: ${await res.text().catch(() => '')}`);
   return Buffer.from(await res.arrayBuffer());
@@ -59,7 +59,11 @@ pre-rendered clip, so this is optional. To generate real clips:
   2. Optionally pick a voice id from https://elevenlabs.io/app/voice-library (Profile -> Voices),
      or use the built-in default.
   3. Run:
-       ELEVENLABS_API_KEY=sk-... [ELEVENLABS_VOICE_ID=voice_id] node tools/generate-voice.mjs
+       ELEVENLABS_API_KEY=sk-... [ELEVENLABS_VOICE_ID=voice_id] [ELEVENLABS_MODEL_ID=model_id] \\
+       node tools/generate-voice.mjs
+
+     ELEVENLABS_MODEL_ID optionally
+     overrides the ElevenLabs model used for synthesis (defaults to eleven_multilingual_v2).
 
 Install ffmpeg (any recent version on PATH) for the extra 8kHz "arcade narrator" bit-crush pass;
 without it, clips are written unmodified (as .mp3 instead of .ogg — client/voice.js requests

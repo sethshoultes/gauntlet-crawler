@@ -5,6 +5,7 @@
 // and, best-effort, inserts a row into the `errors` table (see server/db.js) so the admin
 // dashboard can list recent failures from both the server and the browser.
 import { db, now } from './db.js';
+import { captureError } from './sentry.js';
 
 let insertErrorStmt = null;
 function insertError() {
@@ -64,7 +65,9 @@ export function info(msg, fields = {}) { emit('info', msg, fields); }
 export function warn(msg, fields = {}) { emit('warn', msg, fields); }
 
 /** Log an error line and persist it to the `errors` table. `fields.source` defaults to 'server';
- *  pass 'client' (see recordClientError) for browser-reported errors. Never throws. */
+ *  pass 'client' (see recordClientError) for browser-reported errors. Never throws. The
+ *  first-party `errors` table above is the default and always runs regardless of Sentry; the
+ *  captureError() forward below is strictly additional and a no-op unless SENTRY_DSN is set. */
 export function error(msg, fields = {}) {
   emit('error', msg, fields);
   try {
@@ -78,6 +81,7 @@ export function error(msg, fields = {}) {
       fields.ua ? String(fields.ua).slice(0, 300) : null,
     );
   } catch { /* logging must never itself crash the request handler */ }
+  try { captureError(msg, fields); } catch { /* never let Sentry forwarding affect the caller */ }
 }
 
 /** Store a browser-reported error (POST /api/client-errors in server/index.js). Caller is

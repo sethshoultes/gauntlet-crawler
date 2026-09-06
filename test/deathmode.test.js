@@ -102,6 +102,42 @@ test('death mode ends the run once the party clears the rank-gated level cap, an
   } finally { room.close(); }
 });
 
+test('endRun records every connected player (guest and logged-in) to the arcade high-score board, and flags a qualifying score in the gameover broadcast (#14)', () => {
+  const room = makeDeathRoom({ id: 'd-highscore' });
+  try {
+    const wsA = fakeWs(), wsB = fakeWs();
+    const user = { id: 777001, username: 'HsTester' };
+    room.join(wsA, { pid: 'a', user, name: 'HsTester', cls: 'warrior' });
+    room.start('a'); // solo host — allowed to start unready
+    room.join(wsB, { pid: 'b', user: null, guestId: 'guest-hs-1', name: 'GuestHero', cls: 'elf' }); // late joiner, room already playing
+    const guestId = room.clients.get('b').guestId; // join() may mint its own signed id rather than trust the raw one passed in
+    room.sim.players.get('a').score = 999999; // certain to be the all-time #1 on a fresh board
+    room.sim.players.get('b').score = 5;
+    room.levelIndex = 99;
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    clearTimeout(room.levelChangeTimer); room.levelChangeTimer = null;
+    room.endRun('cap');
+
+    const overMsg = wsA.sent.find((m) => m.t === 'gameover');
+    const aEntry = overMsg.scores.find((s) => s.pid === 'a');
+    const bEntry = overMsg.scores.find((s) => s.pid === 'b');
+    assert.ok(Number.isInteger(aEntry.runId), 'the high score run id is attached to the scores[] entry');
+    assert.equal(aEntry.hs, true, 'a huge score on a near-empty board qualifies for the top 10');
+    assert.ok(Number.isInteger(bEntry.runId), 'a guest also gets a recorded run id');
+
+    const row = db.prepare('SELECT * FROM highscores WHERE id = ?').get(aEntry.runId);
+    assert.equal(row.user_id, user.id);
+    assert.equal(row.username, 'HsTester');
+    assert.equal(row.score, 999999);
+    assert.equal(row.initials, null);
+
+    const guestRow = db.prepare('SELECT * FROM highscores WHERE id = ?').get(bEntry.runId);
+    assert.equal(guestRow.user_id, null);
+    assert.equal(guestRow.guest_id, guestId);
+    assert.equal(guestRow.score, 5);
+  } finally { room.close(); }
+});
+
 test('death mode ends the run as a wipe once everyone stays dead past the grace period', () => {
   const room = makeDeathRoom({ id: 'd-wipe' });
   try {

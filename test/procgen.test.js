@@ -84,6 +84,37 @@ test('a skip-exit (8) can appear on deeper levels and still counts as a valid ex
   assert.ok(sawSkip, 'a skip-exit tile appeared in at least one of the sampled seeds');
 });
 
+test('amulets appear occasionally and boosts rarely, more often on deeper levels, without breaking validity', () => {
+  const countOf = (lvl, chars) => lvl.rows.join('').split('').filter((c) => chars.includes(c)).length;
+  let shallowAmulets = 0, deepAmulets = 0, deepBoosts = 0;
+  for (let i = 0; i < 40; i++) {
+    const shallow = generateLevel({ seed: `am-shallow-${i}`, level: 2 });
+    const deep = generateLevel({ seed: `am-deep-${i}`, level: 30 });
+    assert.deepEqual(validateLevel(shallow), [], `shallow seed ${i}`);
+    assert.deepEqual(validateLevel(deep), [], `deep seed ${i}`);
+    shallowAmulets += countOf(shallow, 'IROU');
+    deepAmulets += countOf(deep, 'IROU');
+    deepBoosts += countOf(deep, 'VABQN');
+  }
+  assert.ok(deepAmulets > shallowAmulets, 'deeper levels see more amulets than shallow ones over many seeds');
+  assert.ok(deepBoosts > 0, 'permanent boosts show up at least occasionally on deep levels');
+  // Level 1 never gets boosts (gated at diff >= 4) — a sanity check the gate actually holds.
+  let level1Boosts = 0;
+  for (let i = 0; i < 20; i++) level1Boosts += countOf(generateLevel({ seed: `am-l1-${i}`, level: 1 }), 'VABQN');
+  assert.equal(level1Boosts, 0, 'boosts never appear this early');
+});
+
+test('an "amulet"/"boost" prompt bias raises the chance without breaking validity', () => {
+  const b1 = biasFromPrompt('grab the amulet of invisibility');
+  assert.equal(b1.amulet, 1);
+  const b2 = biasFromPrompt('a rare power-up awaits');
+  assert.equal(b2.boost, 1);
+  for (let level = 2; level <= 40; level += 6) {
+    const lvl = generateLevel({ seed: `bias-${level}`, level, bias: { amulet: 1, boost: 1 } });
+    assert.deepEqual(validateLevel(lvl), [], `level ${level}`);
+  }
+});
+
 test('generateTreasureRoom produces an open, monster-free room with several exits that validates', () => {
   const room = generateTreasureRoom({ seed: 'bonus', level: 6 });
   assert.deepEqual(validateLevel(room), []);

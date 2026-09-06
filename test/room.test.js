@@ -10,6 +10,7 @@ process.env.DATA_DIR = mkdtempSync(path.join(tmpdir(), 'gauntlet-room-test-'));
 const { Room } = await import('../server/game/room.js');
 const { db, now } = await import('../server/db.js');
 const stats = await import('../server/stats.js');
+const { LEVEL1 } = await import('../shared/levels/level1.js');
 
 function fakeWs() {
   const sent = [];
@@ -636,6 +637,227 @@ test('chat trims/caps text, drops empty messages, and throttles a flooding clien
     const got = ws.sent.filter((m) => m.t === 'chat').length;
     assert.ok(got <= 10, `a flooding client is throttled well below 20 messages (got ${got})`);
     assert.ok(got >= 1, 'at least the first few messages still get through');
+  } finally { room.close(); }
+});
+
+test('collecting all four amulet kinds in one run unlocks the Amulet Collector achievement', () => {
+  const room = makeRoom({ id: 'amulets-1' });
+  try {
+    const ws = fakeWs();
+    const user = makeUser();
+    room.join(ws, { pid: 'a', user, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    ws.sent.length = 0;
+
+    for (const item of ['I', 'R']) room.onEvent({ type: 'pickup', pid: 'a', item, x: 1, y: 1 });
+    assert.equal(ws.sent.some((m) => m.t === 'ach'), false, 'not unlocked with only two of the four kinds');
+
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'O', x: 1, y: 1 });
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'U', x: 1, y: 1 });
+    const ach = ws.sent.find((m) => m.t === 'ach');
+    assert.ok(ach, 'the achievement unlocked once the fourth distinct kind was collected');
+    assert.equal(ach.ach.id, 'amulet_collector');
+    assert.ok(stats.getAchievementIds(user.id).has('amulet_collector'));
+
+    // Re-collecting the same kind again doesn't re-fire it.
+    ws.sent.length = 0;
+    room.onEvent({ type: 'pickup', pid: 'a', item: 'I', x: 1, y: 1 });
+    assert.equal(ws.sent.some((m) => m.t === 'ach'), false);
+  } finally { room.close(); }
+});
+
+// ---------- local co-op (#15): joinLocal binds a second/third/fourth player to one connection ----------
+test('joinLocal adds another player bound to the same ws, ready by default, capped by MAX_PLAYERS', () => {
+  const room = makeRoom({ id: 'local-1' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    const local = room.joinLocal(ws, { pid: 'aL1', name: 'Ann P2', cls: 'elf', palette: null });
+    assert.equal(local.ready, true, 'a local player never blocks the room ready-up gate');
+    assert.equal(local.ws, ws, 'a local player shares the primary connection\'s socket');
+    assert.equal(room.clients.size, 2);
+
+    room.joinLocal(ws, { pid: 'aL2', name: 'Ann P3', cls: 'wizard', palette: null });
+    room.joinLocal(ws, { pid: 'aL3', name: 'Ann P4', cls: 'valkyrie', palette: null });
+    assert.equal(room.clients.size, 4, 'room now full at MAX_PLAYERS');
+    assert.throws(() => room.joinLocal(ws, { pid: 'aL4', name: 'Ann P5', cls: 'warrior' }), /full/i);
+  } finally { room.close(); }
+});
+
+test('joinLocal mid-game spawns the local player straight into the sim, and leave() removes it cleanly', () => {
+  const room = makeRoom({ id: 'local-2' });
+  try {
+    const ws = fakeWs();
+    room.join(ws, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    room.joinLocal(ws, { pid: 'aL1', name: 'Ann P2', cls: 'elf', palette: null });
+    assert.ok(room.sim.players.has('aL1'), 'a local player joining mid-game gets a sim entity immediately, like a late joiner');
+
+    room.leave('aL1');
+    assert.equal(room.clients.has('aL1'), false);
+    assert.equal(room.sim.players.has('aL1'), false);
+    assert.equal(room.clients.has('a'), true, 'the primary player is unaffected by a local player leaving');
+  } finally { room.close(); }
+});
+
+// ---------- It tag mode (#13) ----------
+
+test('itMode is off by default and only the host can turn it on, via setSettings', () => {
+  const room = makeRoom({ id: 'it-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    assert.equal(room.itMode, false);
+    assert.throws(() => room.setSettings('b', { itMode: true }), /host/i);
+    room.setSettings('a', { itMode: true });
+    assert.equal(room.itMode, true);
+    assert.equal(room.info().itMode, true, 'reflected in the room info sent to clients');
+    room.setSettings('a', { itMode: false });
+    assert.equal(room.itMode, false);
+  } finally { room.close(); }
+});
+
+test('starting a room with itMode on and 2+ players tags one of them It', () => {
+  const room = makeRoom({ id: 'it-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setSettings('a', { itMode: true });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    assert.ok(room.sim.itPid === 'a' || room.sim.itPid === 'b', 'one of the two players is tagged It at level start');
+  } finally { room.close(); }
+});
+
+test('itMode has no effect solo — nobody is It with just one player, even with the option on', () => {
+  const room = makeRoom({ id: 'it-3' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.setSettings('a', { itMode: true });
+    room.start('a'); // a lone host may start unready
+    assert.equal(room.sim.itPid, null);
+  } finally { room.close(); }
+});
+
+test('itMode off never tags anyone, even with 2+ players', () => {
+  const room = makeRoom({ id: 'it-4' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    assert.equal(room.sim.itPid, null, 'itMode defaults to off');
+  } finally { room.close(); }
+});
+
+test('a fresh level start re-tags It, via advanceLevel', () => {
+  const room = makeRoom({ id: 'it-5' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.join(fakeWs(), { pid: 'b', user: null, name: 'Bea', cls: 'elf' });
+    room.setSettings('a', { itMode: true });
+    room.setReady('a', true); room.setReady('b', true);
+    room.start('a');
+    room.onEvent({ type: 'exit', pid: 'a', levelTime: 5 });
+    clearTimeout(room.levelChangeTimer); room.levelChangeTimer = null;
+    room.advanceLevel();
+    assert.equal(room.levelIndex, 2);
+    assert.ok(room.sim.itPid === 'a' || room.sim.itPid === 'b', 'the new level assigned a fresh It tag');
+  } finally { room.close(); }
+});
+
+// ---------- debug 'loadLevel' hook (#35, test/e2e-features.mjs) ----------
+// A minimal valid level (parseLevel needs >=12x12, a start, and an exit) with one extra tile
+// placed at (tx,ty) so a test can plant a specific hazard/pickup glyph without hand-rolling a
+// full grid each time.
+function fixtureRows({ tile = '.', tx = 5, ty = 5 } = {}) {
+  const w = 12, h = 12;
+  const rows = [];
+  for (let y = 0; y < h; y++) {
+    let row = '';
+    for (let x = 0; x < w; x++) {
+      if (y === 0 || y === h - 1 || x === 0 || x === w - 1) row += '#';
+      else if (x === 1 && y === 1) row += 'S';
+      else if (x === w - 2 && y === h - 2) row += 'E';
+      else if (x === tx && y === ty) row += tile;
+      else row += '.';
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+test('debug loadLevel swaps the live level for a fixture grid, keeping the level index', () => {
+  const room = makeRoom({ id: 'dbg-1' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    assert.equal(room.levelIndex, 1);
+    room.debugAction('loadLevel', { rows: fixtureRows({ tile: 'R', tx: 3, ty: 1 }) });
+    assert.equal(room.levelIndex, 1, 'levelIndex is unchanged by a fixture swap');
+    assert.equal(room.sim.level.name, 'Debug Fixture');
+    assert.equal(room.sim.grid[1][3], 'R', 'the requested tile landed at the requested coordinates');
+    const p = room.sim.players.get('a');
+    assert.equal(p.x, 1.5); assert.equal(p.y, 1.5); // placed at the fixture's own start tile
+  } finally { room.close(); }
+});
+
+test('debug loadLevel clears amulets/stun and honors a timers override for a timed wall', () => {
+  const room = makeRoom({ id: 'dbg-2' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    const p = room.sim.players.get('a');
+    p.amulets = { reflect: 20 }; p.stunTicks = 30; p.stunImmuneTicks = 90;
+    room.debugAction('loadLevel', { rows: fixtureRows({ tile: '^', tx: 3, ty: 1 }), timers: { wall: 2.5 } });
+    assert.deepEqual(room.sim.players.get('a').amulets, {}, 'a fixture load clears temporary amulets, same as any other level load');
+    assert.equal(room.sim.players.get('a').stunTicks, 0);
+    assert.equal(room.sim.timedWalls.length, 1);
+    assert.equal(room.sim.timedWalls[0].remaining, 2.5, 'the timers override shortens the default 30s countdown');
+  } finally { room.close(); }
+});
+
+test('debug loadLevel with treasureRoom:true flags the sim and broadcasts the bonus banner', () => {
+  const room = makeRoom({ id: 'dbg-3' });
+  const wsA = fakeWs();
+  try {
+    room.join(wsA, { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    wsA.sent.length = 0;
+    room.debugAction('loadLevel', { rows: fixtureRows(), treasureRoom: true });
+    assert.equal(room.sim.treasureRoom, true);
+    const bonus = wsA.sent.find((m) => m.t === 'bonus');
+    assert.ok(bonus, 'a treasure-room fixture load broadcasts the same bonus banner advanceLevel() sends');
+    assert.equal(bonus.mystery, false);
+  } finally { room.close(); }
+});
+
+test('debug loadLevel is a no-op outside "playing" state, or with malformed rows', () => {
+  const room = makeRoom({ id: 'dbg-4' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    // still in the lobby: no sim to swap into yet.
+    room.debugAction('loadLevel', { rows: fixtureRows() });
+    assert.equal(room.state, 'lobby');
+    assert.equal(room.sim.level.name, LEVEL1.name);
+    room.start('a');
+    room.debugAction('loadLevel', { rows: 'not-an-array' });
+    assert.equal(room.sim.level.name, LEVEL1.name, 'malformed rows leave the current level untouched');
+  } finally { room.close(); }
+});
+
+test('debug loadLevel does not throw when rows is an array but fails parseLevel validation', () => {
+  // Below MIN_SIZE (shared/level.js), so Sim#loadLevel's parseLevel() call throws inside
+  // Room#debugAction. This used to propagate straight out of debugAction() uncaught — harmless
+  // only because server/index.js's ws message handler happens to wrap the whole dispatch in a
+  // try/catch; debugAction() itself must not rely on that.
+  const room = makeRoom({ id: 'dbg-5' });
+  try {
+    room.join(fakeWs(), { pid: 'a', user: null, name: 'Ann', cls: 'warrior' });
+    room.start('a');
+    assert.doesNotThrow(() => room.debugAction('loadLevel', { rows: ['###', '#S#', '###'] }));
+    assert.equal(room.state, 'playing', 'the room keeps running after a rejected fixture');
+    assert.equal(room.sim.level.name, LEVEL1.name, 'the too-small fixture never replaced the live level');
   } finally { room.close(); }
 });
 

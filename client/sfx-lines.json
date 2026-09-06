@@ -41,5 +41,9 @@
   "kill_death": { "prompt": "8-bit arcade death-monster dying moan, long wavering falling sine wave, chiptune, retro game sound effect, mono, dry, no music, no reverb", "seconds": 1.2 },
   "kill_lobber": { "prompt": "short 8-bit arcade lobber monster death plop, falling sine wave with a noise blip, chiptune, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.3 },
   "kill_sorcerer": { "prompt": "very short 8-bit arcade sorcerer blink-away death, quick falling sine wave, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.2 },
-  "kill_thief": { "prompt": "short 8-bit arcade thief death snicker, two quick rising square wave notes, chiptune, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.25 }
+  "kill_thief": { "prompt": "short 8-bit arcade thief death snicker, two quick rising square wave notes, chiptune, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.25 },
+  "amulet": { "prompt": "8-bit arcade temporary amulet pickup sparkle, two rising sine wave chimes, chiptune, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.4 },
+  "boost": { "prompt": "8-bit arcade permanent power-up fanfare, three bright rising square wave chord notes, chiptune, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.5 },
+  "stun": { "prompt": "8-bit arcade stun tile electric zap, high-pass white-noise burst with a wavering square wave tone, chiptune, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.3 },
+  "spark": { "prompt": "very short 8-bit arcade force-field shot impact spark, high falling square wave tick with a brief high-pass noise burst, retro game sound effect, mono, dry, no music, no reverb", "seconds": 0.15 }
 }

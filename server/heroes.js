@@ -9,6 +9,7 @@ import { db, now } from './db.js';
 import { rankForXp } from '../shared/progression.js';
 import { getStats, getAchievementIds, bumpXp } from './stats.js';
 import { STATS, budgetFor, unlockedBuilderItems, validateHero, toClassDef } from '../shared/hero-builder.js';
+import { generateHeroFromPrompt, aiAvailable } from './ai/herogen.js';
 
 const MAX_HEROES_PER_USER = 5;
 
@@ -113,6 +114,22 @@ export async function handle(req, res, url, user) {
     const rows = galleryPage.all(limit, (page - 1) * limit);
     const total = galleryCount.get().n;
     return json(res, 200, { heroes: rows.map((r) => ({ ...rowToHero(r), author: r.author })), total, page, limit });
+  }
+
+  // ----- AI Assist: suggest a build/sprite from a text prompt. Never saves — the client loads the
+  // suggestion into the editor and saves normally through POST /api/heroes above. Reuses the same
+  // rank-3 unlock as the rest of the builder (validateHero would reject a below-budget hero anyway,
+  // but that only fires after a wasted AI call, so check it up front here). -----
+  if (m === 'POST' && seg[2] === 'ai') {
+    const u = need(user);
+    const profile = profileFor(u);
+    if (budgetFor(profile.rank, profile.achievements) <= 0) return json(res, 400, { error: 'Hero Builder unlocks at rank 3' });
+    const body = await readBody(req);
+    const prompt = typeof body.prompt === 'string' ? body.prompt.trim().slice(0, 300) : '';
+    if (!prompt) return json(res, 400, { error: 'Describe your hero first' });
+    if (!rateLimit('heroes:ai:' + u.id, 1, 10_000)) return json(res, 429, { error: 'Slow down: 1 AI suggestion per 10 seconds' });
+    const out = await generateHeroFromPrompt({ prompt, rank: profile.rank, achievements: profile.achievements });
+    return json(res, 200, { ...out, aiAvailable: aiAvailable() });
   }
 
   if (m === 'POST' && seg.length === 2) { // POST /api/heroes — create or update

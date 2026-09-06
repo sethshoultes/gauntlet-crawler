@@ -1,6 +1,6 @@
 // Endless procedural dungeon generator. Deterministic for (seed, level).
 // Difficulty scales with level number: bigger maps, more generators, nastier monsters, less food.
-import { T } from './constants.js';
+import { T, GENERATOR_TILES } from './constants.js';
 import { makeRng, hashSeed } from './rng.js';
 import { parseLevel, exitReachable, repairLevel, validateLevel } from './level.js';
 
@@ -100,6 +100,14 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   const ciderN = clamp((bias.cider ? rng.int(1, 2) : 0) + (rng.chance(0.25) ? 1 : 0), 0, 3);
   place(T.POISON_FOOD, poisonN);
   place(T.CIDER, ciderN);
+  // Amulets (README's "Features" section, "Amulets and boosts"): temporary power-ups, occasional
+  // from level 2 on and more likely the deeper the party goes. Permanent boosts are much rarer and
+  // only start appearing on level 4+, since they persist for the whole run.
+  const amuletTiles = [T.AMULET_INVIS, T.AMULET_REFLECT, T.AMULET_REPULSE, T.AMULET_SUPER];
+  const amuletN = diff >= 2 && rng.chance(clamp(0.12 + diff * 0.01 + (bias.amulet ? 0.25 : 0), 0, 0.6)) ? rng.int(1, 2) : 0;
+  for (let i = 0; i < amuletN; i++) place(rng.pick(amuletTiles), 1);
+  const boostTiles = [T.BOOST_SPEED, T.BOOST_ARMOR, T.BOOST_SHOT, T.BOOST_FIRE_RATE, T.BOOST_MAGIC];
+  if (diff >= 4 && rng.chance(clamp(0.06 + diff * 0.004 + (bias.boost ? 0.15 : 0), 0, 0.3))) place(rng.pick(boostTiles), 1);
   // Transporter pair (README's "Features" section, "Transporters"): teleports the party between two spots. Two X tiles must be placed
   // together, or not at all.
   if (diff >= 2 && rng.chance(0.15 + diff * 0.005 + (bias.teleport ? 0.3 : 0)) && cells.length >= 2) {
@@ -130,7 +138,9 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   const thiefChance = (bias.thief ? 0.35 : 0) + (diff >= 4 ? 0.1 + diff * 0.005 : 0);
   if (rng.chance(clamp(thiefChance, 0, 0.6))) place(T.THIEF, 1);
 
-  // 7. Secret walls: turn a few dead-end wall tiles next to floors into W
+  // 7. Secret walls: turn a few dead-end wall tiles next to floors into W — or, occasionally on
+  // deeper levels, a timed wall/timed-exit-wall shortcut (#11) that opens on its own after a
+  // countdown instead of needing a touch.
   if (diff >= 2) {
     const candidates = [];
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
@@ -139,7 +149,68 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
       if (n === 2 && ((g[y - 1][x] === T.FLOOR && g[y + 1][x] === T.FLOOR) || (g[y][x - 1] === T.FLOOR && g[y][x + 1] === T.FLOOR))) candidates.push([x, y]);
     }
     rng.shuffle(candidates);
-    for (let i = 0; i < Math.min(candidates.length, rng.int(1, 3)); i++) { const [x, y] = candidates[i]; g[y][x] = T.TRAP; }
+    for (let i = 0; i < Math.min(candidates.length, rng.int(1, 3)); i++) {
+      const [x, y] = candidates[i];
+      let glyph = T.TRAP;
+      if (diff >= 3 && rng.chance(0.2)) glyph = rng.chance(0.7) ? T.TIMED_WALL : T.TIMED_WALL_EXIT;
+      g[y][x] = glyph;
+    }
+  }
+
+  // 8. Pressure-plate wall group puzzle (#11): occasionally (levels 3+) seal a small treasure
+  // vault behind a wall group carved into the solid rock just outside a non-start/exit room, with
+  // the matching plate placed elsewhere in the level as an environmental puzzle. shared/level.js's
+  // exitReachable() only ever treats a group wall as passable when its plate is present, which is
+  // guaranteed here since both are always placed together.
+  if (diff >= 3 && rng.chance(0.35)) {
+    const groups = [[T.TRAP_PLATE_A, T.TRAP_WALL_A], [T.TRAP_PLATE_B, T.TRAP_WALL_B], [T.TRAP_PLATE_C, T.TRAP_WALL_C]];
+    const [plateGlyph, wallGlyph] = rng.pick(groups);
+    const others = rooms.filter((r) => r !== startRoom && r !== exitRoom);
+    for (const room of rng.shuffle((others.length ? others : rooms).slice())) {
+      const vault = carveAlcove(g, w, h, room, rng);
+      if (!vault.length) continue;
+      for (const [gx, gy, px, py] of vault) { g[gy][gx] = wallGlyph; g[py][px] = T.TREASURE; }
+      const plateSpot = (cells.length ? cells : freeCells()).pop();
+      if (plateSpot) g[plateSpot[1]][plateSpot[0]] = plateGlyph;
+      break;
+    }
+  }
+
+  // 9. Environmental hazards (#12, arcade parity): acid puddles, an occasional stun tile, and force
+  // fields guarding a generator's approach. All three are walkable (a force field only blocks
+  // shots), so scattering them can never break reachability the way a wall-like tile could — no
+  // extra exitReachable bookkeeping needed, unlike the plate puzzle above.
+  if (diff >= 5) {
+    const isInRoom = (x, y) => rooms.some((r) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h);
+    const corridorCells = (cells.length ? cells : freeCells()).filter(([x, y]) => !isInRoom(x, y));
+    const acidN = clamp(Math.round(1 + diff * 0.15), 1, 6);
+    for (let i = 0; i < acidN && corridorCells.length; i++) {
+      const [x, y] = corridorCells.splice(rng.int(0, corridorCells.length - 1), 1)[0];
+      if (g[y][x] === T.FLOOR) g[y][x] = T.ACID;
+    }
+    // A stun tile next to a treasure tile, occasionally — guards the loot without blocking it.
+    if (rng.chance(0.3)) {
+      const treasureSpots = [];
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) if (g[y][x] === T.TREASURE) treasureSpots.push([x, y]);
+      for (const [tx, ty] of rng.shuffle(treasureSpots)) {
+        const spot = rng.shuffle([[tx + 1, ty], [tx - 1, ty], [tx, ty + 1], [tx, ty - 1]]).find(([nx, ny]) => g[ny]?.[nx] === T.FLOOR);
+        if (spot) { g[spot[1]][spot[0]] = T.STUN_TILE; break; }
+      }
+    }
+    // Force fields gate a generator's approach tiles: a shot can't reach it from outside the gate,
+    // but walking up to it (force fields never block movement) works exactly as before.
+    if (rng.chance(0.4)) {
+      const genSpots = [];
+      for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) if (GENERATOR_TILES.has(g[y][x])) genSpots.push([x, y]);
+      if (genSpots.length) {
+        const [gx, gy] = rng.pick(genSpots);
+        let placed = 0;
+        for (const [nx, ny] of rng.shuffle([[gx + 1, gy], [gx - 1, gy], [gx, gy + 1], [gx, gy - 1]])) {
+          if (placed >= 2) break;
+          if (g[ny]?.[nx] === T.FLOOR) { g[ny][nx] = T.FORCE_FIELD; placed++; }
+        }
+      }
+    }
   }
 
   let lvl = {
@@ -172,12 +243,35 @@ export function biasFromPrompt(prompt = '') {
     teleport: has('teleport', 'transporter', 'portal', 'warp') ? 1 : 0,
     poison: has('poison', 'toxic', 'venom', 'venomous') ? 1 : 0,
     cider: has('cider', 'ale', 'mead', 'tavern', 'drink') ? 1 : 0,
+    amulet: has('amulet', 'invisib', 'reflect', 'repuls', 'super shot', 'pierce') ? 1 : 0,
+    boost: has('boost', 'power up', 'power-up', 'powerup', 'upgrade') ? 1 : 0,
   };
+}
+
+/** Deterministic level name for a seed, independent of generateLevel()'s own internal rng use (that
+ *  rng is consumed room-by-room before it ever reaches the name pick, so re-deriving a name from
+ *  the same seed there would silently change with unrelated generator tweaks). Reused by
+ *  server/ai/levelgen.js's describeLevel() as the "no AI credentials" fallback name for both
+ *  procedural levels and AI remixes. */
+export function nameForSeed(seed, level = 1) {
+  const rng = makeRng(hashSeed(`name:${seed}:${level}`));
+  return `${rng.pick(ADJ)} ${rng.pick(THEMES)}`;
 }
 
 /** Bonus level (README's "Features" section, "Bonus treasure rooms"): an open room full of treasure, no monsters, several exits. See
  *  server/game/room.js — after every 5th campaign level, levelFor() returns this instead of a
- *  regular generated level; Sim.loadLevel({treasureRoom:true}) starts a 30s auto-complete timer. */
+ *  regular generated level; Sim.loadLevel({treasureRoom:true}) starts a 30s auto-complete timer.
+ *
+ *  Mystery variant (#13, arcade parity: Gauntlet II's level-8-style secret vaults): every other
+ *  treasure room a run reaches conceals its exits behind T.HIDDEN_EXIT instead of a plain T.EXIT,
+ *  plus a T.SWITCH tile across the room from the entrance — either throwing the switch or picking
+ *  up every last piece of treasure reveals them all at once (server/game/sim.js
+ *  revealHiddenExits()). `level` is always this room's own campaign level number (6, 12, 18, …, see
+ *  Room#isTreasureLevel), so "every other" is simply every other *occurrence*, not a coin flip —
+ *  deterministic for a given run regardless of seed (the seed still drives everything about the
+ *  room's own layout). A treasure room is, by construction, always full of T.TREASURE, so
+ *  shared/level.js's exitReachable() rule for hidden exits (switch-or-treasure) is always satisfied
+ *  here. */
 export function generateTreasureRoom({ seed, level = 1 } = {}) {
   const rng = makeRng(hashSeed(`treasure:${seed}:${level}`));
   const w = 22, h = 16;
@@ -187,11 +281,22 @@ export function generateTreasureRoom({ seed, level = 1 } = {}) {
   const midY = h >> 1;
   g[midY][1] = T.START; g[midY][2] = T.START;
   g[midY - 1][1] = T.START; g[midY + 1][1] = T.START;
+  const roomNum = Math.floor(level / 6) - 1; // 0 for the first treasure room (level 6), 1 for the second (level 12), ...; floor so a stray non-multiple never rounds up into the next room's parity
+  const mystery = roomNum % 2 === 1;
   const exitSpots = rng.shuffle([[w - 2, 2], [w - 2, midY], [w - 2, h - 3], [w >> 1, h - 2], [w >> 1, 2]]).slice(0, rng.int(3, 4));
-  for (const [ex, ey] of exitSpots) g[ey][ex] = T.EXIT;
+  for (const [ex, ey] of exitSpots) g[ey][ex] = mystery ? T.HIDDEN_EXIT : T.EXIT;
+  if (mystery) {
+    // Across the room from the entrance (start sits against the west wall) — finding it takes a
+    // real lap of the vault, not just a lucky first step. Any of these candidate spots is still
+    // solid rock or plain treasure at this point, so overwriting it is always safe.
+    const [swx, swy] = rng.pick([[w - 3, h - 3], [w - 3, 2], [(w >> 1) + 2, midY]]);
+    g[swy][swx] = T.SWITCH;
+  }
   let lvl = {
-    name: 'Treasure Vault',
-    description: `Grab everything before the ${30}s timer runs out — any exit will do.`,
+    name: mystery ? 'Mystery Vault' : 'Treasure Vault',
+    description: mystery
+      ? `Find the concealed exit — or the switch that reveals it — before the ${30}s timer runs out.`
+      : `Grab everything before the ${30}s timer runs out — any exit will do.`,
     rows: g.map((r) => r.join('')),
   };
   if (!exitReachable(parseLevel(lvl))) lvl = repairLevel(lvl);
@@ -200,3 +305,34 @@ export function generateTreasureRoom({ seed, level = 1 } = {}) {
 }
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+/** Find up to 3 single-tile vault pockets carved into the untouched solid rock just outside
+ *  `room`'s border ring (see generateLevel's pressure-plate puzzle step, #11): a wall tile
+ *  adjacent to the room (the "gate", which the caller turns into a wall-group glyph) with solid
+ *  rock directly beyond it (the "pocket", which becomes a sealed treasure tile). The pocket's own
+ *  perpendicular neighbours must not already be floor, so this never punches into another room or
+ *  corridor that happens to run close by. Returns [[gateX, gateY, pocketX, pocketY], ...]. */
+function carveAlcove(g, w, h, room, rng) {
+  const solidRock = (x, y) => x > 0 && y > 0 && x < w - 1 && y < h - 1 && g[y][x] === T.WALL;
+  const isFloor = (x, y) => x >= 0 && y >= 0 && x < w && y < h && g[y][x] === T.FLOOR;
+  const sides = rng.shuffle([
+    { cells: Array.from({ length: room.w }, (_, i) => [room.x + i, room.y - 1]), dir: [0, -1] },
+    { cells: Array.from({ length: room.w }, (_, i) => [room.x + i, room.y + room.h]), dir: [0, 1] },
+    { cells: Array.from({ length: room.h }, (_, i) => [room.x - 1, room.y + i]), dir: [-1, 0] },
+    { cells: Array.from({ length: room.h }, (_, i) => [room.x + room.w, room.y + i]), dir: [1, 0] },
+  ]);
+  for (const side of sides) {
+    const found = [];
+    for (const [gx, gy] of side.cells) {
+      if (!solidRock(gx, gy)) continue;
+      const [dx, dy] = side.dir;
+      const px = gx + dx, py = gy + dy;
+      if (!solidRock(px, py)) continue;
+      if (isFloor(px + dy, py + dx) || isFloor(px - dy, py - dx)) continue; // too close to another room/corridor
+      found.push([gx, gy, px, py]);
+      if (found.length >= 3) break;
+    }
+    if (found.length) return found;
+  }
+  return [];
+}
