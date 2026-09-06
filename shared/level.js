@@ -54,9 +54,10 @@ export function validateLevel(raw) {
 }
 
 const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-// Above this many door clusters exitReachable() switches from its exact search to a greedy pass —
-// see the comment at that switch. 20 keeps the exact search's bitmask well inside 31 bits and its
-// worst-case state count (2^20 regions) tolerable for the one-off validation calls it serves.
+// Above this many door clusters exitReachable() switches from its exact search to an optimistic
+// all-doors-open check — see the comment at that switch. 20 keeps the exact search's bitmask well
+// inside 31 bits and its worst-case state count (2^20 regions) tolerable for the one-off
+// validation calls it serves.
 const MAX_EXACT_DOOR_GROUPS = 20;
 
 /** 4-connected clusters of door tiles, mirroring server/game/sim.js's dissolveGroup(): walking
@@ -132,7 +133,7 @@ export function exitReachable(lvl) {
   // other door solid. Returns whether the exit condition is met plus what's needed to try opening
   // one more cluster: how many keys were actually collected in this region, and which not-yet-open
   // clusters border it.
-  // `openMask` is a bitmask (exact search) or a Set of cluster indices (greedy fallback, below).
+  // `openMask` is a bitmask (exact search) or a Set of cluster indices (all-open optimistic check, below).
   const isOpen = (openMask, gi) => (openMask instanceof Set ? openMask.has(gi) : ((openMask >> gi) & 1) === 1);
   const exploreRegion = (openMask) => {
     const seen = new Uint8Array(w * h);
@@ -169,25 +170,19 @@ export function exitReachable(lvl) {
   };
 
   // The exact search below is exponential in the number of door clusters and keys them in a 32-bit
-  // mask. Hand-built and procedural levels have a handful of clusters, but an AI-generated or
-  // editor-drawn one can scatter dozens of single doors, so past this bound fall back to a greedy
-  // monotone expansion: open every cluster bordering the region while unspent keys remain, repeat
-  // until the exit is reached or nothing changes. That is an optimistic approximation (it never
-  // "wastes" a key on a dead end), but it stays linear and can only ever accept a level the exact
-  // search might have rejected — never reject one it would have accepted.
+  // mask. Hand-built and procedural levels have a handful of clusters, but an editor-drawn or
+  // AI-generated one can scatter dozens of single doors, so past this bound the check turns
+  // deliberately optimistic instead: the exit counts as reachable if it can be reached with every
+  // door cluster open AND at least one key is collectable in that fully-open region (with no key
+  // anywhere, no door ever opens, so the doors-closed region is all a hero will ever see). This
+  // can accept a level the exact search would reject (a key spent on the wrong door) but never
+  // rejects one it would accept — the safe direction for a validator whose "false" discards or
+  // rewrites a level. An earlier greedy-with-budget variant was order-dependent and could do the
+  // opposite (review on #48).
   if (doorGroups.length > MAX_EXACT_DOOR_GROUPS) {
-    const open = new Set();
-    for (;;) {
-      const { exitSatisfied, keysInRegion, adjacentClosedGroups } = exploreRegion(open);
-      if (exitSatisfied) return true;
-      let budget = keysInRegion - open.size;
-      let opened = 0;
-      for (const gi of adjacentClosedGroups) {
-        if (budget < 1) break;
-        open.add(gi); budget--; opened++;
-      }
-      if (!opened) return false;
-    }
+    if (exploreRegion(0).exitSatisfied) return true;
+    const allOpen = exploreRegion(new Set(doorGroups.map((_, gi) => gi)));
+    return allOpen.exitSatisfied && allOpen.keysInRegion >= 1;
   }
 
   const popcount = (mask) => { let n = 0; for (let m = mask; m; m >>>= 1) n += m & 1; return n; };

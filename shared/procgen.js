@@ -88,9 +88,9 @@ export function generateLevel({ seed, level = 2, bias = {} }) {
   const place = (c, n) => { for (let i = 0; i < n && cells.length; i++) { const [x, y] = cells.pop(); g[y][x] = c; } };
   // Keys must never land inside the room the doors they open are guarding (#48) — the exit room
   // sits behind those very doors, so a key placed there would need itself to be reached first.
-  // Pop from the tail of `cells` like place() does (keeping placement order/spread identical for
-  // every other pickup), skipping over — but leaving in place for later placements — any cell
-  // inside exitRoom.
+  // Consumes from the tail of `cells` like place() does so the pass stays deterministic per seed;
+  // cells inside exitRoom are skipped for keys but left in the pool for the pickups placed after,
+  // so their spread can differ from the pre-#48 layout for the same seed.
   const inExitRoom = (x, y) => x >= exitRoom.x && x < exitRoom.x + exitRoom.w && y >= exitRoom.y && y < exitRoom.y + exitRoom.h;
   const placeKey = (n) => {
     let placed = 0;

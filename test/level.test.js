@@ -322,8 +322,8 @@ test('the missing-exit error names every exit-like tile, including the hidden ex
 });
 
 // A grid with far more door clusters than the exact search is allowed to enumerate (see
-// MAX_EXACT_DOOR_GROUPS in shared/level.js): a corridor of 30 single doors in series with 30 keys
-// scattered before them. The greedy fallback must still say "solvable", quickly, and its mirror
+// MAX_EXACT_DOOR_GROUPS in shared/level.js): a corridor of 30 single doors in series with a pocket
+// of keys before them. The optimistic fallback must still say "solvable", quickly, and its mirror
 // with no keys at all must still say "not solvable".
 function manyDoorsLevel({ keys }) {
   const w = 64; // parseLevel's MAX_SIZE: '#S' + 30 x '.D' + 'E#' fills it exactly
@@ -338,7 +338,7 @@ function manyDoorsLevel({ keys }) {
   return { name: 'many doors', rows };
 }
 
-test('exitReachable stays bounded on a level with dozens of door clusters (greedy fallback)', () => {
+test('exitReachable stays bounded on a level with dozens of door clusters (optimistic all-open check)', () => {
   const lvl = parseLevel(manyDoorsLevel({ keys: true }));
   assert.ok(lvl.rows[2].split('D').length - 1 === 30, 'fixture has 30 door tiles');
   const t0 = Date.now();
