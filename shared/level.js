@@ -54,11 +54,13 @@ export function validateLevel(raw) {
 }
 
 const DIRS4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-// Above this many door clusters exitReachable() switches from its exact search to an optimistic
-// all-doors-open check — see the comment at that switch. 20 keeps the exact search's bitmask well
-// inside 31 bits and its worst-case state count (2^20 regions) tolerable for the one-off
-// validation calls it serves.
+// Above this many door clusters — or once its search has visited this many door-state
+// combinations — exitReachable() switches from its exact search to an optimistic all-doors-open
+// check; see the comment at that switch. 20 clusters keeps the exact search's bitmask well inside
+// 31 bits; the state cap keeps a single validateLevel() call to a few thousand grid BFS passes even
+// when a crafted level stays under the cluster bound but makes every subset of doors reachable.
 const MAX_EXACT_DOOR_GROUPS = 20;
+const MAX_EXACT_STATES = 4096;
 
 /** 4-connected clusters of door tiles, mirroring server/game/sim.js's dissolveGroup(): walking
  *  into any door tile of a cluster spends one key and opens every door tile in that cluster at
@@ -171,26 +173,29 @@ export function exitReachable(lvl) {
 
   // The exact search below is exponential in the number of door clusters and keys them in a 32-bit
   // mask. Hand-built and procedural levels have a handful of clusters, but an editor-drawn or
-  // AI-generated one can scatter dozens of single doors, so past this bound the check turns
-  // deliberately optimistic instead: the exit counts as reachable if it can be reached with every
-  // door cluster open AND at least one key is collectable *before* any door is opened (a hero who
-  // can't reach a single key with every door still shut never opens the first one, so the
-  // doors-closed region is all they will ever see). This can accept a level the exact search would
-  // reject (a key spent on the wrong door, or too few keys for a long chain) but never rejects one
-  // it would accept — the safe direction for a validator whose "false" discards or rewrites a
-  // level. An earlier greedy-with-budget variant was order-dependent and could do the opposite
-  // (review on #48).
-  if (doorGroups.length > MAX_EXACT_DOOR_GROUPS) {
+  // AI-generated one (validateLevel() runs on user-supplied levels server-side) can scatter dozens
+  // of single doors, so past a cluster bound — or once the search has visited more states than
+  // MAX_EXACT_STATES — the check turns deliberately optimistic instead: the exit counts as
+  // reachable if it can be reached with every door cluster open AND at least one key is
+  // collectable *before* any door is opened (a hero who can't reach a single key with every door
+  // still shut never opens the first one, so the doors-closed region is all they will ever see).
+  // This can accept a level the exact search would reject (a key spent on the wrong door, or too
+  // few keys for a long chain) but never rejects one it would accept — the safe direction for a
+  // validator whose "false" discards or rewrites a level. An earlier greedy-with-budget variant
+  // was order-dependent and could do the opposite (review on #48).
+  const optimistic = () => {
     const closed = exploreRegion(0);
     if (closed.exitSatisfied) return true;
     if (closed.keysInRegion < 1) return false;
     return exploreRegion(new Set(doorGroups.map((_, gi) => gi))).exitSatisfied;
-  }
+  };
+  if (doorGroups.length > MAX_EXACT_DOOR_GROUPS) return optimistic();
 
   const popcount = (mask) => { let n = 0; for (let m = mask; m; m >>>= 1) n += m & 1; return n; };
   const visited = new Set([0]);
   const stack = [0];
   while (stack.length) {
+    if (visited.size > MAX_EXACT_STATES) return optimistic(); // bounded CPU on adversarial input, see above
     const mask = stack.pop();
     const { exitSatisfied, keysInRegion, adjacentClosedGroups } = exploreRegion(mask);
     if (exitSatisfied) return true;

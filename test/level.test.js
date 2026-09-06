@@ -350,3 +350,25 @@ test('exitReachable stays bounded on a level with dozens of door clusters (optim
   assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false }))), false, 'no key anywhere');
   assert.equal(exitReachable(parseLevel(manyDoorsLevel({ keys: false, keyBehindFirstDoor: true }))), false, 'the only key is behind a door');
 });
+
+// Under the cluster bound but built to make every subset of doors reachable: 18 single-door
+// pockets hanging off the start corridor (2^18 door states) with keys for all of them, and an exit
+// sealed inside walls so the exact search can never stop early. Without the MAX_EXACT_STATES cap
+// this would BFS the grid a quarter of a million times; with it, the optimistic check takes over
+// and (correctly) rejects the level, inside the per-test timeout.
+test('exitReachable caps its exact search on a level that makes every door combination reachable', { timeout: 5000 }, () => {
+  const w = 64;
+  const wall = '#'.repeat(w);
+  const rows = [
+    wall,
+    '#S' + 'K'.repeat(20) + '.'.repeat(w - 23) + '#',
+    '#' + 'D#'.repeat(18) + '#'.repeat(w - 38) + '#',
+    '#' + '.#'.repeat(18) + '#'.repeat(w - 38) + '#',
+    wall,
+    '#'.repeat(w - 3) + 'E' + '##',
+  ];
+  while (rows.length < 12) rows.push(wall);
+  const lvl = parseLevel({ name: 'door combinations', rows });
+  assert.equal(lvl.rows[2].split('D').length - 1, 18, 'fixture has 18 door clusters');
+  assert.equal(exitReachable(lvl), false);
+});
