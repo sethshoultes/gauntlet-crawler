@@ -799,33 +799,25 @@ function resetDesktopCanvas() {
   if (sceneCv && (sceneCv.width !== VIEW_W || sceneCv.height !== VIEW_H)) { sceneCv.width = VIEW_W; sceneCv.height = VIEW_H; }
 }
 
-// Portrait/tablet "band" sizing constants (post-#31 follow-up review). DPAD_PAD_V is the controls
-// band's own top+bottom padding (client/style.css gives #touch this exact padding, so the two stay
-// in lock-step) and DPAD_GAP matches .input-dpad's CSS gap (also shared with the landscape
-// "overlay" d-pad's separate fixed 80px/gap-8 rule — see client/style.css) — both used for the
-// *height* budget below pretty much as the review specified. The *width* budget is not the review's
-// literal "floor((viewportW * 0.58 - 2*gap) / 3)": on a 412px-wide phone (Pixel 7) 58% of the
-// viewport can't fit three 90px cells no matter how gap/padding are tuned (3*90 alone is already
-// 270px, more than 0.58*412=239px) — short of both the ">= 90px at a >= 380px band" requirement
-// this same review adds to test/e2e-mobile.mjs and the "~110px on Pixel 7" example it gives. What
-// actually shares the row with the d-pad is the fire/potion/auto-fire column, whose own width is
-// itself cell-dependent (FIRE_MULT below) — cellFromWidthBudget() solves that joint constraint
-// directly (verified against real devices below) rather than reserving an independent width
-// fraction that can't account for it.
-const DPAD_PAD_V = 16, DPAD_GAP = 8, TOUCH_SIDE_PAD = 6, TOUCH_COL_GAP = 4, FIRE_CAP = 110, FIRE_MULT = 1.3;
-// Overlay mode's #touch keeps client/index.html's base `.touch` rule (position: fixed, anchored
-// `bottom: 10px + safe-area-inset-bottom`) rather than the band layout's own padding — that bottom
-// offset has to come out of the height budget too (plus a couple of px of rounding slack), or a
-// d-pad sized to exactly fill "vh - hudH" ends up anchored 10px+ *higher* than assumed and climbs
-// into the HUD strip regardless of how small the cell itself is capped. Deliberately ignores actual
-// safe-area-inset-bottom (unreadable from plain JS without a live probe element) — a real notch
-// there would need slightly more, but none of the devices this game supports have one in landscape.
-const OVERLAY_BOTTOM_OFFSET = 12;
-// .input-dpad's own CSS padding in this mode (client/index.html's "@media (orientation: landscape)
-// and (max-height: 500px)" rule — the translucent backing box around the pad) adds this much on
-// *both* top and bottom of the d-pad's rendered height, on top of the cells/gaps themselves —
-// forgetting it here undercounts the pad's real height by 2*OVERLAY_DPAD_PAD and reintroduces the
-// exact HUD-overlap this whole function exists to prevent.
+// Portrait/tablet "band" sizing constants (post-#31 follow-up review). DPAD_GAP matches
+// .input-dpad's own CSS gap (client/index.html, also shared with the landscape "overlay" d-pad's
+// separate fixed 80px/gap-8 rule) — used for the *height* budget below pretty much as the review
+// specified. It stays a plain constant (unlike #touch's own padding/gap just below): it isn't
+// entangled with any safe-area inset, so there's no risk of it drifting out of sync the way #touch's
+// padding/gap could. The *width* budget is not the review's literal "floor((viewportW * 0.58 -
+// 2*gap) / 3)": on a 412px-wide phone (Pixel 7) 58% of the viewport can't fit three 90px cells no
+// matter how gap/padding are tuned (3*90 alone is already 270px, more than 0.58*412=239px) — short
+// of both the ">= 90px at a >= 380px band" requirement this same review adds to
+// test/e2e-mobile.mjs and the "~110px on Pixel 7" example it gives. What actually shares the row
+// with the d-pad is the fire/potion/auto-fire column, whose own width is itself cell-dependent
+// (FIRE_MULT below) — cellFromWidthBudget() solves that joint constraint directly (verified against
+// real devices below) rather than reserving an independent width fraction that can't account for it.
+const DPAD_GAP = 8, FIRE_CAP = 110, FIRE_MULT = 1.3;
+// .input-dpad's own CSS padding in overlay mode (client/index.html's "@media (orientation:
+// landscape) and (max-height: 500px)" rule — the translucent backing box around the pad) adds this
+// much on *both* top and bottom of the d-pad's rendered height, on top of the cells/gaps themselves
+// — forgetting it here undercounts the pad's real height by 2*OVERLAY_DPAD_PAD and reintroduces the
+// exact HUD-overlap this whole function exists to prevent. Like DPAD_GAP, not safe-area-entangled.
 const OVERLAY_DPAD_PAD = 6;
 // The actions column (fire, the auto-fire pill, potion, stacked) is bottom-anchored in the same
 // fixed box as the d-pad, so it needs the same "clear the HUD/#log strip stacked at the top" check
@@ -834,18 +826,37 @@ const OVERLAY_DPAD_PAD = 6;
 // auto-fire label can wrap onto a second line at this column's width, making it awkward to derive
 // from the individual CSS values exactly.
 const OVERLAY_ACTIONS_OVERHEAD = 68;
+// Fallbacks only, one *side* each (matching what client/style.css actually sets #touch's padding/
+// gap to): read live off #touch's own computed style below instead (a #43 review fix) — #touch's
+// padding/gap (band mode) and its `bottom` offset (overlay mode) all resolve a real, sometimes
+// nonzero safe-area inset (client/style.css's "env(safe-area-inset-bottom)"), so a hardcoded
+// constant here could silently drift out of sync with whatever the CSS actually renders on a given
+// device — undersizing the controls (harmless) or, worse, oversizing them into the HUD/#log a
+// device with a real inset needs kept clear (exactly what these fallbacks used to risk). These only
+// apply if a computed style value can't be parsed at all (e.g. some future browser returning
+// something other than a plain "<n>px" length) — numOr() below, not `||`, so a *legitimately* zero
+// padding/gap is never mistaken for "unparseable" and overridden.
+const TOUCH_SIDE_PAD_FALLBACK = 6, TOUCH_PAD_V_FALLBACK = 16, TOUCH_COL_GAP_FALLBACK = 4, OVERLAY_BOTTOM_OFFSET_FALLBACK = 12;
+
+/** parseFloat(val), or `fallback` if that isn't a finite number — unlike `parseFloat(val) ||
+ *  fallback`, this never mistakes a *legitimately* zero computed style value (a valid, meaningful
+ *  padding/gap/offset) for a parse failure. */
+function numOr(val, fallback) {
+  const n = parseFloat(val);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 /** The largest d-pad cell (unfloored, uncapped) that leaves enough width for the fire/potion column
- *  it sits beside — `TOUCH_SIDE_PAD*2 + TOUCH_COL_GAP + DPAD_GAP*2` is everything *else* horizontal
- *  in the row (#touch's own side padding, the gap between the d-pad and action columns, and the
- *  d-pad's own two internal gaps); what's left splits between `3` d-pad cells and one fire/potion
- *  circle (`FIRE_MULT` cell-widths wide, per the spec, until it hits its own `FIRE_CAP`). Solved as
- *  two linear regimes rather than guessed at: while the fire diameter implied by `cell` is still
- *  under FIRE_CAP, growing cell grows both cell*3 and cell*FIRE_MULT together (denominator `3 +
+ *  it sits beside — `sidePad + colGap + DPAD_GAP*2` is everything *else* horizontal in the row
+ *  (#touch's own left+right padding, the gap between the d-pad and action columns, and the d-pad's
+ *  own two internal gaps); what's left splits between `3` d-pad cells and one fire/potion circle
+ *  (`FIRE_MULT` cell-widths wide, per the spec, until it hits its own `FIRE_CAP`). Solved as two
+ *  linear regimes rather than guessed at: while the fire diameter implied by `cell` is still under
+ *  FIRE_CAP, growing cell grows both cell*3 and cell*FIRE_MULT together (denominator `3 +
  *  FIRE_MULT`); once fire would exceed FIRE_CAP it's pinned there instead, so from that point only
  *  the d-pad's own `3*cell` keeps growing against the remaining width. */
-function cellFromWidthBudget(vw) {
-  const overhead = TOUCH_SIDE_PAD * 2 + TOUCH_COL_GAP + DPAD_GAP * 2;
+function cellFromWidthBudget(vw, sidePad, colGap) {
+  const overhead = sidePad + colGap + DPAD_GAP * 2;
   const uncappedFireCell = (vw - overhead) / (3 + FIRE_MULT);
   if (uncappedFireCell * FIRE_MULT <= FIRE_CAP) return uncappedFireCell;
   return (vw - overhead - FIRE_CAP) / 3;
@@ -867,19 +878,32 @@ function cellFromWidthBudget(vw) {
  *  ~84px CSS fallback are both a *ceiling* ("may stay in the right margin as they are" per the #42
  *  follow-up review) — this only shrinks either *below* that on the tightest supported viewport
  *  (iPhone SE landscape, 320px tall total), where even those defaults don't clear the HUD/#log
- *  stacked at the top. */
+ *  stacked at the top.
+ *
+ *  Reads #touch's own padding/gap (band mode) and `bottom` offset (overlay mode) live off its
+ *  computed style rather than assuming client/style.css's numbers as JS constants (a #43 review
+ *  fix) — #session already pads for the bottom safe-area inset, and #touch's own band-mode padding
+ *  and overlay-mode `bottom` offset each add the *same* inset again (intentional layering, not a
+ *  bug: #touch is a real content box, not just decoration, so it gets its own clearance too) —
+ *  hardcoding what those resolve to risked exactly the drift that let a nonzero inset size the
+ *  controls into the HUD/#log this function exists to keep them clear of. */
 function layoutTouchControls(touchShown, overlayControls, availH, vw) {
   if (!touchEl) return;
   if (!touchShown) { touchEl.style.removeProperty('--dpad-cell'); touchEl.style.removeProperty('--fire-size'); return; }
+  const cs = getComputedStyle(touchEl);
   if (overlayControls) {
-    const overlayCell = Math.max(1, Math.min(80, Math.floor((availH - OVERLAY_BOTTOM_OFFSET - OVERLAY_DPAD_PAD * 2 - DPAD_GAP * 2) / 3)));
+    const bottomOffset = numOr(cs.bottom, OVERLAY_BOTTOM_OFFSET_FALLBACK);
+    const overlayCell = Math.max(1, Math.min(80, Math.floor((availH - bottomOffset - OVERLAY_DPAD_PAD * 2 - DPAD_GAP * 2) / 3)));
     touchEl.style.setProperty('--dpad-cell', overlayCell + 'px');
-    const overlayFire = Math.max(1, Math.min(84, Math.floor((availH - OVERLAY_BOTTOM_OFFSET - OVERLAY_ACTIONS_OVERHEAD) / 2)));
+    const overlayFire = Math.max(1, Math.min(84, Math.floor((availH - bottomOffset - OVERLAY_ACTIONS_OVERHEAD) / 2)));
     touchEl.style.setProperty('--fire-size', overlayFire + 'px');
     return;
   }
-  const cellFromHeight = (availH - DPAD_PAD_V * 2 - DPAD_GAP * 2) / 3;
-  const cellFromWidth = cellFromWidthBudget(vw);
+  const padV = numOr(cs.paddingTop, TOUCH_PAD_V_FALLBACK) + numOr(cs.paddingBottom, TOUCH_PAD_V_FALLBACK);
+  const padH = numOr(cs.paddingLeft, TOUCH_SIDE_PAD_FALLBACK) + numOr(cs.paddingRight, TOUCH_SIDE_PAD_FALLBACK);
+  const colGap = numOr(cs.columnGap, TOUCH_COL_GAP_FALLBACK);
+  const cellFromHeight = (availH - padV - DPAD_GAP * 2) / 3;
+  const cellFromWidth = cellFromWidthBudget(vw, padH, colGap);
   // No lower floor: the #42 spec's cap (120px) is only ever a *ceiling* here (`Math.min(120, ...)`)
   // — clamping a *minimum* on top, as an earlier version of this did, would force cells back up
   // past whatever space the math just proved is actually available, overflowing on the smallest

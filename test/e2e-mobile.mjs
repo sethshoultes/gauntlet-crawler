@@ -450,6 +450,35 @@ async function main() {
           session.style.paddingLeft = ''; session.style.paddingRight = ''; session.style.paddingBottom = '';
           window.dispatchEvent(new Event('resize'));
         });
+
+        // Regression check (Copilot review on PR #43): a *bottom* safe-area inset specifically —
+        // #session already pads env(safe-area-inset-bottom), and #touch's own band-mode padding /
+        // overlay-mode `bottom` offset each add the *same* inset again (client/style.css), which
+        // layoutTouchControls() now reads live off #touch's own computed style rather than
+        // assuming a fixed 16px/10px (band/overlay) as a JS constant. Simulates a device reporting
+        // a 24px inset by setting the *exact* values that inset would resolve each of those three
+        // declarations to (mirroring the real calc() shape) and asserts nothing regresses: every
+        // control stays on-screen and clear of the HUD/#log/canvas exactly as assertLayout() checks
+        // for the un-padded case above.
+        const simulatedInset = 24;
+        const inOverlay = await page.evaluate(() => document.body.classList.contains('gc-controls-overlay'));
+        await page.evaluate(({ inset, overlay }) => {
+          const session = document.querySelector('#session');
+          const touch = document.querySelector('#touch');
+          session.style.paddingBottom = `${inset}px`;
+          if (overlay) touch.style.bottom = `${10 + inset}px`; // matches .touch's base "calc(10px + env(safe-area-inset-bottom))"
+          else touch.style.paddingBottom = `${16 + inset}px`; // matches the band rule's "calc(16px + env(safe-area-inset-bottom))"
+          window.dispatchEvent(new Event('resize'));
+        }, { inset: simulatedInset, overlay: inOverlay });
+        await page.waitForTimeout(300);
+        await assertLayout(`with a simulated ${simulatedInset}px bottom safe-area inset`);
+        await page.evaluate(() => {
+          const session = document.querySelector('#session');
+          const touch = document.querySelector('#touch');
+          session.style.paddingBottom = ''; touch.style.bottom = ''; touch.style.paddingBottom = '';
+          window.dispatchEvent(new Event('resize'));
+        });
+
         await page.setViewportSize(vp); // back to this device's original (portrait) size before the checks below assume it
 
         // Fullscreen (#42) requests the whole game container (#session — HUD + canvas + log +
