@@ -5,14 +5,18 @@ import crypto from 'node:crypto';
 import { Sim } from './sim.js';
 import { LEVEL1 } from '../../shared/levels/level1.js';
 import { generateLevel, generateTreasureRoom } from '../../shared/procgen.js';
-import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T } from '../../shared/constants.js';
+import { aiAvailable, describeLevel } from '../ai/levelgen.js';
+import { TICK_RATE, DT, MAX_PLAYERS, MAX_MONSTERS, CLASSES, T, LOW_HEALTH, AMULET_TILES } from '../../shared/constants.js';
 import { rankForXp, rankTitle, perksForRank, levelCapForRank, XP_KILL, XP_GENERATOR, XP_TREASURE, xpForLevelClear } from '../../shared/progression.js';
 import { makeRng } from '../../shared/rng.js';
 import { rollChests, applyChest } from '../../shared/chests.js';
 import { isClassUnlocked, isPaletteUnlocked, unlockedFor, requirementText, PALETTE_BY_ID } from '../../shared/unlocks.js';
 import * as stats from '../stats.js';
+import * as highscores from '../highscores.js';
 import { db } from '../db.js';
 import { resolveCustomHero } from '../heroes.js';
+import { aiAvailable as aiNarratorAvailable, lineFor as narratorLineFor } from '../ai/narrator.js';
+import { detectNearDeathSave, checkKillStreak, canNarrateNow } from './narrator-events.js';
 
 const CUSTOM_CLS_RE = /^custom:(\d+)$/;
 
@@ -27,6 +31,7 @@ const WAVE_TIMEOUT_MS = 40000;  // a wave advances automatically after this even
 const WIPE_GRACE_MS = 10000;    // Death mode: end the run if everyone stays dead this long, uncontested
 const WAVE_SPAWN_MIN_DIST = 6;  // tiles a wave spawn must be from every player
 const TREASURE_ROOM_SECONDS = 30; // bonus level timer (README's "Features" section, "Bonus treasure rooms") — auto-completes with no bonus at 0
+const AI_NARRATOR_MIN_GAP_MS = 20000; // at most one spoken AI narrator line per room per this window (#18)
 
 export class Room {
   constructor({ id, name, seed, source = { type: 'campaign' }, isPublic = true, onEmpty }) {
@@ -56,14 +61,18 @@ export class Room {
     this.allDeadSince = null;     // Death mode wipe-timeout tracking
     this.pendingSkip = 1;         // set by a skip-exit ('8'), consumed by advanceLevel() (see README's "Level format" section)
     this.treasureTimer = null;    // bonus-level 30s auto-complete timer (README's "Features" section, "Bonus treasure rooms")
+    this.itMode = false;          // It tag mode (#13): host-set room option, off by default — see setSettings()
+    this.aiNameCache = new Map(); // #17: n -> {name, description} once prefetchName(n)'s AI call resolves; see levelFor()/applyCachedName()
     this.sim = new Sim(this.levelFor(1), {
       levelIndex: 1, onEvent: (e) => this.onEvent(e), mode: this.source.type === 'death' ? 'death' : 'campaign',
       rng: makeRng(`${seed}|sim`),
     });
+    this.prefetchName(2); // kick off level 2's AI name now, in parallel with the lobby/countdown, never awaited
     this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE);
     this.secondsTimer = setInterval(this.guard('creditTime', () => this.creditTime()), 30000);
     this.changing = false;
     this.emptySince = null;
+    this.lastAiNarratorAt = 0; // AI narrator commentary (#18) room-wide rate limit, see maybeNarrate()
   }
 
   /** Wrap a timer callback so an uncaught exception inside it is logged and contained instead of
@@ -76,18 +85,46 @@ export class Room {
   }
 
   levelFor(n) {
-    if (this.source.type === 'death') return generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) });
+    if (this.source.type === 'death') return this.applyCachedName(n, generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) }));
     if (this.isTreasureLevel(n)) return generateTreasureRoom({ seed: this.seed, level: n });
     if (n === 1) {
       if (this.source.type === 'custom' && this.source.level) return this.source.level;
       return LEVEL1;
     }
-    return generateLevel({ seed: this.seed, level: n });
+    return this.applyCachedName(n, generateLevel({ seed: this.seed, level: n }));
   }
 
   /** Bonus level (README's "Features" section, "Bonus treasure rooms"): every 6th level (i.e. after every 5 regular levels) in any non-Death mode
    *  is a generated treasure room instead — see shared/procgen.js generateTreasureRoom(). */
   isTreasureLevel(n) { return this.source.type !== 'death' && n > 1 && n % 6 === 0; }
+
+  /** #17 AI assist: if prefetchName(n) already resolved an AI-written name/description for level
+   *  n, use it instead of generateLevel()'s own "<Adjective> <Theme>" name. Falling back to the
+   *  procedural name (by simply not overwriting it) is exactly what happens when the AI is
+   *  unavailable, still in flight, or errored -- prefetchName() never leaves a stale/wrong entry
+   *  behind, it either has the real answer cached or nothing at all. Also sweeps out cache entries
+   *  for levels already passed, since a Death-mode run can climb arbitrarily high. */
+  applyCachedName(n, level) {
+    const cached = this.aiNameCache.get(n);
+    if (cached) { level.name = cached.name; level.description = cached.description; }
+    for (const k of this.aiNameCache.keys()) if (k < n) this.aiNameCache.delete(k);
+    return level;
+  }
+
+  /** Fire-and-forget: ask the AI for level n's name/description well ahead of when it's actually
+   *  loaded (advanceLevel() calls this for levelIndex+1 right after loading levelIndex), so the
+   *  tick/level-load path itself never awaits a network call. A no-op with no AI key configured,
+   *  for level 1 (LEVEL1/a custom level already has its own name) and for bonus treasure rooms
+   *  (fixed "Treasure Vault" name) -- and idempotent, so calling it again for an already
+   *  cached-or-in-flight n does nothing. */
+  prefetchName(n) {
+    if (!aiAvailable() || n < 2 || this.isTreasureLevel(n) || this.aiNameCache.has(n)) return;
+    this.aiNameCache.set(n, null); // in-flight marker so a second call this tick doesn't double-fetch
+    const level = this.source.type === 'death' ? generateLevel({ seed: this.seed, level: n, bias: this.deathBias(n) }) : generateLevel({ seed: this.seed, level: n });
+    describeLevel({ level, seed: `${this.seed}:${n}` })
+      .then((out) => this.aiNameCache.set(n, out))
+      .catch(() => this.aiNameCache.delete(n));
+  }
 
   /** Death mode generator bias: arena layout, and monster mix shifting ghost -> grunt -> demon as
    *  the party goes deeper, with a Death appearing every 5th level. */
@@ -115,6 +152,7 @@ export class Room {
       mode: this.source.type, deathCap, customLevel: this.source.type === 'custom' && this.source.level
         ? { id: this.source.levelId || null, name: this.source.level.name } : null,
       customName: this.source.level?.name || null, public: this.isPublic, hostPid: this.hostPid,
+      itMode: this.itMode,
       roster: [...this.clients.values()].map((c) => ({
         pid: c.pid, name: c.name, cls: c.cls, palette: c.palette, rank: c.rank, title: c.title,
         ready: !!c.ready, away: !!c.away, host: c.pid === this.hostPid,
@@ -195,7 +233,7 @@ export class Room {
    *  this is the only thing it is ever used for; it grants no other trust. */
   isValidGuestId(id) { return typeof id === 'string' && /^[0-9a-f]{32}$/.test(id); }
 
-  join(ws, { pid, user, name, cls, resume, palette, guestId }) {
+  join(ws, { pid, user, name, cls, resume, palette, guestId, aiNarrator }) {
     if (resume) {
       const c = this.resume(ws, resume);
       if (c) return c;
@@ -216,6 +254,10 @@ export class Room {
       ws, pid, user, name, cls: picked.cls, palette: picked.palette, classDef: picked.classDef || null, custom: picked.custom || null,
       guestId: finalGuestId, joinedAt: Date.now(), streak: 0, rank, title, perks,
       ready: false, away: false, awaySince: null, awayTimer: null, resume: crypto.randomBytes(8).toString('hex'),
+      // AI narrator commentary (#18): strictly opt-in, off unless the client's join message asks
+      // for it. killStreak/killStreakAnnounced/lastHp track the kill-streak and near-death
+      // detectors (server/game/narrator-events.js) between ticks/events for this client only.
+      aiNarrator: !!aiNarrator, killStreak: 0, killStreakAnnounced: 0, lastHp: null,
     };
     this.clients.set(pid, c);
     if (!this.hostPid) this.hostPid = pid;
@@ -254,6 +296,31 @@ export class Room {
     return null;
   }
 
+  /** Add another local player bound to the same connection (`ws`) as an existing client — local
+   *  co-op via extra gamepads on one machine (#15, `{t:'join_local'}` in server/index.js). Unlike
+   *  `join()` this skips the guest-identity/resume/kick machinery a second real connection needs
+   *  (it's the same browser tab, not a new socket) and starts `ready` so it never blocks the
+   *  primary player's ready-up. Input for it arrives tagged with a `slot`, routed to this `pid` by
+   *  the caller (see server/index.js's `input` case). */
+  joinLocal(ws, { pid, name, cls, palette }) {
+    if (this.full) throw new Error('Room is full');
+    const picked = this.pickHero(null, cls, palette);
+    const c = {
+      ws, pid, user: null, name, cls: picked.cls, palette: picked.palette, classDef: picked.classDef || null, custom: picked.custom || null,
+      guestId: null, joinedAt: Date.now(), streak: 0, rank: null, title: null, perks: null,
+      ready: true, away: false, awaySince: null, awayTimer: null, resume: null,
+      aiNarrator: false, killStreak: 0, killStreakAnnounced: 0, lastHp: null, local: true,
+    };
+    this.clients.set(pid, c);
+    if (this.state !== 'lobby') this.enterGame(c);
+    this.broadcastRoom();
+    if (this.state !== 'lobby') this.broadcast(this.playersPacket());
+    const heroLabel = picked.custom ? picked.custom.name : cap(picked.cls);
+    this.broadcast({ t: 'notice', text: `${name} the ${heroLabel} enters the dungeon` });
+    this.checkAutoStart();
+    return c;
+  }
+
   /** Called when a live socket drops. Keeps the player's slot/entity for a grace period. */
   disconnect(pid) {
     const c = this.clients.get(pid);
@@ -267,6 +334,7 @@ export class Room {
 
   /** Move a lobby client into the running sim (on start, or on late join into a live room). */
   enterGame(c) {
+    c.amuletKinds = new Set(); // fresh run: see the 'pickup' case in onEvent() for amulet_kinds_run
     this.sim.addPlayer(c.pid, {
       name: c.name, cls: c.cls, userId: c.user?.id || null, perks: c.perks, rank: c.rank, title: c.title,
       palette: c.palette, classDef: c.classDef || null, custom: c.custom || null,
@@ -301,7 +369,17 @@ export class Room {
     this.broadcastRoom();
   }
 
-  setSettings(pid, { mode, levelId, isPublic } = {}) {
+  /** A connected client updating its own opt-in prefs the room needs to know about (currently
+   *  just aiNarrator, #18) via a {t:'prefs'} message — lets a client flip this without a full
+   *  rejoin. Unknown/malformed fields are silently ignored rather than rejected: this is a
+   *  best-effort preference sync, not a validated settings form. */
+  setPrefs(pid, prefs) {
+    const c = this.clients.get(pid);
+    if (!c || !prefs) return;
+    if (typeof prefs.aiNarrator === 'boolean') c.aiNarrator = prefs.aiNarrator;
+  }
+
+  setSettings(pid, { mode, levelId, isPublic, itMode } = {}) {
     if (pid !== this.hostPid) throw new Error('Only the host can change settings');
     if (this.state !== 'lobby') throw new Error('Cannot change settings after start');
     if (mode === 'campaign') {
@@ -316,6 +394,9 @@ export class Room {
       throw new Error('Unknown mode');
     }
     if (typeof isPublic === 'boolean') this.isPublic = isPublic;
+    // It tag mode (#13): a room option next to Death mode — the host toggles it any time in the
+    // lobby; it only actually assigns a tag once play starts with 2+ players (see beginPlay()).
+    if (typeof itMode === 'boolean') this.itMode = itMode;
     this.sim.mode = this.source.type === 'death' ? 'death' : 'campaign';
     this.sim.loadLevel(this.levelFor(1), 1);
     this.broadcastRoom();
@@ -334,11 +415,18 @@ export class Room {
     this.cancelCountdown();
     this.state = 'playing';
     for (const c of this.clients.values()) this.enterGame(c);
+    // It tag mode (#13): the room's very first level never goes through advanceLevel()'s loadLevel
+    // call (level 1 is already loaded before anyone joins) — assign the tag here instead, right
+    // after every client has a sim entity.
+    this.sim.assignItTag(this.itMode);
     this.broadcastRoom();
     this.broadcast({ t: 'start' });
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     if (this.source.type === 'death') this.startWaves();
+    // Party composition intro (#18): only the genuine start of a fresh run, not a Death mode wave
+    // restart or a mid-lobby settings change — those never touch levelIndex back to 1.
+    if (this.levelIndex === 1) this.maybeNarrate('party', { classes: [...this.clients.values()].map((c) => c.custom ? 'custom' : c.cls) });
   }
 
   checkAutoStart() {
@@ -402,14 +490,48 @@ export class Room {
 
   handleInput(pid, input) { this.sim.setInput(pid, input); }
 
-  /** Test/manual-verification only, gated behind GAUNTLET_DEBUG=1 in server/index.js. */
-  debugAction(action) {
+  /** Test/manual-verification only, gated behind GAUNTLET_DEBUG=1 in server/index.js. `msg` is the
+   *  whole `{t:'debug', ...}` payload, so an action can carry its own extra fields (loadLevel's
+   *  `rows`/`timers`/`treasureRoom`) alongside `action` itself. */
+  debugAction(action, msg = {}) {
     if (action === 'clear' && this.state === 'playing') {
       const anyPid = [...this.sim.players.keys()][0];
       if (anyPid != null) this.onEvent({ type: 'exit', pid: anyPid, levelTime: this.sim.levelTime });
     } else if (action === 'killall' && this.state === 'playing') {
       // Wipes every current monster — mainly useful to force a Death mode wave to advance instantly.
       for (const id of [...this.sim.monsters.keys()]) this.sim.monsters.delete(id);
+    } else if (action === 'endrun' && this.state === 'playing') {
+      // Forces a run to end right now instead of waiting out a real wipe (WIPE_GRACE_MS) or a
+      // rank-gated level cap — mainly so E2E/manual scripts can reach the arcade high-score
+      // initials modal (see endRun() below) without grinding out a full life-loss sequence.
+      this.endRun('wipe');
+    } else if (action === 'loadLevel' && this.state === 'playing' && Array.isArray(msg.rows)) {
+      // Swaps the live level for an arbitrary fixture grid (same levelIndex, no chest/intermission
+      // side effects) so test/e2e-features.mjs can place the hero right next to one specific tile
+      // (an amulet, a pressure plate, a timed wall, ...) instead of hunting for one in a real
+      // generated level. `msg.timers` overrides the default timed-wall countdown (see
+      // shared/constants.js TIMER_DEFAULT_SEC) so a scenario doesn't have to wait 30s for one to
+      // fire; `msg.treasureRoom` exercises the bonus-round entry exactly like advanceLevel() does.
+      //
+      // `msg.rows` comes straight off the wire (a test/manual script), so it can be array-shaped
+      // but otherwise garbage — too small/large, ragged rows, an unknown tile glyph, no S/E tile —
+      // which Sim#loadLevel's parseLevel() call rejects by throwing. That throw happens before
+      // Sim mutates any of its own fields (parseLevel() is always the very first thing it does),
+      // so the room's current level survives untouched either way, but letting it propagate out of
+      // debugAction() at all just pushes "don't crash" onto every caller (server/index.js's ws
+      // message handler happens to wrap this in a try/catch today, but this hook has no business
+      // relying on that). Swallow it here instead and treat a bad fixture as a no-op, same as an
+      // unrecognized action — see the regression test for a rows array that used to throw uncaught.
+      try {
+        this.sim.loadLevel({ name: 'Debug Fixture', rows: msg.rows, timers: msg.timers }, this.levelIndex, { treasureRoom: !!msg.treasureRoom });
+      } catch { return; }
+      this.changing = false;
+      this.broadcast(this.sim.levelPacket());
+      this.broadcast(this.playersPacket());
+      if (msg.treasureRoom) {
+        this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS, mystery: this.sim.mysteryRoom });
+        this.startTreasureTimer();
+      }
     }
   }
 
@@ -479,15 +601,40 @@ export class Room {
     const uidOf = c?.user?.id || null;
     const bump = (k, n = 1) => { if (uidOf && c) this.unlock(c, stats.bump(uidOf, k, n)); };
     switch (e.type) {
-      case 'kill': bump('kills'); bump(`kills_${e.monster}`); if (e.monster === 'thief') bump('thief_kills'); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5); break;
+      case 'kill': {
+        bump('kills'); bump(`kills_${e.monster}`); if (e.monster === 'thief') bump('thief_kills'); this.awardXp(c, uidOf, XP_KILL[e.monster] || 5);
+        // Kill streak narrator lines (#18): consecutive kills without dying (see the 'death' case
+        // below, which resets both counters) — checkKillStreak only returns a threshold the first
+        // time it's crossed, so a single big kill flurry announces just its highest new rung.
+        if (c) {
+          c.killStreak = (c.killStreak || 0) + 1;
+          const threshold = checkKillStreak(c.killStreak, c.killStreakAnnounced || 0);
+          if (threshold) { c.killStreakAnnounced = threshold; this.maybeNarrate('kill_streak', { threshold }); }
+        }
+        break;
+      }
       case 'generator': bump('generators'); this.awardXp(c, uidOf, XP_GENERATOR); break;
       case 'food': bump('food'); if (e.lowHealth) bump('food_low'); break;
       case 'food_shot': bump('food_shot'); break;
-      case 'pickup': if (e.item === 'T') { bump('treasure'); this.awardXp(c, uidOf, XP_TREASURE); } if (e.item === 'K') bump('keys'); break;
+      case 'pickup': {
+        if (e.item === 'T') { bump('treasure'); this.awardXp(c, uidOf, XP_TREASURE); }
+        if (e.item === 'K') bump('keys');
+        // Amulet Collector achievement (README's "Amulets and boosts"): all four amulet kinds
+        // collected within one run — `c.amuletKinds` is reset at the start of every run in
+        // enterGame(), so raising this run's distinct-kind count is really "the most distinct
+        // kinds ever collected in a single run" once accumulated across the account's history.
+        const amuletKind = AMULET_TILES[e.item];
+        if (amuletKind && c) {
+          c.amuletKinds = c.amuletKinds || new Set();
+          c.amuletKinds.add(amuletKind);
+          if (uidOf) this.unlock(c, stats.raise(uidOf, 'amulet_kinds_run', c.amuletKinds.size));
+        }
+        break;
+      }
       case 'door': bump('doors'); break;
       case 'secret': bump('secrets'); break;
       case 'potion': if (!e.weak) bump('potions'); break;
-      case 'death': bump('deaths'); if (c) c.streak = 0; break;
+      case 'death': bump('deaths'); if (c) { c.streak = 0; c.killStreak = 0; c.killStreakAnnounced = 0; } break;
       case 'coin': bump('coins'); break;
       case 'teleport': bump('teleports'); break;
       case 'exit': this.onLevelComplete(e); break;
@@ -499,6 +646,7 @@ export class Room {
     this.changing = true;
     if (this.treasureTimer) { clearTimeout(this.treasureTimer); this.treasureTimer = null; }
     const wasTreasure = this.sim.treasureRoom;
+    if (wasTreasure) this.maybeNarrate('treasure_clear', {}); // reached the exit, not just timed out (see finishTreasureRoom())
     const skipAmt = e.skip === 4 ? 4 : 1; // exit variant '8' jumps the party ahead 4 levels (see README's "Level format" section)
     this.pendingSkip = skipAmt;
     const n = this.clients.size;
@@ -654,13 +802,36 @@ export class Room {
     this.pendingSkip = 1;
     const treasure = this.isTreasureLevel(this.levelIndex);
     this.sim.loadLevel(this.levelFor(this.levelIndex), this.levelIndex, { treasureRoom: treasure });
+    this.sim.assignItTag(this.itMode); // #13: fresh random It player for the level that's just starting
     this.state = 'playing';
     this.changing = false;
     this.broadcast(this.sim.levelPacket());
     this.broadcast(this.playersPacket());
     this.broadcastRoom();
-    if (treasure) { this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS }); this.startTreasureTimer(); }
+    if (treasure) {
+      this.broadcast({ t: 'bonus', seconds: TREASURE_ROOM_SECONDS, mystery: this.sim.mysteryRoom });
+      this.startTreasureTimer();
+      this.maybeNarrate('treasure_enter', {});
+    }
     if (this.source.type === 'death') this.startWaves();
+    this.prefetchName(this.levelIndex + 1); // #17: get a head start on the AI name for whatever comes after this one
+  }
+
+  /** Fire a best-effort AI narrator line (#18, server/ai/narrator.js) for `eventType`/`context`.
+   *  A no-op unless AI credentials are configured, at least one connected client has opted in
+   *  (aiNarrator), and this room's rate limit allows it right now. The rate-limit slot is reserved
+   *  synchronously (before the generation promise settles) so two events in the same tick can't
+   *  both slip through, and the generation itself is never awaited — this is called from the game
+   *  tick path and must return immediately either way. */
+  maybeNarrate(eventType, context) {
+    if (!aiNarratorAvailable()) return;
+    if (![...this.clients.values()].some((c) => c.aiNarrator)) return;
+    const nowMs = Date.now();
+    if (!canNarrateNow(nowMs, this.lastAiNarratorAt, AI_NARRATOR_MIN_GAP_MS)) return;
+    this.lastAiNarratorAt = nowMs;
+    narratorLineFor(eventType, context)
+      .then((line) => { if (line) this.broadcast({ t: 'say', text: line }); })
+      .catch((e) => console.warn(`[room ${this.id}] narrator generation failed:`, e.message));
   }
 
   /** Arm (or re-arm) the bonus-level auto-complete timer. */
@@ -782,9 +953,27 @@ export class Room {
     const scores = [...this.sim.players.values()].map((p) => ({ pid: p.id, name: p.name, cls: p.cls, score: p.score, kills: p.kills }));
     for (const c of this.clients.values()) {
       const p = this.sim.players.get(c.pid);
-      if (!p || !c.user) continue;
-      stats.recordRun(c.user.id, { cls: c.cls, score: p.score, level: this.levelIndex, kills: p.kills, seconds: Math.round((Date.now() - c.joinedAt) / 1000), mode: 'death' });
-      this.unlock(c, stats.raise(c.user.id, 'best_score', p.score));
+      if (!p) continue;
+      if (c.user) {
+        stats.recordRun(c.user.id, { cls: c.cls, score: p.score, level: this.levelIndex, kills: p.kills, seconds: Math.round((Date.now() - c.joinedAt) / 1000), mode: 'death' });
+        this.unlock(c, stats.raise(c.user.id, 'best_score', p.score));
+      }
+      // Arcade all-time high scores (#14): this is the one place a run actually "ends" while its
+      // clients are still connected (campaign is endless — see README), so it's the only spot that
+      // both records the score (guest or logged-in, unlike stats.recordRun above) and can tell the
+      // client whether to show the three-initial entry modal.
+      const hs = highscores.recordHighScore({
+        userId: c.user?.id ?? null, guestId: c.user ? null : (c.guestId || null), username: c.user?.username ?? null,
+        cls: c.cls, score: p.score, level: this.levelIndex, mode: 'death',
+      });
+      const entry = scores.find((s) => s.pid === c.pid);
+      if (entry) { entry.runId = hs.id; entry.hs = hs.qualifies; }
+      // `scores` above is sent to every client via this.broadcast() below (one identical JSON
+      // payload for the whole room) -- the claim token must reach *only* the client that owns this
+      // run, never its roommates, so it goes out as its own private message instead of riding along
+      // in the shared array. Sent ahead of the broadcast on the same (ordered) connection so the
+      // client already has it by the time 'gameover' arrives and offers the initials modal.
+      if (hs.qualifies) this.send(c, { t: 'hstoken', runId: hs.id, token: hs.token });
     }
     this.broadcast({ t: 'gameover', reason, level: this.levelIndex, cap: Number.isFinite(cap) ? cap : null, scores });
     for (const pid of [...this.sim.players.keys()]) this.sim.removePlayer(pid);
@@ -808,6 +997,14 @@ export class Room {
       if (this.state !== 'playing') return; // lobby: frozen, nothing to simulate yet
       this.sim.step(DT);
       if (this.source.type === 'death') { this.checkWaveAdvance(false); this.checkWipe(); }
+      // Near-death save narrator line (#18): compare each connected player's hp this tick against
+      // its value last tick (health drain/food/potions/hits all just ran in sim.step() above).
+      for (const c of this.clients.values()) {
+        const p = this.sim.players.get(c.pid);
+        if (!p) continue;
+        if (detectNearDeathSave(c.lastHp, p.hp, LOW_HEALTH)) this.maybeNarrate('near_death', {});
+        c.lastHp = p.hp;
+      }
       const snap = this.sim.snapshot();
       if (this.pendingEvents.length) { snap.e = this.pendingEvents; this.pendingEvents = []; }
       this.broadcast(snap);

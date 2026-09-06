@@ -110,10 +110,17 @@ async function main() {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const baseUrl = `http://127.0.0.1:${port}`;
 
+  // #32 mobile scenario needs one user to see the admin dashboard's real content (not just the
+  // "Access denied" panel) so its table/chart mobile layout actually gets exercised. Naming this
+  // account in GAUNTLET_ADMINS (rather than relying on it happening to register first / get user
+  // id 1 — every other scenario in this suite registers accounts before it runs) keeps that
+  // independent of scenario order, which matters since several agents' scenarios share this file.
+  const mobileAdminUser = { name: `e2eAdm${crypto.randomBytes(3).toString('hex')}`, pass: 'Password123' }; // USERNAME_RE caps usernames at 16 chars (server/auth.js)
+
   log(`starting server on ${baseUrl} (DATA_DIR=${dataDir}, GAUNTLET_DEBUG=1)`);
   const server = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', 'server/index.js'], {
     cwd: root,
-    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, GAUNTLET_DEBUG: '1' },
+    env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, GAUNTLET_DEBUG: '1', GAUNTLET_ADMINS: mobileAdminUser.name },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let serverOutput = '';
@@ -180,7 +187,7 @@ async function main() {
 
       // UI modal: register a *different* account on browser A's page — this becomes browser A's
       // logged-in identity for the rest of the run.
-      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
       await pageA.click('#nav-login');
       await pageA.fill('#au', userA.name);
       await pageA.fill('#ap', userA.pass);
@@ -219,7 +226,7 @@ async function main() {
       roomIdMain = urlA.searchParams.get('room');
       if (!roomIdMain) throw new Error(`browser A URL did not carry a room id after create: ${pageA.url()}`);
 
-      await pageB.goto(`${baseUrl}/?room=${roomIdMain}`, { waitUntil: 'load' });
+      await pageB.goto(`${baseUrl}/?room=${roomIdMain}&nosw=1`, { waitUntil: 'load' });
       await pageB.waitForSelector('#roomscreen.on', { timeout: 15_000 });
 
       await pageA.click('#rs-ready');
@@ -334,13 +341,45 @@ async function main() {
     });
 
     // ---------------- 6. Editor ----------------
-    await scenario('6. Editor: generate (procedural fallback), save, publish, test play', async () => {
+    await scenario('6. Editor: generate (procedural fallback), remix/tune/explain (#17), save, publish, test play', async () => {
       await pageA.click('#leave').catch(() => {}); // leave the Death mode room first
-      await pageA.goto(`${baseUrl}/editor.html`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/editor.html?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#gen', { timeout: 10_000 });
       await pageA.fill('#prompt', 'A small crypt guarded by ghosts with a treasure vault behind a locked door');
       await pageA.click('#gen');
       await pageA.waitForFunction(() => (document.querySelector('#status')?.textContent || '').includes('Playable'), { timeout: 20_000 });
+
+      // #17 AI assist: "Make harder" + undo, all logged in as pageA. Remix/harder/easier/explain
+      // share one per-user rate-limit bucket with the "Generate with AI" call just above (1 AI
+      // action per 10s, see server/index.js), so give that bucket a moment to clear first rather
+      // than racing it and getting a 429 the UI would (correctly) just toast and stop on.
+      await pageA.waitForTimeout(10_500);
+
+      const genCountFromStatus = async () => {
+        const t = await pageA.locator('#status').textContent();
+        const m = t.match(/(\d+)\s+generators/);
+        if (!m) throw new Error(`could not read generator count from #status: "${t}"`);
+        return Number(m[1]);
+      };
+      const genBefore = await genCountFromStatus();
+      await pageA.click('#harder');
+      await pageA.waitForFunction(() => (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('harder'), { timeout: 20_000 });
+      const genAfterHarder = await genCountFromStatus();
+      if (!(genAfterHarder > genBefore)) throw new Error(`"Make harder" should increase the generator count (before ${genBefore}, after ${genAfterHarder})`);
+      if (!(await pageA.locator('#undoRemix').isVisible())) throw new Error('undo button should appear after a remix/tune action');
+
+      await pageA.click('#undoRemix');
+      await pageA.waitForFunction((n) => {
+        const t = document.querySelector('#status')?.textContent || '';
+        const m = t.match(/(\d+)\s+generators/);
+        return m && Number(m[1]) === n;
+      }, genBefore, { timeout: 10_000 });
+
+      // "Explain this level" on the (now reverted) level -- exercised on its own, well clear of
+      // the harder/undo calls' own 10s window.
+      await pageA.waitForTimeout(10_500);
+      await pageA.click('#explain');
+      await pageA.waitForFunction(() => (document.querySelector('#explain-panel')?.textContent || '').length > 10, { timeout: 20_000 });
 
       await pageA.click('#save');
       await pageA.waitForFunction(() => document.querySelector('#publish') && !document.querySelector('#publish').disabled, { timeout: 10_000 });
@@ -357,7 +396,18 @@ async function main() {
 
     // ---------------- 7. Dashboard ----------------
     await scenario('7. Dashboard: progression, achievements, recent runs, leaderboard tabs', async () => {
-      await pageA.goto(`${baseUrl}/dashboard.html`, { waitUntil: 'load' });
+      // client/dashboard.js only wires up the tab buttons' onclick (and does its own initial
+      // render('scores')) once its own `await api('/api/leaderboard')` resolves, after several
+      // other sequential awaits earlier in main() -- so listen for that response *before*
+      // navigating (it can otherwise resolve before we start waiting for it) rather than racing it
+      // with a fixed sleep: a slow CI runner can still have it in flight when the checks below
+      // finish, and clicking a tab before its handler is attached is a silent no-op.
+      const leaderboardLoaded = pageA.waitForResponse((r) => r.url().includes('/api/leaderboard'), { timeout: 20_000 });
+      // Mark the promise handled right away: if an earlier assertion throws before we await it,
+      // its eventual timeout must not surface as an unhandled rejection. Awaiting it below still
+      // propagates a real failure.
+      leaderboardLoaded.catch(() => {});
+      await pageA.goto(`${baseUrl}/dashboard.html?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#mine', { timeout: 10_000 });
       if (!(await pageA.locator('#mine').isVisible())) throw new Error('#mine panel is not visible for a logged-in user');
 
@@ -373,11 +423,22 @@ async function main() {
       const runsText = await pageA.locator('#runs').textContent();
       if (runsText.includes('No runs yet')) throw new Error('expected at least one row in the Recent runs table after all the play above');
 
+      await leaderboardLoaded;
+      // Confirms dashboard.js reached its post-fetch wiring (tab buttons' onclick + the initial
+      // render('scores')), not merely that the response landed on the wire.
+      await pageA.locator('#lb th').first().waitFor({ state: 'attached', timeout: 15_000 });
+
       for (const tab of ['death', 'rank', 'depth', 'kills', 'achievements', 'scores']) {
         await pageA.click(`#tabs button[data-t="${tab}"]`);
-        await pageA.waitForTimeout(150);
-        const lbHtml = await pageA.locator('#lb').innerHTML();
-        if (!lbHtml || !lbHtml.includes('<th')) throw new Error(`leaderboard tab "${tab}" did not render a header row`);
+        // Wait on real header elements, not an innerHTML substring: the table is re-rendered per
+        // tab, and a DOM query is stable against harmless markup changes.
+        try {
+          await pageA.locator('#lb th').first().waitFor({ state: 'attached', timeout: 10_000 });
+        } catch (e) {
+          // Only a timeout means "no header row"; any other Playwright error is a real harness fault.
+          if (e?.name !== 'TimeoutError') throw e;
+          throw new Error(`leaderboard tab "${tab}" did not render a header row`);
+        }
       }
     });
 
@@ -431,7 +492,7 @@ async function main() {
       // (never explicitly left) — clear it first so this fresh navigation lands on the lobby
       // instead of auto-reconnecting into that stale room (see game.js's resume-on-load check).
       await pageA.evaluate(() => { try { sessionStorage.removeItem('gc_resume'); } catch {} });
-      await pageA.goto(`${baseUrl}/`, { waitUntil: 'load' });
+      await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
       await pageA.waitForSelector('#heroes .hero', { timeout: 10_000 });
       await pageA.click('#hero-tabs [data-tab="custom"]');
       await pageA.waitForSelector('#heroes-custom .hero', { timeout: 10_000 });
@@ -451,6 +512,386 @@ async function main() {
       if (nmColor !== 'rgb(59, 125, 255)') throw new Error(`expected the custom hero's colour (#3b7dff) on the HUD name tag, got ${nmColor}`);
 
       await pageA.click('#leave').catch(() => {});
+    });
+
+    // ---------------- 10. Touch layout (#15) ----------------
+    await scenario('10. Touch layout: ?touch=1 forces the d-pad to render, and tapping a zone moves the hero', async () => {
+      const ctxC = await browser.newContext();
+      const pageC = await ctxC.newPage(); attach(pageC, 'C');
+
+      await pageC.goto(`${baseUrl}/?touch=1&nosw=1`, { waitUntil: 'load' });
+      await pageC.waitForSelector('#heroes .hero', { timeout: 10_000 });
+      await pageC.click('#heroes .hero:nth-child(1)'); // Warrior
+      await pageC.fill('#gname', 'TouchTester');
+      await pageC.click('#create');
+      await pageC.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+      await pageC.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 }); // solo host, no ready-up needed
+      await pageC.click('#rs-start');
+      await pageC.waitForSelector('#game.on', { timeout: 15_000 });
+
+      const touchRoomId = new URL(pageC.url()).searchParams.get('room');
+      if (!touchRoomId) throw new Error(`browser C URL did not carry a room id for the touch-layout room: ${pageC.url()}`);
+
+      // client/input.js force-shows the layout via a `touch-force` class when `?touch=1` is
+      // present, since headless Chromium reports a fine (not coarse) pointer.
+      await pageC.waitForSelector('#touch.touch-force', { timeout: 5_000 });
+      const dirCount = await pageC.locator('.input-dpad .input-dir:not(.input-dir-mid)').count();
+      if (dirCount !== 8) throw new Error(`expected 8 direction tap zones in the touch d-pad, got ${dirCount}`);
+      if (!(await pageC.locator('.input-fire').isVisible())) throw new Error('touch fire button is not visible');
+      if (!(await pageC.locator('.input-autofire').isVisible())) throw new Error('touch auto-fire toggle is not visible');
+
+      // The HUD has no position readout, so spy on the room's raw snapshot stream (same pattern as
+      // scenarios 3/5's debug helper) to read TouchTester's own hero position before/after the tap.
+      const helperWs3 = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await once(helperWs3, 'open');
+      let myPid = null;
+      let lastSnap = null;
+      helperWs3.on('message', (data) => {
+        let msg; try { msg = JSON.parse(data); } catch { return; }
+        if (msg.t === 'players' && !myPid) {
+          const me = msg.list.find((p) => p.name === 'TouchTester');
+          if (me) myPid = me.id;
+        }
+        if (msg.t === 's') lastSnap = msg;
+      });
+      helperWs3.send(JSON.stringify({ t: 'join', roomId: touchRoomId, name: 'TouchSpy' }));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (!myPid) throw new Error('helper spy never saw a "players" packet naming TouchTester');
+      const posOf = () => { const p = lastSnap?.p?.find((pp) => pp[0] === myPid); return p ? { x: p[1], y: p[2] } : null; };
+      const before = posOf();
+      if (!before) throw new Error('no snapshot position for TouchTester before the tap');
+
+      // A held pointer on the "east" zone (▶) should move the hero right, same as holding 'd'.
+      const eastBtn = pageC.locator('.input-dpad .input-dir', { hasText: '▶' });
+      const box = await eastBtn.boundingBox();
+      if (!box) throw new Error('east tap zone has no bounding box (not rendered/visible)');
+      await pageC.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await pageC.mouse.down();
+      await pageC.waitForTimeout(1200);
+      await pageC.mouse.up();
+
+      const after = posOf();
+      if (!after) throw new Error('no snapshot position for TouchTester after the tap');
+      if (!(after.x > before.x)) throw new Error(`expected TouchTester's x to increase after holding the east tap zone (before=${before.x}, after=${after.x})`);
+
+      try { helperWs3.send(JSON.stringify({ t: 'leave' })); helperWs3.close(); } catch { /* best effort */ }
+      await pageC.click('#leave').catch(() => {});
+      await ctxC.close().catch(() => {});
+    });
+
+    // ---------------- 11. Lobby high-score table (#14) ----------------
+    await scenario('11. Lobby renders the arcade high-score table (GET /api/highscores)', async () => {
+      // No Death mode run has reached endRun() in this whole suite (scenario 5 only advances a
+      // wave), so the board is still empty here — a deterministic, low-risk check that the panel
+      // itself fetches and renders without error, rather than trying to drive a full run to
+      // completion (and the initials-entry modal) through two browser contexts.
+      await pageA.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
+      await pageA.waitForSelector('#lobby-highscores', { timeout: 10_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#lobby-highscores')?.textContent || '').trim().length > 0, { timeout: 10_000 });
+      const text = await pageA.textContent('#lobby-highscores');
+      if (!/no high scores yet/i.test(text)) throw new Error(`expected the empty-board message, got: ${text}`);
+
+      const res = await fetch(`${baseUrl}/api/highscores`);
+      if (!res.ok) throw new Error(`GET /api/highscores -> HTTP ${res.status}`);
+      const body = await res.json();
+      if (!Array.isArray(body.scores)) throw new Error(`expected { scores: [] }, got ${JSON.stringify(body)}`);
+    });
+
+    // ---------------- 12. PWA (#33): manifest, SW registration, offline reload ----------------
+    await scenario('12. PWA: manifest link present, service worker registers, lobby reloads offline', async () => {
+      // Its own context (no ?nosw=1 anywhere) so this is the one page load in the whole suite
+      // that actually exercises client/pwa.js registering client/sw.js for real.
+      const ctxD = await browser.newContext();
+      const pageD = await ctxD.newPage();
+      try {
+        await pageD.goto(`${baseUrl}/`, { waitUntil: 'load' });
+
+        // The server stamps ?v=<ASSET_VERSION> onto this href (#38); require it, so a regression in
+        // the HTML fingerprinting shows up here rather than as stale assets after a deploy.
+        const manifestHref = await pageD.locator('link[rel="manifest"]').getAttribute('href');
+        if (!/^\/manifest\.webmanifest\?v=[0-9a-f]{12}$/.test(manifestHref)) throw new Error(`expected the manifest link, got href="${manifestHref}"`);
+
+        const reg = await pageD.evaluate(async () => {
+          const registration = await navigator.serviceWorker.getRegistration();
+          return registration ? { scope: registration.scope } : null;
+        });
+        if (!reg) throw new Error('navigator.serviceWorker.getRegistration() resolved to nothing after load');
+
+        // Give the worker a moment to finish installing/activating and precaching the shell
+        // before pulling the network out from under it.
+        await pageD.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 15_000 });
+
+        await ctxD.setOffline(true);
+        await pageD.reload({ waitUntil: 'load' });
+        await pageD.waitForSelector('#heroes .hero', { timeout: 10_000 });
+        await ctxD.setOffline(false);
+      } finally {
+        await ctxD.close().catch(() => {});
+      }
+    });
+
+    // ---------------- 13. Mobile layout (#32) ----------------
+    await scenario('13. Mobile layout: every page fits at 360x740 with no horizontal scroll, and the nav menu button opens/closes the menu', async () => {
+      const ctxM = await browser.newContext({ viewport: { width: 360, height: 740 } });
+      const pageM = await ctxM.newPage(); attach(pageM, 'M');
+
+      const regRes = await fetch(`${baseUrl}/api/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: mobileAdminUser.name, password: mobileAdminUser.pass }),
+      });
+      if (!regRes.ok) throw new Error(`mobile admin test user registration failed: HTTP ${regRes.status}`);
+      const { token: mobileToken } = await regRes.json();
+      if (!mobileToken) throw new Error('mobile admin test user registration carried no token');
+
+      // Land on the site once to establish origin, then inject the token the way client/common.js
+      // reads it (localStorage), so every page below loads already logged in — no need to drive
+      // the auth modal by hand seven times over. `?nosw=1` everywhere (see scenario 12, #33) keeps
+      // this scenario's page loads from also registering the PWA service worker.
+      await pageM.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
+      await pageM.evaluate((t) => { try { localStorage.setItem('gc_token', t); } catch {} }, mobileToken);
+
+      const overflowOf = () => pageM.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+      const pages = ['/', '/dashboard.html', '/settings.html', '/heroes.html', '/editor.html', '/attract.html', '/admin.html'];
+      for (const path of pages) {
+        const sep = path.includes('?') ? '&' : '?';
+        await pageM.goto(`${baseUrl}${path}${sep}nosw=1`, { waitUntil: 'load' });
+        await pageM.waitForTimeout(500); // let renderNav()/the page's own async data (tables, charts) finish laying out
+        const { scrollWidth, innerWidth } = await overflowOf();
+        if (scrollWidth > innerWidth + 1) throw new Error(`${path} has horizontal overflow at 360px viewport: scrollWidth=${scrollWidth} vs innerWidth=${innerWidth}`);
+      }
+
+      // The admin dashboard specifically: confirm this user actually reached the real dashboard
+      // (GAUNTLET_ADMINS wiring above), not the "Access denied" panel — otherwise the overflow
+      // check above would have passed by testing nothing.
+      await pageM.goto(`${baseUrl}/admin.html?nosw=1`, { waitUntil: 'load' });
+      await pageM.waitForFunction(() => {
+        const app = document.querySelector('#app'), denied = document.querySelector('#denied');
+        return (app && app.style.display !== 'none') || (denied && denied.style.display !== 'none');
+      }, { timeout: 10_000 });
+      if (await pageM.locator('#denied').isVisible()) throw new Error('mobile admin test user was denied access to /admin.html — GAUNTLET_ADMINS wiring is broken');
+      if (!(await pageM.locator('#app').isVisible())) throw new Error('#app should be visible for an admin user on /admin.html');
+
+      // Nav menu button: reachable, keyboard-accessible (a real <button> with aria-expanded),
+      // collapsed by default at this width, opens on click, and closes when a nav link is clicked.
+      await pageM.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
+      await pageM.waitForSelector('#nav-toggle', { timeout: 10_000 });
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should start collapsed at 360px width');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'false') throw new Error('#nav-toggle should start with aria-expanded="false"');
+
+      await pageM.click('#nav-toggle');
+      if (!(await pageM.locator('#nav-links').isVisible())) throw new Error('#nav-links should become visible after clicking #nav-toggle');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'true') throw new Error('#nav-toggle should report aria-expanded="true" once opened');
+
+      // Escape closes it too, and re-queries the live elements rather than closing over stale ones
+      // (client/common.js installNavGlobalListeners() — this same page already re-rendered the nav
+      // seven times over by this point in the loop above, so this also exercises that the document-
+      // level Escape/outside-click listeners still work correctly after renderNav() has run more
+      // than once).
+      await pageM.keyboard.press('Escape');
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should collapse on Escape');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'false') throw new Error('#nav-toggle should report aria-expanded="false" after Escape');
+
+      // A click outside the menu (and outside the toggle button itself) closes it the same way.
+      await pageM.click('#nav-toggle');
+      if (!(await pageM.locator('#nav-links').isVisible())) throw new Error('#nav-links should reopen after clicking #nav-toggle again');
+      await pageM.evaluate(() => document.body.click()); // anywhere outside nav.top entirely
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should collapse on an outside click');
+      if ((await pageM.getAttribute('#nav-toggle', 'aria-expanded')) !== 'false') throw new Error('#nav-toggle should report aria-expanded="false" after an outside click');
+
+      await pageM.click('#nav-toggle'); // reopen once more for the nav-link-click check below
+      if (!(await pageM.locator('#nav-links').isVisible())) throw new Error('#nav-links should reopen a third time');
+      await pageM.click('#nav-links a.nl >> nth=0'); // any nav link click should close the menu
+      if (await pageM.locator('#nav-links').isVisible()) throw new Error('#nav-links should collapse again after clicking a nav link');
+
+      await ctxM.close().catch(() => {});
+    });
+
+    // ---------------- 14. Touch-drag painting in both editors (#32) ----------------
+    await scenario('14. Touch-drag painting: a fast pointer drag paints every cell along the path (no gaps) in both the Level Builder and the Hero Builder', async () => {
+      // ---- Level Builder tile grid ----
+      const ctxE = await browser.newContext();
+      const pageE = await ctxE.newPage(); attach(pageE, 'E');
+      await pageE.goto(`${baseUrl}/editor.html?nosw=1`, { waitUntil: 'load' });
+      await pageE.waitForSelector('#ecv', { timeout: 10_000 });
+      await pageE.click('#pal button[data-c="F"]'); // brush: food — visually distinct from the blank floor/wall default
+
+      // boundingBox() is relative to the current scroll position, not the element's position after
+      // scrolling it into view -- #ecv sits below the tall AI panels, so without this it comes back
+      // with a negative y (scrolled above the viewport) and the mouse coordinates below miss it
+      // entirely (locator actions like .click() scroll into view automatically; raw mouse.move()
+      // does not).
+      await pageE.locator('#ecv').scrollIntoViewIfNeeded();
+      const ecvBox = await pageE.locator('#ecv').boundingBox();
+      if (!ecvBox) throw new Error('#ecv has no bounding box');
+      const EW = 32, EH = 24; // the editor's default new-level size (client/editor.js ED.w/h)
+      const ecvCell = (cx, cy) => ({ x: ecvBox.x + (cx + 0.5) * (ecvBox.width / EW), y: ecvBox.y + (cy + 0.5) * (ecvBox.height / EH) });
+      const eFrom = ecvCell(3, 10), eTo = ecvCell(28, 10); // a long horizontal drag, well clear of the border walls
+      await pageE.mouse.move(eFrom.x, eFrom.y);
+      await pageE.mouse.down();
+      await pageE.mouse.move(eTo.x, eTo.y); // one big jump (default steps=1): exactly the sparse-pointermove case paintPath() exists for
+      await pageE.mouse.up();
+
+      const grid = await pageE.evaluate(() => window.__ed.grid());
+      for (let x = 3; x <= 28; x++) {
+        if (grid[10][x] !== 'F') throw new Error(`Level Builder drag left a gap at column ${x} (row 10): expected food ("F"), got "${grid[10][x]}"`);
+      }
+
+      // A touch drag can be cancelled mid-stroke (the browser taking over for a scroll/zoom
+      // gesture, another touch point, an OS interruption) with no matching pointerup. Simulate that
+      // by capturing the real pointerdown's pointerId, then dispatching a synthetic pointercancel
+      // for it partway through a still-in-progress mouse press, and confirm painting really stops:
+      // before the pointercancel handler was added, `ED.painting` stayed stuck true and the mouse
+      // movement below (still physically "down" from Playwright's perspective) kept painting.
+      await pageE.evaluate(() => {
+        window.__lastPointerId = null;
+        document.querySelector('#ecv').addEventListener('pointerdown', (e) => { window.__lastPointerId = e.pointerId; }, { once: true });
+      });
+      const cFrom = ecvCell(3, 15), cTo = ecvCell(15, 15);
+      await pageE.mouse.move(cFrom.x, cFrom.y);
+      await pageE.mouse.down();
+      await pageE.mouse.move(ecvCell(8, 15).x, ecvCell(8, 15).y); // paints columns 3-8 on row 15 normally
+      await pageE.evaluate(() => {
+        document.querySelector('#ecv').dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.__lastPointerId, bubbles: true, cancelable: true }));
+      });
+      await pageE.mouse.move(cTo.x, cTo.y); // still "down" per Playwright — must NOT resume painting past the cancel
+      await pageE.mouse.up();
+
+      const gridAfterCancel = await pageE.evaluate(() => window.__ed.grid());
+      for (let x = 10; x <= 15; x++) {
+        if (gridAfterCancel[15][x] !== '.') throw new Error(`pointercancel did not stop the stroke: column ${x} (row 15) got painted ("${gridAfterCancel[15][x]}") after the cancel`);
+      }
+      await ctxE.close().catch(() => {});
+
+      // ---- Hero Builder pixel grid ----
+      const heroUser = { name: `e2ePixel${rnd()}`, pass: 'Password123' };
+      const heroReg = await fetch(`${baseUrl}/api/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: heroUser.name, password: heroUser.pass }),
+      });
+      if (!heroReg.ok) throw new Error(`Hero Builder test user registration failed: HTTP ${heroReg.status}`);
+      const { token: heroToken } = await heroReg.json();
+      const xpRes = await fetch(`${baseUrl}/api/heroes/debug/xp`, {
+        method: 'POST', headers: { 'content-type': 'application/json', Authorization: `Bearer ${heroToken}` },
+        body: JSON.stringify({ amount: 700 }), // clears the rank-3 Hero Builder unlock, same debug hook as scenario 9
+      });
+      if (!xpRes.ok) throw new Error(`granting XP for the Hero Builder unlock failed: HTTP ${xpRes.status}`);
+
+      const ctxP = await browser.newContext();
+      const pageP = await ctxP.newPage(); attach(pageP, 'P');
+      await pageP.goto(`${baseUrl}/?nosw=1`, { waitUntil: 'load' });
+      await pageP.evaluate((t) => { try { localStorage.setItem('gc_token', t); } catch {} }, heroToken);
+      await pageP.goto(`${baseUrl}/heroes.html?nosw=1`, { waitUntil: 'load' });
+      await pageP.waitForSelector('#builder:not([hidden])', { timeout: 10_000 });
+
+      await pageP.locator('#pcv').scrollIntoViewIfNeeded(); // see the #ecv comment above — same reasoning
+      const pcvBox = await pageP.locator('#pcv').boundingBox();
+      if (!pcvBox) throw new Error('#pcv has no bounding box');
+      const pcvCell = (cx, cy) => ({ x: pcvBox.x + (cx + 0.5) * (pcvBox.width / 8), y: pcvBox.y + (cy + 0.5) * (pcvBox.height / 8) });
+      const hFrom = pcvCell(1, 4), hTo = pcvCell(6, 4); // the 8x8 pixel grid: a drag across most of one row
+      await pageP.mouse.move(hFrom.x, hFrom.y);
+      await pageP.mouse.down();
+      await pageP.mouse.move(hTo.x, hTo.y); // one big jump, same fast-drag case as above
+      await pageP.mouse.up();
+
+      const pixels = await pageP.evaluate(() => window.__hb.pixels());
+      for (let x = 1; x <= 6; x++) {
+        if (pixels[4][x] === '.') throw new Error(`Hero Builder drag left a gap at pixel (${x}, 4): still blank after the stroke`);
+      }
+      await ctxP.close().catch(() => {});
+    });
+
+    // ---------------- 15. Mobile viewport (#31) ----------------
+    await scenario('15. Mobile viewport: canvas fits the screen, no horizontal scroll, d-pad clear of the canvas/HUD', async () => {
+      const ctxD = await browser.newContext({ viewport: { width: 375, height: 667 }, hasTouch: true });
+      const pageD = await ctxD.newPage(); attach(pageD, 'D');
+
+      await pageD.goto(`${baseUrl}/?touch=1&nosw=1`, { waitUntil: 'load' });
+      await pageD.waitForSelector('#heroes .hero', { timeout: 10_000 });
+      await pageD.click('#heroes .hero:nth-child(1)'); // Warrior
+      await pageD.fill('#gname', 'MobileTester');
+      await pageD.click('#create');
+      await pageD.waitForSelector('#roomscreen.on', { timeout: 15_000 });
+      await pageD.waitForSelector('#rs-start:not([disabled])', { timeout: 5_000 }); // solo host, no ready-up needed
+      await pageD.click('#rs-start');
+      await pageD.waitForSelector('#game.on', { timeout: 15_000 });
+      await pageD.waitForSelector('#touch.touch-force', { timeout: 5_000 });
+      // Let client/game.js's layoutGame() run at least one resize/HUD pass (it also fires from the
+      // 'players' packet renderHud() handles) before reading boxes back.
+      await pageD.waitForFunction(() => document.querySelectorAll('#hud .pp').length > 0, { timeout: 10_000 });
+      await pageD.waitForTimeout(200);
+
+      // Scoped to the game view (#session) + the touch band, not document.documentElement.scrollWidth
+      // as a whole: this task owns client/game.js/input.js and the in-game part of index.html only —
+      // the lobby/nav bar are a different, concurrently-in-progress responsiveness pass (see
+      // AGENT_RULES.md), so a still-unresponsive nav shouldn't fail a test of the game screen.
+      const gameViewOverflow = await pageD.evaluate(() => {
+        let maxRight = 0;
+        const consider = (el) => { if (!el) return; const r = el.getBoundingClientRect(); if (r.right > maxRight) maxRight = r.right; };
+        const session = document.querySelector('#session');
+        consider(session);
+        session?.querySelectorAll('*').forEach(consider);
+        consider(document.querySelector('#touch'));
+        return { maxRight, innerWidth: window.innerWidth };
+      });
+      if (gameViewOverflow.maxRight > gameViewOverflow.innerWidth + 1) {
+        throw new Error(`game view scrolls horizontally on a 375px-wide viewport: ${JSON.stringify(gameViewOverflow)}`);
+      }
+
+      const cvBox = await pageD.locator('#cv').boundingBox();
+      if (!cvBox) throw new Error('#cv has no bounding box (not visible)');
+      const viewport = pageD.viewportSize();
+      if (cvBox.x < -0.5 || cvBox.y < -0.5 || cvBox.x + cvBox.width > viewport.width + 0.5 || cvBox.y + cvBox.height > viewport.height + 0.5) {
+        throw new Error(`#cv is not fully inside the viewport: box=${JSON.stringify(cvBox)} viewport=${JSON.stringify(viewport)}`);
+      }
+
+      const overlaps = (a, b) => a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+      const touchBox = await pageD.locator('#touch').boundingBox();
+      if (!touchBox) throw new Error('#touch (the d-pad/fire band) has no bounding box (not visible)');
+      if (overlaps(touchBox, cvBox)) throw new Error(`touch controls overlap the canvas: touch=${JSON.stringify(touchBox)} canvas=${JSON.stringify(cvBox)}`);
+      const hudBox = await pageD.locator('#hud').boundingBox();
+      if (!hudBox) throw new Error('#hud has no bounding box (not visible)');
+      if (overlaps(touchBox, hudBox)) throw new Error(`touch controls overlap the HUD: touch=${JSON.stringify(touchBox)} hud=${JSON.stringify(hudBox)}`);
+
+      await pageD.click('#leave').catch(() => {});
+      await ctxD.close().catch(() => {});
+    });
+
+    // ---------------- 16. PWA update toast defers during active gameplay (#33) ----------------
+    await scenario('16. PWA: the "reload for the latest version" toast waits until gameplay ends instead of interrupting a run', async () => {
+      // Its own context with no ?nosw=1 (like scenario 12) so this exercises the real service
+      // worker registration/message path, not a stub.
+      const ctxU = await browser.newContext();
+      const pageU = await ctxU.newPage(); attach(pageU, 'U');
+      try {
+        await pageU.goto(`${baseUrl}/`, { waitUntil: 'load' });
+        await pageU.waitForFunction(() => navigator.serviceWorker.controller !== null, { timeout: 15_000 });
+        // client/sw.js's activate() posts its "updated" message on every activation, including this
+        // very first install (there's no previous version to distinguish it from) — so a real toast
+        // is expected here too, before this scenario's own check even starts. Wait for and clear it
+        // (bypassing the toast's own remove()-on-click path, which would reload the page) so the
+        // assertions below are only about the synthetic message dispatched below.
+        await pageU.waitForSelector('#pwa-update-toast', { timeout: 15_000 });
+        await pageU.evaluate(() => document.getElementById('pwa-update-toast')?.remove());
+
+        // Simulate an in-progress run without needing a full multiplayer join/start round trip:
+        // client/game.js's only contract with client/pwa.js here is the `gc-playing` class it puts
+        // on <body> for exactly the window the game canvas is on-screen (see leaveGame()/onMessage()).
+        await pageU.evaluate(() => document.body.classList.add('gc-playing'));
+        // A real service-worker update posts this exact message (client/sw.js activate()); dispatch
+        // it directly on the container rather than driving an actual redeploy.
+        await pageU.evaluate(() => navigator.serviceWorker.dispatchEvent(
+          new MessageEvent('message', { data: { type: 'gauntlet-sw-updated', version: 'e2e-test' } }),
+        ));
+        await pageU.waitForTimeout(300);
+        if (await pageU.locator('#pwa-update-toast').count()) {
+          throw new Error('update toast appeared while gc-playing was set on <body> — it must not interrupt an active run');
+        }
+
+        await pageU.evaluate(() => document.body.classList.remove('gc-playing')); // the "run" ends, back to the lobby
+        await pageU.waitForSelector('#pwa-update-toast', { timeout: 5_000 });
+      } finally {
+        await ctxU.close().catch(() => {});
+      }
     });
 
     await ctxA.close().catch(() => {});

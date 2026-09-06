@@ -59,6 +59,79 @@ test('the new monster/item glyphs are accepted, and the skip-exit (8) counts as 
   assert.equal(parsed.exits.length, 1, "'8' is recognized as an exit tile");
 });
 
+test('the amulet and boost glyphs are accepted tiles', () => {
+  const rows = LEVEL1.rows.slice();
+  rows[1] = rows[1].slice(0, 20) + 'I' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + 'R' + rows[2].slice(21);
+  rows[4] = rows[4].slice(0, 20) + 'O' + rows[4].slice(21);
+  rows[6] = rows[6].slice(0, 20) + 'U' + rows[6].slice(21);
+  rows[8] = rows[8].slice(0, 20) + 'V' + rows[8].slice(21);
+  rows[10] = rows[10].slice(0, 20) + 'A' + rows[10].slice(21);
+  rows[12] = rows[12].slice(0, 20) + 'B' + rows[12].slice(21);
+  rows[14] = rows[14].slice(0, 20) + 'Q' + rows[14].slice(21);
+  rows[16] = rows[16].slice(0, 20) + 'N' + rows[16].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+});
+
+test('the pressure-plate/wall-group and timed-wall glyphs (#11) are accepted tiles', () => {
+  const rows = LEVEL1.rows.slice();
+  rows[1] = rows[1].slice(0, 20) + '%' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + '&' + rows[2].slice(21);
+  rows[4] = rows[4].slice(0, 20) + '*' + rows[4].slice(21);
+  rows[6] = rows[6].slice(0, 20) + '=' + rows[6].slice(21);
+  rows[8] = rows[8].slice(0, 20) + '+' + rows[8].slice(21);
+  rows[10] = rows[10].slice(0, 20) + '~' + rows[10].slice(21);
+  rows[12] = rows[12].slice(0, 20) + '^' + rows[12].slice(21);
+  rows[14] = rows[14].slice(0, 20) + ':' + rows[14].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+});
+
+test('repairLevel sanitizes the pressure-plate/wall-group/timed-wall glyphs through unchanged (not scrubbed to floor)', () => {
+  const broken = { name: 'x', rows: ['..........', '..####....', '..#%=+~^:#', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
+  const fixed = repairLevel(broken);
+  const joined = fixed.rows.join('');
+  for (const glyph of ['%', '=', '+', '~', '^', ':']) assert.ok(joined.includes(glyph), `${glyph} survived repairLevel's sanitiser`);
+});
+
+test('the acid/stun/force-field glyphs (#12) are accepted tiles', () => {
+  const rows = LEVEL1.rows.slice();
+  rows[1] = rows[1].slice(0, 20) + 'a' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + 't' + rows[2].slice(21);
+  rows[4] = rows[4].slice(0, 20) + 'f' + rows[4].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+});
+
+test("repairLevel sanitizes the acid/stun/force-field glyphs (#12) through unchanged", () => {
+  const broken = { name: 'x', rows: ['..........', '..####....', '..#atf....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
+  const fixed = repairLevel(broken);
+  const joined = fixed.rows.join('');
+  for (const glyph of ['a', 't', 'f']) assert.ok(joined.includes(glyph), `${glyph} survived repairLevel's sanitiser`);
+});
+
+test('the hidden-exit and switch glyphs (#13) are accepted tiles', () => {
+  const rows = LEVEL1.rows.slice(); // LEVEL1 already contains treasure, so a lone H is reachable
+  rows[1] = rows[1].slice(0, 20) + 'H' + rows[1].slice(21);
+  rows[2] = rows[2].slice(0, 20) + 'L' + rows[2].slice(21);
+  assert.deepEqual(validateLevel({ rows }), []);
+  const parsed = parseLevel({ rows });
+  assert.ok(parsed.exits.some(([x, y]) => rows[y][x] === 'H'), 'a hidden exit counts toward parseLevel\'s exit list');
+});
+
+test('a hidden exit with no switch and no treasure fails validation (it could never be revealed)', () => {
+  // Strip every treasure tile and turn LEVEL1's one real exit into a hidden one — now nothing in
+  // the level could ever reveal it, so it must behave exactly like a permanent wall.
+  const rows = LEVEL1.rows.slice().map((r) => r.replace(/T/g, '.').replace(/E/g, 'H'));
+  assert.ok(!rows.some((r) => r.includes('T') || r.includes('E')), 'sanity: no treasure, no plain exit left');
+  assert.match(validateLevel({ rows })[0], /not reachable/);
+});
+
+test("repairLevel sanitizes the hidden-exit/switch glyphs (#13) through unchanged", () => {
+  const broken = { name: 'x', rows: ['..........', '..####....', '..#HL.....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
+  const fixed = repairLevel(broken);
+  const joined = fixed.rows.join('');
+  for (const glyph of ['H', 'L']) assert.ok(joined.includes(glyph), `${glyph} survived repairLevel's sanitiser`);
+});
+
 test('repairLevel fixes borders, missing start/exit and connectivity', () => {
   const broken = { name: 'x', rows: ['..........', '..####....', '..#..#....', '..........', '..........', '..........', '..........', '..........', '..........', '.........'] };
   const fixed = repairLevel(broken);
@@ -89,7 +162,28 @@ test('repairLevel keeps a level that only has a skip exit (8) and adds no extra 
   assert.deepEqual(validateLevel(fixed), []);
 });
 
-test('the missing-exit error names both exit tiles', () => {
+test("repairLevel's connectivity carve never overwrites a hidden exit tile (#27 review)", () => {
+  // A hidden exit (H), enclosed in its own room by a fully-solid wall row, with no other exit-like
+  // tile anywhere else. A treasure tile makes it revealable (hiddenExitOpenable), so it should count
+  // as a real exit once repairLevel carves a path to it — the connectivity fallback must never carve
+  // straight through the H tile itself (that used to convert it to floor, destroying the level's
+  // only exit outright).
+  const w = 12, h = 12;
+  const grid = Array.from({ length: h }, (_, y) => Array.from({ length: w }, (_, x) => {
+    if (y === 0 || y === h - 1 || x === 0 || x === w - 1 || y === 5) return '#';
+    return '.';
+  }));
+  grid[1][1] = 'S';
+  grid[1][6] = 'T'; // treasure: makes the hidden exit openable
+  grid[7][10] = 'H'; // hidden exit, walled off in its own room (row 5 is solid all the way across)
+  const rows = grid.map((r) => r.join(''));
+  const fixed = repairLevel({ name: 'hidden-exit-only', rows });
+  const joined = fixed.rows.join('');
+  assert.equal((joined.match(/H/g) || []).length, 1, "the hidden exit must survive repairLevel's carve");
+  assert.deepEqual(validateLevel(fixed), []);
+});
+
+test('the missing-exit error names every exit-like tile, including the hidden exit (#13)', () => {
   const rows = Array.from({ length: 12 }, (_, y) => (y === 0 || y === 11 ? '############' : y === 1 ? '#S.........#' : '#..........#'));
-  assert.throws(() => parseLevel({ rows }), /E or 8/);
+  assert.throws(() => parseLevel({ rows }), /E, 8, or H/);
 });

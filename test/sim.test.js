@@ -324,7 +324,9 @@ test('snapshot is compact and level packet round-trips', () => {
   const sim = new Sim(ARENA);
   sim.addPlayer('a', { name: 'A', cls: 'valkyrie' });
   const s = sim.snapshot();
-  assert.equal(s.t, 's'); assert.equal(s.p.length, 1); assert.equal(s.p[0].length, 9);
+  assert.equal(s.t, 's'); assert.equal(s.p.length, 1); assert.equal(s.p[0].length, 12);
+  assert.equal(s.p[0][9], ''); assert.equal(s.p[0][10], ''); // no run-boosts/amulets active yet
+  assert.equal(s.p[0][11], 0); // not stunned (#12)
   const lp = sim.levelPacket();
   assert.equal(lp.rows.length, 16); assert.equal(lp.rows[0].length, 16);
 });

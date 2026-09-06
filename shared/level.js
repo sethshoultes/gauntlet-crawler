@@ -1,7 +1,7 @@
 // Level format: parse/validate/auto-repair an ASCII level (array of equal-length strings) and the
 // tile legend used by the editor and README. Used by both the server (level.js validation before
 // save/publish) and the client (editor.js preview).
-import { T, ALL_TILES, EXIT_TILES } from './constants.js';
+import { T, ALL_TILES, EXIT_TILES, EXIT_LIKE_TILES, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS } from './constants.js';
 
 export const MIN_SIZE = 12;
 export const MAX_SIZE = 64;
@@ -22,12 +22,14 @@ export function parseLevel(raw) {
   }
   const starts = [];
   const exits = [];
+  // EXIT_LIKE_TILES (not the narrower EXIT_TILES): a hidden exit (#13) still counts as an exit
+  // having been placed for this structural check, even though it behaves like a wall until revealed.
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     if (rows[y][x] === T.START) starts.push([x, y]);
-    if (EXIT_TILES.has(rows[y][x])) exits.push([x, y]);
+    if (EXIT_LIKE_TILES.has(rows[y][x])) exits.push([x, y]);
   }
   if (starts.length === 0) throw new Error('level has no start (S) tile');
-  if (exits.length === 0) throw new Error('level has no exit tile (E or 8)');
+  if (exits.length === 0) throw new Error('level has no exit tile (E, 8, or H)');
   return {
     name: String(raw.name || 'Untitled').slice(0, 40),
     description: String(raw.description || '').slice(0, 200),
@@ -51,34 +53,60 @@ export function validateLevel(raw) {
   return problems;
 }
 
-/** BFS from the first start to any exit; doors are passable only if the level has at least one key. */
+/** BFS from the first start to any exit; doors are passable only if the level has at least one key.
+ *  A group wall (see GROUP_WALLS/TRAP_PLATES) is passable only if the level actually contains the
+ *  plate that dissolves it — with no plate placed it can never open, so it stays solid for
+ *  reachability purposes. A timed wall (TIMED_WALLS) is always treated as eventually passable: its
+ *  timer fires unconditionally, converting it to floor or an exit (see server/game/sim.js
+ *  stepTimedWalls).
+ *
+ *  Mystery treasure rooms (#13): a hidden exit behaves like a wall until revealed and like an exit
+ *  afterwards, so it is never pathed *through* here — it only satisfies reachability when the
+ *  player can stand next to it AND can actually trigger the reveal (server/game/sim.js
+ *  revealHiddenExits): reach a switch tile, or reach every treasure tile (the "collect it all"
+ *  condition needs all of them, so one unreachable treasure means the exit never opens). */
 export function exitReachable(lvl) {
   const { w, h, rows, starts } = lvl;
   const hasKey = rows.some((r) => r.includes(T.KEY));
+  const openableGroups = new Set();
+  for (const [plateGlyph, wallGlyph] of Object.entries(TRAP_PLATES)) {
+    if (rows.some((r) => r.includes(plateGlyph))) openableGroups.add(wallGlyph);
+  }
   const seen = new Uint8Array(w * h);
   const q = [starts[0]];
   seen[starts[0][1] * w + starts[0][0]] = 1;
+  let hiddenExitAdjacent = false;
+  let switchReached = false;
+  let treasureTotal = 0;
+  let treasureReached = 0;
+  for (const r of rows) for (const c of r) if (c === T.TREASURE) treasureTotal++;
   while (q.length) {
     const [x, y] = q.shift();
-    if (EXIT_TILES.has(rows[y][x])) return true;
+    const here = rows[y][x];
+    if (EXIT_TILES.has(here)) return true;
+    if (here === T.SWITCH) switchReached = true;
+    if (here === T.TREASURE) treasureReached++;
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
       const nx = x + dx, ny = y + dy;
       if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
       const c = rows[ny][nx];
       if (c === T.WALL) continue;
+      if (c === T.HIDDEN_EXIT) { hiddenExitAdjacent = true; continue; } // terminal once revealed, never a corridor
       if (c === T.DOOR && !hasKey) continue;
+      if (GROUP_WALLS.has(c) && !openableGroups.has(c)) continue;
       const i = ny * w + nx;
       if (seen[i]) continue;
       seen[i] = 1;
       q.push([nx, ny]);
     }
   }
-  return false;
+  if (!hiddenExitAdjacent) return false;
+  return switchReached || (treasureTotal > 0 && treasureReached === treasureTotal);
 }
 
 /** Try to fix common problems in a generated level: pad/crop rows, force border walls, carve a path to the exit. */
 export function repairLevel(raw) {
-  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8]/g, '.'));
+  let rows = (raw.rows || []).map((r) => String(r).replace(/[^#.DKFPTESghm123ZW456lsXC!8IROUVABQN%&*=+~^:atfHL]/g, '.'));
   rows = rows.filter((r) => r.length > 0);
   let w = Math.max(...rows.map((r) => r.length), MIN_SIZE);
   w = Math.min(w, MAX_SIZE);
@@ -105,10 +133,20 @@ export function repairLevel(raw) {
   let lvl = { name: raw.name, description: raw.description, rows: grid.map((r) => r.join('')) };
   const parsed = parseLevel(lvl);
   if (!exitReachable(parsed)) {
-    // Carve an L-shaped corridor from start to the first exit.
+    // Carve an L-shaped corridor from start to an exit. Prefer a real exit (E/8) as the target
+    // over a hidden one (H) — a hidden exit is only reachable once revealed, so if a real exit
+    // exists elsewhere it's the safer thing to guarantee a path to. Either way, never carve over
+    // the exit-like tile itself: it used to convert a HIDDEN_EXIT target straight to floor,
+    // silently destroying the level's only exit (#27 review) — carving stops one tile short and
+    // relies on exitReachable() already treating an openable H as passable once adjacent.
     const [sx, sy] = parsed.starts[0];
-    const [ex, ey] = parsed.exits[0];
-    const carve = (x, y) => { if (grid[y][x] === T.WALL || grid[y][x] === T.TRAP || grid[y][x] === T.DOOR) grid[y][x] = T.FLOOR; };
+    const target = parsed.exits.find(([x, y]) => EXIT_TILES.has(grid[y][x])) || parsed.exits[0];
+    const [ex, ey] = target;
+    const carve = (x, y) => {
+      const c = grid[y][x];
+      if (EXIT_LIKE_TILES.has(c)) return;
+      if (c === T.WALL || c === T.TRAP || c === T.DOOR || GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) grid[y][x] = T.FLOOR;
+    };
     for (let x = Math.min(sx, ex); x <= Math.max(sx, ex); x++) carve(x, sy);
     for (let y = Math.min(sy, ey); y <= Math.max(sy, ey); y++) carve(ex, y);
     lvl = { ...lvl, rows: grid.map((r) => r.join('')) };
@@ -126,4 +164,26 @@ export const LEGEND = [
   [T.GHOST, 'Ghost'], [T.GRUNT, 'Grunt'], [T.DEMON, 'Demon'], [T.DEATH, 'Death'],
   [T.LOBBER, 'Lobber'], [T.SORCERER, 'Sorcerer'], [T.THIEF, 'Thief'],
   [T.TRAP, 'Secret wall (crumbles when a player touches it)'],
+  [T.AMULET_INVIS, 'Invisibility amulet (20s: monsters ignore you)'],
+  [T.AMULET_REFLECT, 'Reflective shots amulet (20s: shots bounce off a wall once)'],
+  [T.AMULET_REPULSE, "Repulsiveness amulet (20s: pushes monsters away, they can't touch you)"],
+  [T.AMULET_SUPER, 'Super shots amulet (20s: shots pierce through monsters)'],
+  [T.BOOST_SPEED, 'Speed boost (permanent, rare)'],
+  [T.BOOST_ARMOR, 'Armor boost (permanent, rare)'],
+  [T.BOOST_SHOT, 'Shot power boost (permanent, rare)'],
+  [T.BOOST_FIRE_RATE, 'Shot speed boost (permanent, rare)'],
+  [T.BOOST_MAGIC, 'Magic power boost (permanent, rare)'],
+  [T.TRAP_PLATE_A, 'Pressure plate A (dissolves all "=" wall-group A tiles when stepped on)'],
+  [T.TRAP_PLATE_B, 'Pressure plate B (dissolves all "+" wall-group B tiles when stepped on)'],
+  [T.TRAP_PLATE_C, 'Pressure plate C (dissolves all "~" wall-group C tiles when stepped on)'],
+  [T.TRAP_WALL_A, 'Wall group A (solid until plate A is triggered)'],
+  [T.TRAP_WALL_B, 'Wall group B (solid until plate B is triggered)'],
+  [T.TRAP_WALL_C, 'Wall group C (solid until plate C is triggered)'],
+  [T.TIMED_WALL, 'Timed wall (becomes floor after the level timer)'],
+  [T.TIMED_WALL_EXIT, 'Timed exit wall (becomes an exit after the level timer)'],
+  [T.ACID, 'Acid puddle (damages any hero standing on it; monsters immune)'],
+  [T.STUN_TILE, 'Stun tile (freezes on contact, then a brief immunity window)'],
+  [T.FORCE_FIELD, 'Force field (blocks shots; heroes and monsters walk through)'],
+  [T.HIDDEN_EXIT, 'Hidden exit (solid like a wall until revealed by a switch or full treasure pickup)'],
+  [T.SWITCH, 'Switch (reveals every hidden exit in the level when a hero steps on it)'],
 ];

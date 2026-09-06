@@ -121,4 +121,51 @@ CREATE INDEX IF NOT EXISTS heroes_owner ON heroes(owner_id);
 CREATE INDEX IF NOT EXISTS heroes_pub ON heroes(published, clones DESC);
 `);
 
+// AI narrator commentary (#18, server/ai/narrator.js): generated lines are cached in-process (a
+// capped Map) but also persisted here so a restart doesn't re-spend a generation for a cache key
+// already answered once. `cache_key` is `${eventType}|${coarse context key}` (e.g.
+// "party|warrior,valkyrie", "kill_streak|10") — coarse and non-identifying by construction, never
+// a username or chat text (see README.md's AI Narrator section).
+db.exec(`
+CREATE TABLE IF NOT EXISTS narrator_lines (
+  cache_key TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  line TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+`);
+
+// Arcade all-time high scores (#14, server/highscores.js): a separate table from `runs` above —
+// `runs` is per-account history (guests are never recorded there, see server/stats.js recordRun),
+// while this one is the classic-cabinet "everybody's best runs" board, so user_id/guest_id are
+// both nullable and `username`/`class` are snapshotted at insert time (a later username change or
+// account deletion shouldn't rewrite history on the score table). `initials` starts NULL and is
+// filled in once by POST /api/runs/:id/initials within a short window of the run ending, and only
+// when the request carries the matching `claim_token` (a random value minted at insert time and
+// handed only to the owning client through a private 'hstoken' WS message, never in the
+// room-wide 'gameover' broadcast, so roommates cannot claim each other's scores) — see
+// server/highscores.js and Room#endRun in server/game/room.js.
+db.exec(`
+CREATE TABLE IF NOT EXISTS highscores (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  guest_id TEXT,
+  username TEXT,
+  class TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  level_reached INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'campaign',
+  ended_at INTEGER NOT NULL,
+  initials TEXT,
+  initials_set_at INTEGER,
+  claim_token TEXT
+);
+CREATE INDEX IF NOT EXISTS highscores_score ON highscores(score DESC);
+`);
+
+// Idempotent migration: a highscores table created before claim tokens existed (an earlier build
+// of this same feature branch) predates this column.
+const highscoreCols = db.prepare('PRAGMA table_info(highscores)').all().map((r) => r.name);
+if (!highscoreCols.includes('claim_token')) db.exec('ALTER TABLE highscores ADD COLUMN claim_token TEXT');
+
 export const now = () => Math.floor(Date.now() / 1000);

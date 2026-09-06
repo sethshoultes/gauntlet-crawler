@@ -40,6 +40,7 @@ export const ACHIEVEMENTS = [
   { id: 'stop_thief',       name: 'Stop, Thief!',           icon: '👮', stat: 'thief_kills',        threshold: 5,    desc: 'Kill 5 thieves before they escape with your loot.' },
   { id: 'teleporter',       name: 'Teleporter',             icon: '🌀', stat: 'teleports',          threshold: 25,   desc: 'Use 25 transporters.' },
   { id: 'bonus_hunter',     name: 'Bonus Hunter',           icon: '💎', stat: 'treasure_rooms_cleared', threshold: 5, desc: 'Clear 5 bonus treasure rooms.' },
+  { id: 'amulet_collector', name: 'Amulet Collector',       icon: '🔮', stat: 'amulet_kinds_run',   threshold: 4,    desc: 'Collect all four amulet types in a single run.' },
 ];
 
 export const ACHIEVEMENT_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));

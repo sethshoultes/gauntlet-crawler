@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<!-- PWA (#33): installable manifest, home-screen metadata, SW registration + install/update UI -->
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0b0b12" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<script type="module" src="/pwa.js"></script>
 <title>Gauntlet Crawler</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
 <meta property="og:title" content="Gauntlet Crawler" />
@@ -54,9 +61,18 @@
   #game.on { display: flex; }
   .stage { display: flex; gap: 8px; align-items: stretch; max-width: 100%; }
   .cv-wrap { position: relative; background: #000; border: 4px solid var(--line); width: min(960px, calc(100vw - 260px)); aspect-ratio: 4 / 3; }
-  #cv { display: block; width: 100%; height: 100%; }
-  #scene-cutscene { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; }
+  #cv { display: block; width: 100%; height: 100%; touch-action: none; }
+  #scene-cutscene { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; touch-action: none; }
   #scene-cutscene[hidden] { display: none; }
+  /* Fullscreen toggle + rotate hint (#31) — see client/game.js for the show/hide + wiring logic. */
+  .fs-toggle { position: absolute; top: 6px; right: 6px; z-index: 6; padding: 4px 8px; font-size: 16px;
+    line-height: 1; background: rgba(0,0,0,.55); border-color: var(--line); }
+  .fs-toggle[hidden] { display: none; }
+  .rotate-hint { position: absolute; inset: 0; z-index: 7; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 10px; background: rgba(6,6,10,.88); color: var(--yellow); font-size: 14px;
+    text-align: center; padding: 20px; }
+  .rotate-hint[hidden] { display: none; }
+  .rotate-hint button { padding: 6px 16px; }
   #hud { width: 220px; background: #000; border: 4px solid var(--line); padding: 8px; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
   #hud .pp { border: 1px solid var(--line); padding: 6px; }
   #hud .pp .nm { font-weight: bold; text-transform: uppercase; letter-spacing: 1px; }
@@ -65,7 +81,27 @@
   #hud .pp.low .hp { color: var(--red); animation: blink 1s steps(2) infinite; }
   #hud .pp.dead { opacity: .5; }
   #hud .pp.away { opacity: .4; filter: grayscale(60%); }
+  #hud .pp.acid { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+  #hud .pp.acid .hp { color: var(--green); }
+  #hud .pp.acid::after { content: 'ACID'; display: block; font-size: 10px; font-weight: bold; letter-spacing: 2px; color: var(--green); animation: blink .5s steps(2) infinite; }
+  #hud .pp.stunned .nm { color: var(--yellow); }
+  #hud .pp.it { border-color: var(--yellow); box-shadow: 0 0 0 1px var(--yellow); animation: itpulse 1s ease-in-out infinite; }
+  #hud .pp.it .nm::after { content: ' 👑 IT'; color: var(--yellow); font-size: 10px; }
+  @keyframes itpulse { 0%, 100% { box-shadow: 0 0 0 1px var(--yellow); } 50% { box-shadow: 0 0 4px 2px var(--yellow); } }
   #hud .pp .boosts { font-size: 14px; margin-top: 2px; letter-spacing: 2px; }
+  /* Player-card internals (#31): a colored initial "icon" badge plus a health bar sit alongside the
+     existing name/HEALTH/SCORE text so the compact HUD (client/style.css, <700px width or a short
+     landscape phone) can collapse to just icon + bar + score without client/game.js having to
+     build two entirely separate card layouts. */
+  #hud .pp-head { display: flex; align-items: center; gap: 8px; }
+  #hud .ic { flex: none; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 11px; font-weight: bold; color: #000; }
+  #hud .pp-names { min-width: 0; flex: 1; }
+  #hud .pp-vitals { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+  #hud .hpbar { flex: 1; height: 8px; background: var(--panel2); border: 1px solid var(--line); }
+  #hud .hpbar i { display: block; height: 100%; background: var(--green); }
+  #hud .pp.low .hpbar i { background: var(--red); }
+  #hud .pp-nums { display: flex; gap: 8px; font-size: 12px; white-space: nowrap; }
   @keyframes blink { 50% { opacity: .3; } }
   #hud .lvl { color: var(--yellow); text-align: center; text-transform: uppercase; letter-spacing: 1px; }
   #log { width: 100%; max-width: 1188px; height: 96px; overflow-y: auto; background: #000; border: 2px solid var(--line); padding: 6px; font-size: 12px; }
@@ -74,10 +110,64 @@
   .bar input { flex: 1; }
   .help { font-size: 12px; color: var(--muted); }
   .help kbd { background: var(--panel2); border: 1px solid var(--line); padding: 1px 5px; }
-  .touch { display: none; position: fixed; bottom: 12px; left: 12px; right: 12px; justify-content: space-between; pointer-events: none; }
-  .touch > div { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); gap: 4px; pointer-events: auto; }
-  .touch button { padding: 0; font-size: 18px; opacity: .8; }
+  /* Touch d-pad/auto-fire layout (#15) — built by client/input.js into this #touch container.
+     Fixed to the bottom band of the viewport so it never overlaps #hud (which sits beside the
+     canvas, not at the bottom); shown only on a coarse (touch) pointer, or forced via ?touch=1
+     (input.js toggles .touch-force) so tests/e2e can exercise it on a desktop browser.
+     Safe-area insets (#31): the band clears a notch/home-indicator/rounded corner instead of just
+     the flat 10px margin — env() resolves to 0 with no such inset, or without viewport-fit=cover. */
+  .touch { display: none; position: fixed; z-index: 30;
+    bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+    left: calc(10px + env(safe-area-inset-left, 0px));
+    right: calc(10px + env(safe-area-inset-right, 0px));
+    justify-content: space-between; align-items: flex-end; gap: 8px; pointer-events: none;
+    user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+  .touch.on.touch-force { display: flex; }
   @media (pointer: coarse) { .touch.on { display: flex; } }
+  .input-dpad { display: grid; grid-template-columns: repeat(3, clamp(56px, 25vw, 84px)); grid-template-rows: repeat(3, clamp(56px, 25vw, 84px));
+    gap: 6px; pointer-events: auto; }
+  .input-dpad, .input-actions { touch-action: none; }
+  .input-dir { padding: 0; font-size: clamp(18px, 8vw, 30px); line-height: 1; opacity: .85; border-radius: 8px; }
+  .input-dir-mid { visibility: hidden; pointer-events: none; }
+  .input-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; pointer-events: auto; }
+  .input-fire, .input-potion { width: 22vw; height: 22vw; max-width: 84px; max-height: 84px; border-radius: 50%;
+    font-size: clamp(18px, 7vw, 28px); padding: 0; align-self: flex-end; }
+  .input-autofire { font-size: 11px; padding: 8px 10px; white-space: nowrap; }
+  .input-autofire.on { background: var(--green); color: #000; border-color: var(--green); font-weight: bold; }
+
+  /* Narrowest supported phones (iPhone SE and similar, ~320-360px wide, #34): `.touch`'s own box is
+     only viewport-width minus its 10px side margins, but the d-pad alone (3 * 25vw) plus the
+     action column (fire/potion at 22vw, widened further by the auto-fire label's `white-space:
+     nowrap`) add up to well more than that — pushing the whole action column, fire button
+     included, off the right edge of the screen entirely (unreachable by touch; caught by
+     test/e2e-mobile.mjs's gameplay scenario on an iPhone SE). Shrinking the vw factors and letting
+     the auto-fire label wrap onto two lines instead of forcing its own width is enough for the two
+     columns to actually fit side by side at this width. */
+  @media (max-width: 360px) {
+    .input-dpad { grid-template-columns: repeat(3, clamp(48px, 20vw, 84px)); grid-template-rows: repeat(3, clamp(48px, 20vw, 84px)); }
+    .input-fire, .input-potion { width: 20vw; height: 20vw; }
+    .input-autofire { font-size: 10px; padding: 6px 4px; white-space: normal; width: 20vw; max-width: 84px; text-align: center; }
+  }
+
+  /* ---- lobby / hero-picker / room-settings mobile layout (#32) ---- */
+  @media (max-width: 700px) {
+    #lobby .heroes { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .hero-tabs button { min-height: 40px; padding: 8px 14px; }
+    .hero canvas { width: 56px; height: 56px; }
+    .rooms .r { flex-wrap: wrap; gap: 6px; }
+    #roomscreen .invite { flex-wrap: wrap; }
+    #roomscreen .invite input { width: 100%; }
+    .roster .row2 { flex-wrap: wrap; }
+  }
+
+  /* Landscape phones (short viewport): the pad overlays the canvas edges instead of reserving a
+     full-width band below it (client/game.js's layoutGame() only subtracts controls height from
+     the fitted canvas box in portrait) — a translucent backing keeps each control legible over
+     whatever's rendered underneath. */
+  @media (orientation: landscape) and (max-height: 500px) {
+    .input-dpad, .input-actions { background: rgba(0,0,0,.3); border-radius: 16px; padding: 6px; }
+    .input-dir, .input-fire, .input-potion, .input-autofire { opacity: .8; }
+  }
 </style>
 </head>
 <body>
@@ -109,6 +199,8 @@
           <label class="muted" style="font-size:12px"><input type="checkbox" id="private" /> private</label>
         </div>
         <p class="help">Move <kbd>WASD</kbd>/<kbd>arrows</kbd> &middot; Fire <kbd>Space</kbd> (hold and steer to aim) &middot; Potion <kbd>Q</kbd>/<kbd>Shift</kbd> &middot; Continue <kbd>Enter</kbd> &middot; Chat <kbd>T</kbd> &middot; Sound <kbd>M</kbd> &middot; Narrator <kbd>N</kbd></p>
+        <p class="help">On a phone or tablet, an oversized touch d-pad and fire/auto-fire/potion buttons appear automatically. Standard USB/Bluetooth
+          gamepads (Xbox, PlayStation, generic) work too — up to 3 extra controllers open extra local heroes in the same room.</p>
         <p class="help">Your health ticks down every second. Eat food. Shoot generators before they flood the room. Keys open doors. Potions clear the screen. Find the exit. It never ends.</p>
       </div>
       <div class="panel">
@@ -116,6 +208,10 @@
         <div class="rooms" id="rooms"><span class="muted">Loading…</span></div>
         <p class="help" style="margin-top:12px">Want a hand-made or AI-generated dungeon? Browse <a href="/editor.html#browse">community levels</a> or build your own in the <a href="/editor.html">Level Builder</a>.</p>
       </div>
+    </div>
+    <div class="panel" style="margin-top:18px">
+      <h2>High Scores</h2>
+      <div id="lobby-highscores" class="table-scroll"><span class="muted">Loading…</span></div>
     </div>
   </section>
 
@@ -155,6 +251,7 @@
             <p class="help" id="rs-death-help" style="display:none">Endless arena waves against the clock. Every level seals the exit until you clear all its
               waves; the level cap depends on the highest rank in the room.</p>
             <label><input type="checkbox" id="rs-private" /> Private room (hidden from the public list)</label>
+            <label><input type="checkbox" id="rs-itmode" /> It tag mode (2+ players: one hero draws all monster aggro)</label>
           </div>
         </div>
       </div>
@@ -164,6 +261,14 @@
         <div class="cv-wrap">
           <canvas id="cv" width="640" height="480" class="pixel"></canvas>
           <canvas id="scene-cutscene" width="640" height="480" class="pixel" hidden></canvas>
+          <!-- Fullscreen toggle + short-viewport rotate hint (#31) — client/game.js shows/hides
+               and wires both; hidden by default so a browser with no Fullscreen API (iOS Safari)
+               never shows a dead button. -->
+          <button type="button" id="fs-toggle" class="fs-toggle" title="Fullscreen" aria-label="Toggle fullscreen" hidden>⛶</button>
+          <div id="rotate-hint" class="rotate-hint" hidden>
+            <span>Rotate for a bigger view</span>
+            <button type="button" id="rotate-hint-dismiss" aria-label="Dismiss">✕</button>
+          </div>
         </div>
         <div id="hud"></div>
       </div>
@@ -176,11 +281,10 @@
     <div class="help">Move <kbd>WASD</kbd> · Fire <kbd>Space</kbd> · Potion <kbd>Q</kbd> · Continue <kbd>Enter</kbd> · Chat <kbd>T</kbd> · Sound <kbd>M</kbd> · Narrator <kbd>N</kbd></div>
   </section>
 </main>
-<div class="touch" id="touch">
-  <div id="dpad"></div>
-  <div style="grid-template-columns: repeat(2, 64px); grid-template-rows: 64px;"><button data-act="fire">🔥</button><button data-act="potion">🧪</button></div>
-</div>
+<!-- Touch d-pad, fire, auto-fire toggle and potion button (#15) are built entirely by client/input.js. -->
+<div class="touch" id="touch"></div>
 <footer>Gauntlet Crawler &mdash; a love letter to 1985. Not affiliated with Atari.</footer>
+<script type="module" src="/highscore.js"></script>
 <script type="module" src="/game.js"></script>
 </body>
 </html>

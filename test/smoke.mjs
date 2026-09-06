@@ -100,14 +100,18 @@ async function main() {
       if (res.status() >= 500) failedRequests.push(`${res.request().method()} ${res.url()} -> HTTP ${res.status()}`);
     });
 
-    for (const p of ['/', '/dashboard.html', '/editor.html']) {
+    // ?nosw=1 (client/pwa.js, #33) skips service-worker registration for this whole smoke run: a
+    // cached shell from a previous page load could otherwise mask the very code changes this
+    // script exists to catch. The PWA's own registration/offline behaviour is covered by the
+    // dedicated e2e scenario instead (test/e2e.mjs), which loads pages without it.
+    for (const p of ['/?nosw=1', '/dashboard.html?nosw=1', '/editor.html?nosw=1']) {
       log(`loading ${p}`);
       const res = await page.goto(baseUrl + p, { waitUntil: 'load', timeout: 15_000 });
       if (!res || !res.ok()) throw new Error(`GET ${p} -> ${res ? res.status() : 'no response'}`);
     }
 
     // Back on the lobby page, play through hero select -> quick play -> a few seconds live.
-    await page.goto(baseUrl + '/', { waitUntil: 'load', timeout: 15_000 });
+    await page.goto(baseUrl + '/?nosw=1', { waitUntil: 'load', timeout: 15_000 });
     log('selecting hero and starting quick play');
     await page.waitForSelector('.hero:nth-child(2)', { timeout: 10_000 });
     await page.click('.hero:nth-child(2)');

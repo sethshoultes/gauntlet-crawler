@@ -42,13 +42,96 @@ export const T = {
   POISON_FOOD: '!', // looks like food, costs health instead
   CIDER: 'C', // +50 health drink
   EXIT_SKIP: '8', // exit variant that jumps the party ahead 4 levels instead of 1
+  // ---- amulets: temporary (AMULET_DURATION seconds), see server/game/sim.js player.amulets ----
+  AMULET_INVIS: 'I',   // monsters ignore you entirely: no targeting/aggro, they wander instead
+  AMULET_REFLECT: 'R', // your shots bounce off one wall instead of dying there
+  AMULET_REPULSE: 'O', // monsters within REPULSE_RANGE tiles are pushed away each tick and can't touch you
+  AMULET_SUPER: 'U',   // your shots pierce through monsters, damaging each one they pass
+  // ---- boosts: permanent for the run, rare, stack up to BOOST_STACK_CAP, see player.runBoosts ----
+  BOOST_SPEED: 'V',
+  BOOST_ARMOR: 'A',
+  BOOST_SHOT: 'B',      // shot power (damage)
+  BOOST_FIRE_RATE: 'Q', // shot speed (reload rate)
+  BOOST_MAGIC: 'N',     // magic power
+  // ---- pressure-plate wall groups (#11): stepping on a plate (by a hero OR a monster) dissolves
+  // every wall tile sharing its group glyph across the whole level, not just a connected cluster —
+  // see TRAP_PLATES below and server/game/sim.js's triggerPlate(). Three independent pairs so a
+  // level can nest more than one puzzle at once. Solid like a wall until dissolved. ----
+  TRAP_PLATE_A: '%', TRAP_PLATE_B: '&', TRAP_PLATE_C: '*',
+  TRAP_WALL_A: '=', TRAP_WALL_B: '+', TRAP_WALL_C: '~',
+  // ---- timed walls (#11): solid like a wall until TIMER_DEFAULT_SEC (or a level's `timers`
+  // override) seconds after the level loads, then convert in place — see sim.js stepTimedWalls(). ----
+  TIMED_WALL: '^',      // -> floor
+  TIMED_WALL_EXIT: ':', // -> exit (E)
+  // ---- environmental hazards (#12, arcade parity: Gauntlet II's acid/stun/force-field tiles).
+  // All three are walkable — they only change what happens once you're standing on (or shooting
+  // through) them, never whether you can reach them — so exitReachable/procgen treat them as
+  // ordinary floor with no extra bookkeeping. See ACID_DAMAGE_PER_SEC/STUN_TICKS/STUN_IMMUNITY_TICKS
+  // below and server/game/sim.js's applyAcid/triggerStun/isSolidFor. ----
+  ACID: 'a',       // damages any hero standing on it every tick; monsters are immune (native to the dungeon)
+  STUN_TILE: 't',  // freezes movement/firing on contact (hero or monster) for STUN_TICKS, then a no-retrigger grace window
+  FORCE_FIELD: 'f',// blocks/erases every shot that touches it (player, monster, and lobber-arc landings); never blocks movement
+  // ---- mystery treasure rooms (#13, arcade parity: Gauntlet II's level-8-style secret vaults).
+  // A hidden exit renders/behaves exactly like a wall (see SOLID_TILES) until server/game/sim.js's
+  // revealHiddenExits() flips every one in the level to a real EXIT tile in place — triggered by a
+  // hero stepping on the switch, or by the level's treasure being fully collected. See
+  // shared/level.js's exitReachable() for the reachability rule these two glyphs are paired under. ----
+  HIDDEN_EXIT: 'H', // solid like a wall until revealed; becomes T.EXIT in place, never a different tile
+  SWITCH: 'L',      // walkable floor tile (a lever): a hero stepping on it reveals every hidden exit at once
 };
 
-export const SOLID_TILES = new Set([T.WALL, T.DOOR, T.TRAP]);
-export const PICKUP_TILES = new Set([T.KEY, T.FOOD, T.POTION, T.TREASURE, T.POISON_FOOD, T.CIDER]);
+export const SOLID_TILES = new Set([
+  T.WALL, T.DOOR, T.TRAP, T.TRAP_WALL_A, T.TRAP_WALL_B, T.TRAP_WALL_C, T.TIMED_WALL, T.TIMED_WALL_EXIT,
+  T.HIDDEN_EXIT,
+]);
+// plate glyph -> the wall group glyph it dissolves (see server/game/sim.js triggerPlate()).
+export const TRAP_PLATES = { [T.TRAP_PLATE_A]: T.TRAP_WALL_A, [T.TRAP_PLATE_B]: T.TRAP_WALL_B, [T.TRAP_PLATE_C]: T.TRAP_WALL_C };
+export const GROUP_WALLS = new Set(Object.values(TRAP_PLATES));
+export const TIMED_WALLS = new Set([T.TIMED_WALL, T.TIMED_WALL_EXIT]);
+export const TIMER_DEFAULT_SEC = 30; // seconds from level start before a timed wall converts, absent a level.timers override
+export const ACID_DAMAGE_PER_SEC = 10; // health drained per second standing on an acid puddle (0.5/tick @ 20Hz) — runs through hurtPlayer, so armor/perks scale it like any other damage
+export const STUN_TICKS = 30;          // ticks (1.5s @ TICK_RATE) a hero/monster is frozen after touching a stun tile
+export const STUN_IMMUNITY_TICKS = 60; // ticks (3s @ TICK_RATE) of no-retrigger grace once the freeze itself ends, so the victim can walk off the tile
+export const PICKUP_TILES = new Set([
+  T.KEY, T.FOOD, T.POTION, T.TREASURE, T.POISON_FOOD, T.CIDER,
+  T.AMULET_INVIS, T.AMULET_REFLECT, T.AMULET_REPULSE, T.AMULET_SUPER,
+  T.BOOST_SPEED, T.BOOST_ARMOR, T.BOOST_SHOT, T.BOOST_FIRE_RATE, T.BOOST_MAGIC,
+]);
+// tile -> internal kind/stat key (see server/game/sim.js pickup handling in stepPlayers).
+export const AMULET_TILES = { [T.AMULET_INVIS]: 'invis', [T.AMULET_REFLECT]: 'reflect', [T.AMULET_REPULSE]: 'repulse', [T.AMULET_SUPER]: 'super' };
+export const BOOST_TILES = { [T.BOOST_SPEED]: 'speed', [T.BOOST_ARMOR]: 'armor', [T.BOOST_SHOT]: 'shotPower', [T.BOOST_FIRE_RATE]: 'shotSpeed', [T.BOOST_MAGIC]: 'magic' };
+// Inverse of the above — the single-char snapshot code for each amulet/boost (see sim.js
+// snapshot()'s compact per-player amulet/boost strings and client/game.js's decoder).
+export const AMULET_LETTER = Object.fromEntries(Object.entries(AMULET_TILES).map(([tile, kind]) => [kind, tile]));
+export const BOOST_LETTER = Object.fromEntries(Object.entries(BOOST_TILES).map(([tile, stat]) => [stat, tile]));
+
+export const AMULET_DURATION = 20; // seconds a temporary amulet effect lasts once picked up
+export const AMULET_SCORE = 150;   // score awarded for picking up an amulet
+export const BOOST_SCORE = 300;    // score awarded for picking up a permanent boost (rarer, worth more)
+export const BOOST_STACK_CAP = 3;  // a run-boost stat can't stack past this many pickups
+export const REPULSE_RANGE = 3;    // tiles — the repulsiveness amulet's push/no-touch radius
+// Display names, used by the client's HUD tooltips and the narrator's pickup line lookup (see
+// client/game.js's onEvent 'pickup' handling and voice-lines.json's amulet_<kind>/boost_pickup ids).
+export const AMULET_NAMES = { invis: 'Invisibility', reflect: 'Reflective Shots', repulse: 'Repulsion', super: 'Super Shots' };
+export const BOOST_NAMES = { speed: 'Speed', armor: 'Armor', shotPower: 'Shot Power', shotSpeed: 'Shot Speed', magic: 'Magic Power' };
+// Per-stack magnitude of each permanent run-boost stat (see server/game/sim.js's use of these).
+export const BOOST_EFFECT = {
+  speed: 0.12,     // +12% move speed per stack
+  armor: 0.12,     // -12% damage taken per stack
+  shotPower: 1,    // +1 flat shot damage per stack
+  shotSpeed: 0.12, // -12% shot cooldown (faster reload) per stack
+  magic: 0.5,      // +0.5 magic power per stack
+};
 export const GENERATOR_TILES = new Set([T.GEN_GRUNT, T.GEN_GHOST, T.GEN_DEMON, T.GEN_LOBBER, T.GEN_SORCERER]);
 export const MONSTER_TILES = new Set([T.GHOST, T.GRUNT, T.DEMON, T.DEATH, T.LOBBER, T.SORCERER, T.THIEF]);
+// EXIT_TILES is deliberately narrow: "this tile literally completes the level right now" (used by
+// server/game/sim.js's stepPlayers and shared/level.js's exitReachable terminal check). A hidden
+// exit (#13) does NOT belong here — it behaves like a wall until revealed. EXIT_LIKE_TILES is the
+// broader "an exit was placed here, concealed or not" set used only for structural bookkeeping:
+// parseLevel's "does this level have an exit at all" check and its `exits` coordinate list (which
+// repairLevel's connectivity fallback and the AI remix's start/exit locking both key off).
 export const EXIT_TILES = new Set([T.EXIT, T.EXIT_SKIP]);
+export const EXIT_LIKE_TILES = new Set([...EXIT_TILES, T.HIDDEN_EXIT]);
 export const ALL_TILES = new Set(Object.values(T));
 
 // `shotKey` picks the shot sprite/snapshot letter for a class (see server/game/sim.js snapshot()
@@ -104,6 +187,9 @@ export const SNAP_KEY_TO_MONSTER = Object.fromEntries(Object.entries(MONSTERS).m
 export const GENERATOR_SPAWNS = { [T.GEN_GRUNT]: 'grunt', [T.GEN_GHOST]: 'ghost', [T.GEN_DEMON]: 'demon', [T.GEN_LOBBER]: 'lobber', [T.GEN_SORCERER]: 'sorcerer' };
 export const GENERATOR_SCORE = 100;
 export const TREASURE_SCORE = 100;
+// It tag mode (#13): the tagged player earns a small bonus per kill while carrying the tag, on top
+// of the monster's normal score — see server/game/sim.js killMonster() and Sim#itPid.
+export const IT_KILL_BONUS = 2;
 
 // Generator tiers (see shared/procgen.js and server/game/sim.js loadLevel/stepGenerators): a
 // generator's tier is derived from the level index, not stored per-tile (a 1-char grid has no

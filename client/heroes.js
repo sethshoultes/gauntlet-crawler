@@ -3,6 +3,7 @@
 import { api, me, renderNav, authModal, toast, esc } from './common.js';
 import { sprite } from './sprites.js';
 import { spriteFromPixels } from './pixelsprite.js';
+import { paintPath } from './paint-path.js';
 import { STATS, PALETTE, WEAPONS, TRAITS, presetHeroes, notchesFromClass } from '/shared/hero-builder.js';
 import { CLASSES } from '/shared/constants.js';
 import { rankTitle } from '/shared/progression.js';
@@ -25,6 +26,18 @@ const HB = {
   stats: blankStats(), weapon: 'axe', trait: null, pixels: blankPixels(),
   brush: '2', mirror: false, scale: 4, flip: false,
 };
+// exposed for manual/E2E debugging only — not used by the Hero Builder itself (see client/game.js's window.__gc for the same pattern)
+// `ready` resolves once boot() has picked a branch (guest/locked/unlocked) and, when unlocked,
+// has already reset the form via newHero() — see boot()'s `finally`. An E2E harness that fills
+// #hname/paints pixels right after seeing `#builder:not([hidden])` is trusting that boot() never
+// awaits between unhiding #builder and calling newHero() (true today, but an easy invariant for a
+// future edit to break); awaiting this promise instead depends on nothing but boot()'s own
+// contract, so it stays correct even if that internal ordering changes.
+// Settles exactly once: resolves when boot() finished picking its branch, rejects with boot()'s
+// error if it threw first, so a harness awaiting `ready` fails with the real cause instead of
+// racing ahead on a half-initialised page.
+let settleHbReady;
+window.__hb = { pixels: () => HB.pixels.slice(), ready: new Promise((res, rej) => { settleHbReady = { res, rej }; }) };
 
 function requirementText(requires) {
   if (!requires) return 'Unlocked';
@@ -63,17 +76,42 @@ function cellAt(ev) {
   return x >= 0 && y >= 0 && x < 8 && y < 8 ? [x, y] : null;
 }
 let painting = false;
-function paintAt(ev) {
-  const cell = cellAt(ev); if (!cell) return;
-  const [x, y] = cell;
+let lastCell = null; // last painted cell, for paintPath() drag interpolation below
+// Undo (#32): one stroke/Clear per entry. A "stroke" is everything painted between one
+// pointerdown and its pointerup, snapshotted *before* it starts so Undo restores the pre-stroke
+// state regardless of how many cells the drag touched.
+let history = [];
+function pushHistory() { history.push(HB.pixels.slice()); if (history.length > 20) history.shift(); }
+function undo() {
+  const prev = history.pop(); if (!prev) return;
+  HB.pixels = prev; drawGrid(); updatePreview();
+}
+function paintAt(ev, isDrag) {
+  const cell = cellAt(ev); if (!cell) { lastCell = null; return; }
   const ch = ev.buttons === 2 ? '.' : HB.brush;
-  setPixel(x, y, ch);
+  // A fast drag (especially touch) can report pointermove events several cells apart; paint every
+  // cell along the straight line from the last one so the stroke has no gaps.
+  const cells = isDrag && lastCell ? paintPath(lastCell, cell) : [cell];
+  for (const [x, y] of cells) setPixel(x, y, ch);
+  lastCell = cell;
   drawGrid(); updatePreview();
 }
 pcv.addEventListener('contextmenu', (e) => e.preventDefault());
-pcv.addEventListener('pointerdown', (e) => { painting = true; paintAt(e); });
-pcv.addEventListener('pointermove', (e) => { if (painting) paintAt(e); });
-window.addEventListener('pointerup', () => { painting = false; });
+pcv.addEventListener('pointerdown', (e) => {
+  painting = true; lastCell = null; pushHistory();
+  pcv.setPointerCapture(e.pointerId); // keeps pointermove targeting #pcv even if the drag leaves its bounds
+  paintAt(e, false);
+});
+pcv.addEventListener('pointermove', (e) => { if (painting) paintAt(e, true); });
+// See client/editor.js's identical pointercancel handling: a touch drag can be cancelled mid-stroke
+// (a scroll/zoom takeover, another touch point, an OS interruption) with no matching pointerup, so
+// without this `painting` would stay stuck true and the next stray pointermove would keep painting.
+function stopPainting(e) {
+  painting = false; lastCell = null;
+  try { pcv.releasePointerCapture(e.pointerId); } catch { /* not captured / already released */ }
+}
+window.addEventListener('pointerup', stopPainting);
+window.addEventListener('pointercancel', stopPainting);
 
 // palette swatches
 const swatchesEl = $('#swatches');
@@ -93,7 +131,8 @@ function refreshTools() {
 }
 $('#eraser-btn').onclick = () => { HB.brush = '.'; refreshTools(); };
 $('#mirror-btn').onclick = () => { HB.mirror = !HB.mirror; refreshTools(); };
-$('#clear-btn').onclick = () => { HB.pixels = blankPixels(); drawGrid(); updatePreview(); };
+$('#clear-btn').onclick = () => { pushHistory(); HB.pixels = blankPixels(); drawGrid(); updatePreview(); };
+$('#undo-btn').onclick = () => undo();
 
 // preset dropdown
 const PRESETS = presetHeroes();
@@ -200,6 +239,7 @@ function loadHeroIntoForm(hero) {
   HB.weapon = WEAPONS[hero.weapon] ? hero.weapon : 'axe';
   HB.trait = hero.trait || null;
   HB.pixels = Array.isArray(hero.pixels) && hero.pixels.length === 8 ? hero.pixels.slice() : blankPixels();
+  history = []; lastCell = null; // switching heroes starts a fresh undo session
   $('#hname').value = HB.name; $('#htitle').value = HB.title; $('#hmotto').value = HB.motto;
   $('#save-status').textContent = '';
   drawGrid(); updatePreview(); renderStats(); refreshBudget(); renderWeapons(); renderTraits();
@@ -211,6 +251,24 @@ $('#new-btn').onclick = newHero;
 $('#hname').oninput = (e) => { HB.name = e.target.value; };
 $('#htitle').oninput = (e) => { HB.title = e.target.value; };
 $('#hmotto').oninput = (e) => { HB.motto = e.target.value; };
+
+// ---------- AI Assist ----------
+$('#ai-gen').onclick = async () => {
+  const btn = $('#ai-gen'); const note = $('#ai-note');
+  const prompt = $('#ai-prompt').value.trim();
+  if (!prompt) { note.textContent = 'Describe your hero first.'; return; }
+  btn.disabled = true; btn.textContent = 'Conjuring…'; note.textContent = 'Asking the AI for a build… this can take a few seconds.';
+  try {
+    const r = await api('/api/heroes/ai', { method: 'POST', body: { prompt } });
+    loadHeroIntoForm({ ...r.hero, id: null }); // a fresh draft, same as loading a template — never overwrites an open saved hero
+    note.textContent = r.note || (r.source === 'ai' ? 'Generated by the AI — tweak it, then Save Hero.' : 'Suggested from a preset — tweak it, then Save Hero.');
+    toast(r.source === 'ai' ? 'AI hero ready' : 'Preset hero suggested', r.hero.name);
+  } catch (e) {
+    note.textContent = e.message;
+    toast('Could not generate', e.message, 'err');
+  }
+  btn.disabled = false; btn.textContent = 'Generate';
+};
 
 $('#save-btn').onclick = async () => {
   const payload = { id: HB.id, name: HB.name.trim(), title: HB.title.trim(), motto: HB.motto.trim(), stats: HB.stats, weapon: HB.weapon, trait: HB.trait, pixels: HB.pixels };
@@ -280,30 +338,40 @@ async function loadGallery() {
 
 // ---------- boot ----------
 async function boot() {
-  const m = await me();
-  if (!m.user) {
-    $('#guest').hidden = false; $('#locked').hidden = true; $('#builder').hidden = true;
-    loadGallery();
-    return;
-  }
-  let budget;
-  try { budget = await api('/api/heroes/budget'); }
-  catch { budget = { rank: 1, unlocked: false, budget: 0, weapons: [], traits: [] }; }
-  HB.rank = budget.rank; HB.budget = budget.budget; HB.unlockedWeapons = budget.weapons; HB.unlockedTraits = budget.traits;
+  try {
+    const m = await me();
+    if (!m.user) {
+      $('#guest').hidden = false; $('#locked').hidden = true; $('#builder').hidden = true;
+      loadGallery();
+      return;
+    }
+    let budget;
+    try { budget = await api('/api/heroes/budget'); }
+    catch { budget = { rank: 1, unlocked: false, budget: 0, weapons: [], traits: [] }; }
+    HB.rank = budget.rank; HB.budget = budget.budget; HB.unlockedWeapons = budget.weapons; HB.unlockedTraits = budget.traits;
 
-  if (!budget.unlocked) {
-    $('#guest').hidden = true; $('#locked').hidden = false; $('#builder').hidden = true;
-    $('#locked-rank').textContent = `You are rank ${budget.rank} (${rankTitle(budget.rank)}). Reach rank 3 (${rankTitle(3)}) to unlock it.`;
-    loadGallery();
-    return;
-  }
+    if (!budget.unlocked) {
+      $('#guest').hidden = true; $('#locked').hidden = false; $('#builder').hidden = true;
+      $('#locked-rank').textContent = `You are rank ${budget.rank} (${rankTitle(budget.rank)}). Reach rank 3 (${rankTitle(3)}) to unlock it.`;
+      loadGallery();
+      return;
+    }
 
-  $('#guest').hidden = true; $('#locked').hidden = true; $('#builder').hidden = false;
-  refreshTools();
-  drawGrid(); updatePreview();
-  renderWeapons(); renderTraits();
-  newHero();
-  loadMine(); loadGallery();
+    $('#guest').hidden = true; $('#locked').hidden = true; $('#builder').hidden = false;
+    api('/api/ai/status').catch(() => ({ available: false })).then((st) => {
+      if (!st.available) $('#ai-note').textContent = 'No AI key configured on this server: "Generate" will suggest a preset build instead.';
+    });
+    refreshTools();
+    drawGrid(); updatePreview();
+    renderWeapons(); renderTraits();
+    newHero();
+    loadMine(); loadGallery();
+  } catch (e) {
+    settleHbReady?.rej(e); settleHbReady = null;
+    throw e;
+  } finally {
+    settleHbReady?.res(); settleHbReady = null; // no-op after a rejection, and on the re-boot after login
+  }
 }
 $('#guest-login').onclick = () => authModal().then((ok) => ok && boot());
 

@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- PWA (#33): installable manifest, home-screen metadata, SW registration + install/update UI -->
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0b0b12" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<script type="module" src="/pwa.js"></script>
 <title>Level Builder · Gauntlet Crawler</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
 <link rel="stylesheet" href="/style.css" />
@@ -13,7 +20,12 @@
   .pal button { padding: 4px; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 9px; text-transform: none; letter-spacing: 0; }
   .pal button canvas { width: 24px; height: 24px; }
   .pal button.on { border-color: var(--yellow); }
-  #ecv { background: #000; border: 3px solid var(--line); max-width: 100%; cursor: crosshair; }
+  /* The wrapper is the zoom scroller, so it must keep touch panning; only the canvas itself takes
+     touch-action: none so painting drags never hijack the page scroll. */
+  #ecv-wrap { max-width: 100%; overflow-x: auto; touch-action: pan-x pan-y; }
+  #ecv { background: #000; border: 3px solid var(--line); max-width: 100%; height: auto; cursor: crosshair; touch-action: none; }
+  #zoom-controls { display: none; align-items: center; gap: 8px; margin-top: 8px; }
+  #zoom-controls button { min-width: 44px; min-height: 44px; font-size: 16px; padding: 0; }
   .field { margin: 8px 0; } .field label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; margin-bottom: 3px; }
   .field input[type=text], .field textarea, .field select { width: 100%; }
   .problems { color: var(--red); font-size: 12px; } .ok { color: var(--green); font-size: 12px; }
@@ -21,6 +33,16 @@
   .ai { border-color: var(--purple); } .ai h2 { color: var(--purple); }
   .badge { font-size: 10px; padding: 2px 6px; border: 1px solid var(--purple); color: var(--purple); text-transform: uppercase; }
   #status { font-size: 12px; min-height: 18px; }
+
+  /* ---- tile editor: mobile (#32) ---- */
+  @media (max-width: 700px) {
+    #zoom-controls { display: flex; } /* zoom controls for the grid on small screens */
+    .pal { grid-auto-flow: column; grid-auto-columns: 64px; grid-template-columns: none; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+    .pal button { min-height: 64px; }
+    .pal button canvas { width: 28px; height: 28px; }
+    /* the Remix/harder/easier/Generate/Save/etc. buttons wrap via .row's flex-wrap (base CSS);
+       button min-height:44px is the site-wide mobile rule (see style.css "pages / mobile"). */
+  }
 </style>
 </head>
 <body>
@@ -40,6 +62,20 @@
         <hr style="border-color:var(--line);margin:12px 0" />
         <div class="row"><input id="seed" placeholder="seed" style="width:90px" /><input id="plevel" type="number" min="1" max="60" value="3" style="width:64px" title="difficulty level" /><button id="procgen">Procedural</button></div>
       </div>
+      <!-- #17 AI assist: remix/tune/explain the level currently in the editor grid. -->
+      <div class="panel ai" style="margin-top:18px">
+        <h2>🎲 Remix &amp; tune</h2>
+        <p class="muted" style="font-size:11px;margin:0 0 8px">Asks the AI to vary, harden or soften the level currently on the canvas. Start and exit stay put. One undo is kept.</p>
+        <div class="row" style="flex-wrap:wrap">
+          <button id="remix" title="Vary the layout, monsters and loot">Remix</button>
+          <button id="harder" title="More/nastier generators and monsters, less food">Make harder</button>
+          <button id="easier" title="Fewer/weaker generators and monsters, more food">Make easier</button>
+          <button id="undoRemix" style="display:none">Undo</button>
+        </div>
+        <button id="explain" style="width:100%;margin-top:8px" title="Ask the AI for strategy advice on this level">Explain this level</button>
+        <div id="remix-note" class="muted" style="font-size:11px;margin-top:6px"></div>
+        <div id="explain-panel" style="display:none;margin-top:8px;padding:8px;border:1px solid var(--line);font-size:12px;line-height:1.5"></div>
+      </div>
       <div class="panel" style="margin-top:18px">
         <h2>Palette</h2>
         <div class="pal" id="pal"></div>
@@ -56,7 +92,12 @@
           <span id="source"></span>
         </div>
         <div class="field"><label>Description</label><input type="text" id="desc" maxlength="200" /></div>
-        <canvas id="ecv" class="pixel"></canvas>
+        <div id="ecv-wrap"><canvas id="ecv" class="pixel"></canvas></div>
+        <div id="zoom-controls">
+          <button type="button" id="zoom-out" title="Zoom out">&minus;</button>
+          <span class="muted" id="zoom-val" style="font-size:12px">100%</span>
+          <button type="button" id="zoom-in" title="Zoom in">+</button>
+        </div>
         <div id="status" style="margin-top:6px"></div>
         <div class="row" style="margin-top:10px">
           <button class="primary" id="test">▶ Test play</button>

@@ -4,6 +4,9 @@ import {
   START_HEALTH, HEALTH_DRAIN_PER_SEC, FOOD_HEALTH, LOW_HEALTH, MAX_MONSTERS, MAX_SHOTS_PER_PLAYER,
   SHOT_SPEED, MONSTER_SHOT_SPEED, LEVEL_BONUS, DIRS, dirIndex, GENERATOR_TILES, PICKUP_TILES, MONSTER_TILES,
   generatorTier, GENERATOR_TIER_HP, GENERATOR_TIER_HP_BONUS, GENERATOR_TIER_SCORE_MUL,
+  AMULET_TILES, BOOST_TILES, AMULET_DURATION, AMULET_SCORE, BOOST_SCORE, BOOST_STACK_CAP, BOOST_EFFECT,
+  REPULSE_RANGE, AMULET_LETTER, BOOST_LETTER, TRAP_PLATES, GROUP_WALLS, TIMED_WALLS, TIMER_DEFAULT_SEC,
+  ACID_DAMAGE_PER_SEC, STUN_TICKS, STUN_IMMUNITY_TICKS, IT_KILL_BONUS,
 } from '../../shared/constants.js';
 import { parseLevel } from '../../shared/level.js';
 
@@ -35,6 +38,10 @@ export class Sim {
     // Locksmith trait's door-key-save roll) — defaults to plain Math.random so nothing else changes.
     this.rng = rng || { chance: (p) => Math.random() < p };
     this.players = new Map();
+    // It tag mode (#13): pid of the currently-tagged player, or null when the mode is off, the
+    // level hasn't assigned one yet, or fewer than two players remain — see assignItTag()/
+    // reassignItTag() and nearestPlayer()'s use of it below.
+    this.itPid = null;
     this.loadLevel(levelDef, levelIndex);
   }
 
@@ -53,8 +60,27 @@ export class Sim {
     this.completed = null;
     this.levelKills = 0;
     this.treasureRoom = !!opts.treasureRoom; // see shared/procgen.js generateTreasureRoom + server/game/room.js
+    // Mystery treasure rooms (#13): derived straight from the grid (T.HIDDEN_EXIT present anywhere)
+    // rather than a separate flag, so it's automatically right for any level — procedurally
+    // generated, custom, or editor-authored — that happens to use the glyph. `exitsRevealed` guards
+    // revealHiddenExits() so it only ever fires once per level (see that method).
+    this.mysteryRoom = this.grid.some((row) => row.includes(T.HIDDEN_EXIT));
+    this.exitsRevealed = false;
     // Death mode: every level starts with the exit sealed until Room clears all its waves.
     this.exitSealed = this.mode === 'death';
+    // Pressure-plate wall groups (#11): each plate glyph fires at most once per level (see
+    // triggerPlate()) even though the plate tile itself stays in the grid afterward.
+    this.platesTriggered = new Set();
+    // Timed walls (#11): `levelDef.timers` (the raw, unparsed level object — parseLevel() strips
+    // anything it doesn't know) optionally overrides the default per-kind, or via `.default` for
+    // both kinds at once; entries are seconds from this level's start until conversion.
+    const timersCfg = (levelDef && typeof levelDef.timers === 'object' && levelDef.timers) || {};
+    const timerSecFor = (kind) => {
+      if (typeof timersCfg[kind] === 'number' && timersCfg[kind] > 0) return timersCfg[kind];
+      if (typeof timersCfg.default === 'number' && timersCfg.default > 0) return timersCfg.default;
+      return TIMER_DEFAULT_SEC;
+    };
+    this.timedWalls = []; // [{x,y,glyph,remaining}] — ticked down in stepTimedWalls()
     const tier = generatorTier(levelIndex);
     for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
       const c = this.grid[y][x];
@@ -65,6 +91,10 @@ export class Sim {
         this.generators.set(`${x},${y}`, { x, y, type: GENERATOR_SPAWNS[c], tile: c, hp: GENERATOR_TIER_HP[tier], tier, timer: 1 + Math.random() * 2 });
       } else if (c === T.TRANSPORTER) {
         this.transporters.push([x + 0.5, y + 0.5]);
+      } else if (c === T.TIMED_WALL) {
+        this.timedWalls.push({ x, y, glyph: c, remaining: timerSecFor('wall') });
+      } else if (c === T.TIMED_WALL_EXIT) {
+        this.timedWalls.push({ x, y, glyph: c, remaining: timerSecFor('exit') });
       }
     }
     this.startCursor = 0;
@@ -76,6 +106,13 @@ export class Sim {
       // whatever was active for the level that just ended is discarded here.
       p.boosts = p.pendingBoosts || {};
       p.pendingBoosts = null;
+      // Amulets are picked up within a level and don't make sense to carry into the next one
+      // (new positions, new dangers) — they're cleared on every level load. `runBoosts` (the
+      // permanent per-run stat boosts) is deliberately NOT touched here: it persists for the
+      // whole run and only resets when addPlayer() creates a fresh player (a new run/join).
+      p.amulets = {};
+      // Stun (#12) doesn't carry across a level load either — new positions, new dangers.
+      p.stunTicks = 0; p.stunImmuneTicks = 0;
       if (p.pendingCurse === 'spawn') {
         const type = ['ghost', 'grunt', 'demon'][Math.floor(Math.random() * 3)];
         const side = Math.random() < 0.5 ? -1 : 1;
@@ -86,7 +123,11 @@ export class Sim {
   }
 
   levelPacket() {
-    return { t: 'level', index: this.levelIndex, name: this.level.name, description: this.level.description, w: this.w, h: this.h, rows: this.grid.map((r) => r.join('')), sealed: !!this.exitSealed, treasureRoom: !!this.treasureRoom };
+    return {
+      t: 'level', index: this.levelIndex, name: this.level.name, description: this.level.description, w: this.w, h: this.h,
+      rows: this.grid.map((r) => r.join('')), sealed: !!this.exitSealed, treasureRoom: !!this.treasureRoom,
+      mysteryRoom: !!this.mysteryRoom, // #13: hidden exits present — client shows the "find the exit" banner
+    };
   }
 
   // ---------- players ----------
@@ -106,12 +147,27 @@ export class Sim {
       input: { dx: 0, dy: 0, fire: false, potion: false, respawn: false },
       lastPotion: 0, stats: {}, perks: mergedPerks, rank, title,
       boosts: {}, pendingBoosts: null, pendingCurse: null, // temporary chest effects, see shared/chests.js
+      // Arcade parity (#10): `amulets` is {kind: secondsRemaining} for the temporary pickups
+      // (invis/reflect/repulse/super — see AMULET_TILES), cleared every level load. `runBoosts` is
+      // {stat: stackCount} for the permanent per-run pickups (speed/armor/shotPower/shotSpeed/magic
+      // — see BOOST_TILES), which persists across loadLevel() and only resets here, i.e. on a
+      // fresh addPlayer() for a new run/join.
+      amulets: {}, runBoosts: {},
+      // Stun tile (#12): stunTicks counts down the frozen (no movement/no firing) window;
+      // stunImmuneTicks counts down the whole no-retrigger period (frozen span + the grace window
+      // after it ends) — see triggerStun()/stepPlayers().
+      stunTicks: 0, stunImmuneTicks: 0,
     };
     this.players.set(id, p);
     this.placeAtStart(p);
     return p;
   }
-  removePlayer(id) { this.players.delete(id); }
+  removePlayer(id) {
+    this.players.delete(id);
+    // It tag mode (#13): a departing tagged player passes the tag on immediately, same as a death.
+    if (this.itPid === id) this.reassignItTag(id);
+    else if (this.players.size < 2) this.itPid = null; // "when only one player remains, nobody is It"
+  }
   setInput(id, input) {
     const p = this.players.get(id);
     if (!p) return;
@@ -131,7 +187,13 @@ export class Sim {
   setTile(x, y, c) { this.grid[y][x] = c; this.onEvent({ type: 'tile', x, y, c }); }
   isSolidFor(c, who) {
     if (c === T.WALL || c === T.DOOR || c === T.TRAP) return true;
+    if (GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) return true;
     if (GENERATOR_TILES.has(c)) return true;
+    // Force field (#12): blocks a shot's path but never a hero's or monster's movement.
+    if (c === T.FORCE_FIELD) return who === 'shot';
+    // Hidden exit (#13): renders/behaves exactly like a wall — solid for everyone — until
+    // revealHiddenExits() converts it to a real T.EXIT tile in place.
+    if (c === T.HIDDEN_EXIT) return true;
     return false;
   }
   /** Move an entity with axis-separated AABB collision. Returns set of blocking tiles touched (for doors/traps). */
@@ -171,14 +233,55 @@ export class Sim {
     }
     return false;
   }
-  nearestPlayer(x, y, maxDist = Infinity) {
+  /** Nearest living player to (x,y). `opts.skipInvisible` (invisibility amulet, see
+   *  AMULET_TILES/README's "Amulets and boosts") excludes a player currently invisible — used by
+   *  every monster AI target search so an invisible player gets no targeting/aggro at all.
+   *
+   *  It tag mode (#13): whenever a player is tagged It (this.itPid), every one of those callers
+   *  prefers them over whoever's actually closest — as long as they're alive, within maxDist (the
+   *  same "line of sight/pathing within range" a monster already uses to wake up), and not excluded
+   *  by opts.skipInvisible (an invisible It player still can't be targeted, exactly like any other
+   *  invisible player — the search below just falls through to plain nearest-player instead). */
+  nearestPlayer(x, y, maxDist = Infinity, opts = {}) {
+    if (this.itPid != null) {
+      const itP = this.players.get(this.itPid);
+      if (itP && !itP.dead && !(opts.skipInvisible && itP.amulets?.invis > 0)) {
+        const d = (itP.x - x) ** 2 + (itP.y - y) ** 2;
+        if (d <= maxDist * maxDist) return itP;
+      }
+    }
     let best = null, bd = maxDist * maxDist;
     for (const p of this.players.values()) {
       if (p.dead) continue;
+      if (opts.skipInvisible && p.amulets?.invis > 0) continue;
       const d = (p.x - x) ** 2 + (p.y - y) ** 2;
       if (d < bd) { bd = d; best = p; }
     }
     return best;
+  }
+  /** It tag mode (#13): (re)pick a fresh random It player for the level that's just starting —
+   *  called by server/game/room.js right after beginPlay()/advanceLevel() puts everyone in place.
+   *  A no-op (clears the tag) unless `enabled` (the room's itMode setting) and at least two players
+   *  are present, per the acceptance criteria. */
+  assignItTag(enabled) {
+    if (!enabled || this.players.size < 2) { this.itPid = null; return; }
+    const ids = [...this.players.keys()];
+    this.itPid = ids[Math.floor(Math.random() * ids.length)];
+    this.onEvent({ type: 'it', pid: this.itPid });
+  }
+  /** It tag mode (#13): the current It player just died or left (`excludeId`) — hand the tag to a
+   *  random other player, preferring one who's alive right now (a dead-and-awaiting-respawn
+   *  teammate would otherwise sit untargetable for however long they take to come back), and
+   *  falling back to any other player if literally everyone else is currently dead. Clears the tag
+   *  entirely once fewer than two players remain, regardless of who's still around. */
+  reassignItTag(excludeId) {
+    if (this.players.size < 2) { this.itPid = null; return; }
+    const candidates = [...this.players.values()].filter((p) => p.id !== excludeId);
+    if (!candidates.length) { this.itPid = null; return; }
+    const alive = candidates.filter((p) => !p.dead);
+    const pool = alive.length ? alive : candidates;
+    this.itPid = pool[Math.floor(Math.random() * pool.length)].id;
+    this.onEvent({ type: 'it', pid: this.itPid });
   }
   /** Nearest monster to (x,y) within maxDist — used by a homing (Hero Builder skull) shot's gentle
    *  steering (see stepShots). */
@@ -193,7 +296,8 @@ export class Sim {
   spawnMonster(type, x, y, hpBonus = 0) {
     if (this.monsters.size >= MAX_MONSTERS) return null;
     const def = MONSTERS[type];
-    const m = { id: uid(), type, x, y, hp: def.hp + hpBonus, cd: 0, shotCd: 1, drained: 0, dir: 4 };
+    // stunTicks/stunImmuneTicks (#12): mirrors the player fields below — see triggerStun().
+    const m = { id: uid(), type, x, y, hp: def.hp + hpBonus, cd: 0, shotCd: 1, drained: 0, dir: 4, stunTicks: 0, stunImmuneTicks: 0 };
     if (type === 'sorcerer') { m.visible = true; m.blinkTimer = def.blinkVisible; }
     if (type === 'thief') m.stolen = null;
     this.monsters.set(m.id, m);
@@ -213,16 +317,82 @@ export class Sim {
     }
     return n;
   }
+  /** Pressure plate (#11, see TRAP_PLATES): the first hero or monster to stand on a plate dissolves
+   *  every wall tile sharing its group glyph across the whole level — not just a connected cluster,
+   *  unlike dissolveGroup() above — so a level can scatter one group's walls in several places and
+   *  a single plate opens them all at once. Fires at most once per plate glyph per level; a second
+   *  plate of a different glyph only ever affects its own group (see TRAP_PLATES's 1:1 mapping). */
+  triggerPlate(glyph) {
+    if (this.platesTriggered.has(glyph)) return;
+    this.platesTriggered.add(glyph);
+    const wallGlyph = TRAP_PLATES[glyph];
+    if (!wallGlyph) return;
+    let n = 0;
+    for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
+      if (this.grid[y][x] === wallGlyph) { this.setTile(x, y, T.FLOOR); n++; }
+    }
+    if (n) this.onEvent({ type: 'plate', glyph, wallGlyph, count: n });
+  }
+  /** Timed walls (#11, see TIMED_WALLS): tick every pending timed wall down by dt and convert any
+   *  that reach zero in place — T.TIMED_WALL becomes floor, T.TIMED_WALL_EXIT becomes a real exit
+   *  tile (picked up automatically by the EXIT_TILES check in stepPlayers/exitReachable). */
+  stepTimedWalls(dt) {
+    if (!this.timedWalls.length) return;
+    const fired = [];
+    for (const tw of this.timedWalls) { tw.remaining -= dt; if (tw.remaining <= 0) fired.push(tw); }
+    if (!fired.length) return;
+    this.timedWalls = this.timedWalls.filter((tw) => tw.remaining > 0);
+    for (const tw of fired) {
+      const becomes = tw.glyph === T.TIMED_WALL_EXIT ? T.EXIT : T.FLOOR;
+      this.setTile(tw.x, tw.y, becomes);
+      this.onEvent({ type: 'timedWall', x: tw.x, y: tw.y, becomes });
+    }
+  }
+  /** Mystery treasure rooms (#13): reveal every concealed exit in the level at once — flips each
+   *  T.HIDDEN_EXIT tile to a real T.EXIT tile in place through setTile(), exactly like a timed exit
+   *  wall's own conversion (stepTimedWalls) — which is also what drives the client's tile-change
+   *  flash on each one, for free, with no extra client-side plumbing. Triggered by a hero stepping
+   *  on the level's switch (see T.SWITCH in stepPlayers) or by its treasure being fully collected;
+   *  fires at most once per level regardless of which condition (or both) is met. */
+  revealHiddenExits() {
+    if (this.exitsRevealed) return;
+    this.exitsRevealed = true;
+    let n = 0;
+    for (let y = 0; y < this.h; y++) for (let x = 0; x < this.w; x++) {
+      if (this.grid[y][x] === T.HIDDEN_EXIT) { this.setTile(x, y, T.EXIT); n++; }
+    }
+    if (n) this.onEvent({ type: 'reveal', count: n });
+  }
+  /** Stun tile (#12): freezes `entity` (a player or a monster — both carry stunTicks/stunImmuneTicks,
+   *  see addPlayer()/spawnMonster()) for STUN_TICKS, then leaves it immune to retriggering for a
+   *  further STUN_IMMUNITY_TICKS so it has a chance to walk off the tile before it can fire again.
+   *  A no-op while stunImmuneTicks is still counting down from an earlier trigger (which covers both
+   *  the frozen window itself and the grace period after it, since immuneTicks is always >= ticks). */
+  triggerStun(entity, isPlayer) {
+    if ((entity.stunImmuneTicks || 0) > 0) return;
+    entity.stunTicks = STUN_TICKS;
+    entity.stunImmuneTicks = STUN_TICKS + STUN_IMMUNITY_TICKS;
+    if (isPlayer) this.onEvent({ type: 'stun', pid: entity.id });
+  }
+  /** Acid puddle (#12): per-tick damage through the normal hurtPlayer() pipeline so armor/perks/boosts
+   *  reduce it exactly like any other source of damage (ACID_DAMAGE_PER_SEC * dt keeps it framerate-
+   *  correct — 0.5hp/tick at the default 10/s and 20Hz). Monsters are immune (native to the dungeon),
+   *  so this is only ever called for players. */
+  applyAcid(p, dt) {
+    this.hurtPlayer(p, ACID_DAMAGE_PER_SEC * dt, 'acid');
+  }
   hurtPlayer(p, amount, source) {
     if (p.dead) return;
     const c = classOf(p);
-    let dmg = amount * c.armor * p.perks.damageTakenMul * (p.boosts?.damageTakenMul || 1);
+    const armorBoostMul = Math.max(0.1, 1 - (p.runBoosts?.armor || 0) * BOOST_EFFECT.armor);
+    let dmg = amount * c.armor * p.perks.damageTakenMul * (p.boosts?.damageTakenMul || 1) * armorBoostMul;
     // thick_skin (Hero Builder trait): only softens a ghost's touch attack, not damage in general.
     if (source === 'ghost' && c.traitDef?.ghostDamageTakenMul != null) dmg *= c.traitDef.ghostDamageTakenMul;
     p.hp -= dmg;
     if (p.hp <= 0) {
       p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++;
       this.onEvent({ type: 'death', pid: p.id, source });
+      if (this.itPid === p.id) this.reassignItTag(p.id); // It tag mode (#13): passes on death
     }
   }
   killMonster(m, killer, viaPotion = false) {
@@ -235,6 +405,9 @@ export class Sim {
     }
     if (killer) {
       killer.score += def.score;
+      // It tag mode (#13): a small incentive to embrace being the target — bonus on top of the
+      // monster's normal score, only while the killer is actually the one currently tagged.
+      if (this.itPid === killer.id) killer.score += IT_KILL_BONUS;
       killer.kills++; killer.levelKills++;
       this.onEvent({ type: 'kill', pid: killer.id, monster: m.type, viaPotion, x: m.x, y: m.y });
     }
@@ -276,10 +449,41 @@ export class Sim {
   step(dt) {
     this.time += dt; this.levelTime += dt;
     if (this.completed) return;
+    this.stepAmulets(dt);
+    this.stepTimedWalls(dt);
     this.stepPlayers(dt);
     this.stepMonsters(dt);
+    this.stepRepulsion(dt);
     this.stepGenerators(dt);
     this.stepShots(dt);
+  }
+
+  /** Tick down every player's active temporary amulets (README's "Amulets and boosts"); runs
+   *  regardless of dead/alive so a death doesn't pause or reset the clock. */
+  stepAmulets(dt) {
+    for (const p of this.players.values()) {
+      if (!p.amulets) continue;
+      for (const kind of Object.keys(p.amulets)) {
+        p.amulets[kind] -= dt;
+        if (p.amulets[kind] <= 0) delete p.amulets[kind];
+      }
+    }
+  }
+
+  /** Repulsiveness amulet: push every monster within REPULSE_RANGE of a player who has it active
+   *  away each tick — paired with stepMonsters' touch-damage guard for the "cannot touch you"
+   *  half of the effect (a push alone couldn't guarantee a fast/cornered monster never grazes). */
+  stepRepulsion(dt) {
+    for (const p of this.players.values()) {
+      if (p.dead || !(p.amulets?.repulse > 0)) continue;
+      for (const m of this.monsters.values()) {
+        const dx = m.x - p.x, dy = m.y - p.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist >= REPULSE_RANGE || dist < 0.001) continue;
+        const push = (REPULSE_RANGE - dist) * 3 * dt;
+        this.moveEntity(m, dx / dist * push, dy / dist * push, 'monster');
+      }
+    }
   }
 
   stepPlayers(dt) {
@@ -290,6 +494,12 @@ export class Sim {
         if (inp.respawn) {
           inp.respawn = false;
           p.dead = false; p.hp = p.maxHealth; p.coins++;
+          // Stun tile (#12): a player who died while frozen (or during the post-freeze immunity
+          // window) never gets to tick stunTicks/stunImmuneTicks down while dead (the `continue`
+          // above skips stepPlayers' countdown for every dead player) -- without this reset, a
+          // fresh respawn at the start tile would otherwise carry over a stale stun and come back
+          // unable to move or fire for no reason a player at the spawn point could see.
+          p.stunTicks = 0; p.stunImmuneTicks = 0;
           this.placeAtStart(p);
           this.onEvent({ type: 'coin', pid: p.id });
         }
@@ -301,49 +511,71 @@ export class Sim {
       // health drain — the clock is always ticking (a cursed chest can double this for the level;
       // Death mode itself drains 1.5x to keep the timed waves under pressure)
       p.hp -= HEALTH_DRAIN_PER_SEC * dt * (p.boosts?.drainMul || 1) * (this.mode === 'death' ? 1.5 : 1);
-      if (p.hp <= 0) { p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++; this.onEvent({ type: 'death', pid: p.id, source: 'hunger' }); continue; }
+      if (p.hp <= 0) {
+        p.hp = 0; p.dead = true; p.deaths++; p.levelDeaths++;
+        this.onEvent({ type: 'death', pid: p.id, source: 'hunger' });
+        if (this.itPid === p.id) this.reassignItTag(p.id); // It tag mode (#13): passes on death
+        continue;
+      }
 
-      const moving = inp.dx !== 0 || inp.dy !== 0;
-      if (moving) p.dir = dirIndex(inp.dx, inp.dy);
-      p.shotCd = Math.max(0, p.shotCd - dt);
-      if (inp.fire) {
-        // Arcade rule: you stand still while firing; the stick turns you.
-        if (p.shotCd === 0 && [...this.shots.values()].filter((s) => s.owner === p.id).length < MAX_SHOTS_PER_PLAYER) {
-          const [dx, dy] = DIRS[p.dir];
-          const len = Math.hypot(dx, dy);
-          const sid = uid();
-          const wpn = c.weaponDef || null; // Hero Builder weapon (see shared/hero-builder.js WEAPONS)
-          const shotSpeed = SHOT_SPEED * (wpn?.shotSpeedMul || 1);
-          const dmg = (c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0)) * (wpn?.damageMul || 1);
-          // `range` (tiles) -> shot lifetime, so a weapon's reach stays constant regardless of its
-          // own speed multiplier; classics (no weaponDef) keep the old fixed 3s lifetime.
-          const life = wpn?.range != null ? wpn.range / shotSpeed : 3;
-          this.shots.set(sid, {
-            id: sid, owner: p.id, cls: p.cls, shotKey: c.shotKey, x: p.x + dx * 0.5, y: p.y + dy * 0.5,
-            vx: dx / len * shotSpeed, vy: dy / len * shotSpeed, dmg, dir: p.dir, hostile: false, life,
-            homing: wpn?.homing || 0, splash: wpn?.splash || 0,
-          });
-          p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1) * (wpn?.cooldownMul || 1);
-          // Custom heroes have no per-class synth tone; fall back to the weapon's own sound (the
-          // weapon id doubles as its sprite/sound key — see shared/hero-builder.js WEAPONS).
-          this.onEvent({ type: 'sound', name: 'shoot_' + (p.classDef ? c.weapon : p.cls), x: p.x, y: p.y });
-        }
-      } else if (moving) {
-        const len = Math.hypot(inp.dx, inp.dy);
-        // sprinter (Hero Builder trait): a speed boost that only kicks in below its HP threshold.
-        const sprint = (c.traitDef?.sprintSpeedMul && p.hp < (c.traitDef.sprintHpThreshold ?? Infinity)) ? c.traitDef.sprintSpeedMul : 1;
-        const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1) * sprint;
-        const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
-        for (const [tx, ty, tc] of touched) {
-          if (tc === T.DOOR && p.keys > 0) {
-            // locksmith (Hero Builder trait): a chance the door opens without spending the key.
-            const saved = c.traitDef?.doorKeySaveChance ? this.rng.chance(c.traitDef.doorKeySaveChance) : false;
-            if (!saved) p.keys--;
-            this.dissolveGroup(tx, ty, T.DOOR);
-            this.onEvent({ type: 'door', pid: p.id, x: tx, y: ty });
-          } else if (tc === T.TRAP) {
-            this.dissolveGroup(tx, ty, T.TRAP);
-            this.onEvent({ type: 'secret', pid: p.id, x: tx, y: ty });
+      // Stun tile (#12): tick both counters down every step regardless of which is active — stunTicks
+      // is the frozen (no movement/no firing) window, stunImmuneTicks additionally covers the grace
+      // period right after it (see triggerStun()). While stunned, skip movement/firing entirely but
+      // still let the hazard-tile checks below run (e.g. acid still hurts you while frozen on it).
+      const stunned = (p.stunTicks || 0) > 0;
+      if (stunned) p.stunTicks--;
+      if (p.stunImmuneTicks > 0) p.stunImmuneTicks--;
+
+      if (!stunned) {
+        const moving = inp.dx !== 0 || inp.dy !== 0;
+        if (moving) p.dir = dirIndex(inp.dx, inp.dy);
+        p.shotCd = Math.max(0, p.shotCd - dt);
+        if (inp.fire) {
+          // Arcade rule: you stand still while firing; the stick turns you.
+          if (p.shotCd === 0 && [...this.shots.values()].filter((s) => s.owner === p.id).length < MAX_SHOTS_PER_PLAYER) {
+            const [dx, dy] = DIRS[p.dir];
+            const len = Math.hypot(dx, dy);
+            const sid = uid();
+            const wpn = c.weaponDef || null; // Hero Builder weapon (see shared/hero-builder.js WEAPONS)
+            const shotSpeed = SHOT_SPEED * (wpn?.shotSpeedMul || 1);
+            const dmg = (c.shotDamage + p.perks.shotDamageAdd + (p.boosts?.shotDamageAdd || 0)
+              + (p.runBoosts?.shotPower || 0) * BOOST_EFFECT.shotPower) * (wpn?.damageMul || 1);
+            // `range` (tiles) -> shot lifetime, so a weapon's reach stays constant regardless of its
+            // own speed multiplier; classics (no weaponDef) keep the old fixed 3s lifetime.
+            const life = wpn?.range != null ? wpn.range / shotSpeed : 3;
+            // Amulet effects are baked into the shot at fire time (see stepShots): reflective shots
+            // bounce off one wall instead of dying there, super shots pierce through every monster
+            // they pass instead of stopping at the first one.
+            this.shots.set(sid, {
+              id: sid, owner: p.id, cls: p.cls, shotKey: c.shotKey, x: p.x + dx * 0.5, y: p.y + dy * 0.5,
+              vx: dx / len * shotSpeed, vy: dy / len * shotSpeed, dmg, dir: p.dir, hostile: false, life,
+              homing: wpn?.homing || 0, splash: wpn?.splash || 0,
+              reflect: !!(p.amulets?.reflect > 0), pierce: !!(p.amulets?.super > 0),
+            });
+            const shotSpeedBoostMul = Math.max(0.2, 1 - (p.runBoosts?.shotSpeed || 0) * BOOST_EFFECT.shotSpeed);
+            p.shotCd = c.shotCooldown * (p.boosts?.shotCooldownMul || 1) * shotSpeedBoostMul * (wpn?.cooldownMul || 1);
+            // Custom heroes have no per-class synth tone; fall back to the weapon's own sound (the
+            // weapon id doubles as its sprite/sound key — see shared/hero-builder.js WEAPONS).
+            this.onEvent({ type: 'sound', name: 'shoot_' + (p.classDef ? c.weapon : p.cls), x: p.x, y: p.y });
+          }
+        } else if (moving) {
+          const len = Math.hypot(inp.dx, inp.dy);
+          // sprinter (Hero Builder trait): a speed boost that only kicks in below its HP threshold.
+          const sprint = (c.traitDef?.sprintSpeedMul && p.hp < (c.traitDef.sprintHpThreshold ?? Infinity)) ? c.traitDef.sprintSpeedMul : 1;
+          const runSpeedMul = 1 + (p.runBoosts?.speed || 0) * BOOST_EFFECT.speed;
+          const speed = c.speed * p.perks.speedMul * (p.boosts?.speedMul || 1) * runSpeedMul * sprint;
+          const touched = this.moveEntity(p, inp.dx / len * speed * dt, inp.dy / len * speed * dt, 'player');
+          for (const [tx, ty, tc] of touched) {
+            if (tc === T.DOOR && p.keys > 0) {
+              // locksmith (Hero Builder trait): a chance the door opens without spending the key.
+              const saved = c.traitDef?.doorKeySaveChance ? this.rng.chance(c.traitDef.doorKeySaveChance) : false;
+              if (!saved) p.keys--;
+              this.dissolveGroup(tx, ty, T.DOOR);
+              this.onEvent({ type: 'door', pid: p.id, x: tx, y: ty });
+            } else if (tc === T.TRAP) {
+              this.dissolveGroup(tx, ty, T.TRAP);
+              this.onEvent({ type: 'secret', pid: p.id, x: tx, y: ty });
+            }
           }
         }
       }
@@ -355,12 +587,42 @@ export class Sim {
         if (here === T.KEY) p.keys++;
         else if (here === T.FOOD) { this.onEvent({ type: 'food', pid: p.id, lowHealth: p.hp < LOW_HEALTH }); p.hp += FOOD_HEALTH * (c.traitDef?.foodHealMul || 1); }
         else if (here === T.POTION) p.potions++;
-        else if (here === T.TREASURE) p.score += TREASURE_SCORE * (c.traitDef?.lootScoreMul || 1);
+        else if (here === T.TREASURE) {
+          p.score += TREASURE_SCORE * (c.traitDef?.lootScoreMul || 1);
+          // Mystery treasure rooms (#13): collecting every last piece of treasure reveals every
+          // hidden exit too, as an alternative to finding the switch.
+          if (!this.grid.some((row) => row.includes(T.TREASURE))) this.revealHiddenExits();
+        }
         else if (here === T.POISON_FOOD) { p.hp = Math.max(1, p.hp - 100); this.onEvent({ type: 'poison', pid: p.id }); }
         else if (here === T.CIDER) p.hp += 50;
+        else if (AMULET_TILES[here]) {
+          // Temporary amulet: (re)start its full duration — a second pickup of the same kind just
+          // refreshes the clock rather than stacking, since these are on/off effects, not stats.
+          const kind = AMULET_TILES[here];
+          p.amulets = p.amulets || {};
+          p.amulets[kind] = AMULET_DURATION;
+          p.score += AMULET_SCORE;
+        } else if (BOOST_TILES[here]) {
+          // Permanent per-run boost: stacks up to BOOST_STACK_CAP, persists across levels (see
+          // loadLevel — this field is never reset there) until a fresh addPlayer() (a new run).
+          const stat = BOOST_TILES[here];
+          p.runBoosts = p.runBoosts || {};
+          p.runBoosts[stat] = Math.min(BOOST_STACK_CAP, (p.runBoosts[stat] || 0) + 1);
+          p.score += BOOST_SCORE;
+        }
         this.onEvent({ type: 'pickup', pid: p.id, item: here, x: tx, y: ty });
       } else if (here === T.TRANSPORTER) {
         this.tryTeleport(p);
+      } else if (TRAP_PLATES[here] != null) {
+        this.triggerPlate(here);
+      } else if (here === T.ACID) {
+        this.applyAcid(p, dt);
+      } else if (here === T.STUN_TILE) {
+        this.triggerStun(p, true);
+      } else if (here === T.SWITCH) {
+        // Mystery treasure rooms (#13): unlike a pickup, the switch itself stays in the level —
+        // it's a lever, not a consumable — so this just fires the (idempotent) reveal.
+        this.revealHiddenExits();
       } else if ((here === T.EXIT || here === T.EXIT_SKIP) && !this.exitSealed) {
         p.score += LEVEL_BONUS;
         const skip = here === T.EXIT_SKIP ? 4 : 1;
@@ -370,7 +632,11 @@ export class Sim {
       }
       if (inp.potion) {
         inp.potion = false;
-        if (p.potions > 0) { p.potions--; this.usePotion(p, c.magic + p.perks.magicAdd, 7.5 * (c.potionRadiusMul || 1) * (c.traitDef?.potionRadiusMul || 1)); }
+        if (p.potions > 0) {
+          p.potions--;
+          const magic = c.magic + p.perks.magicAdd + (p.runBoosts?.magic || 0) * BOOST_EFFECT.magic;
+          this.usePotion(p, magic, 7.5 * (c.potionRadiusMul || 1) * (c.traitDef?.potionRadiusMul || 1));
+        }
       }
     }
   }
@@ -406,8 +672,8 @@ export class Sim {
   /** Lobber AI (README's "Features" section, "New monster types"): holds 4-7 tiles from its target and lobs an arcing shot every ~2s that flies
    *  clean over walls, landing on the target's launch-time position (see stepShots's `arc` path). */
   stepLobber(m, def, dt) {
-    const target = this.nearestPlayer(m.x, m.y, def.wakeRange);
-    if (!target) return;
+    const target = this.nearestPlayer(m.x, m.y, def.wakeRange, { skipInvisible: true });
+    if (!target) { if (this.nearestPlayer(m.x, m.y, def.wakeRange)) this.wander(m, def, dt); return; }
     const dx = target.x - m.x, dy = target.y - m.y;
     const dist = Math.hypot(dx, dy) || 0.001;
     if (dist < def.minRange) this.moveEntity(m, -dx / dist * def.speed * dt, -dy / dist * def.speed * dt, 'monster');
@@ -442,13 +708,15 @@ export class Sim {
     let target = null, td = Infinity;
     for (const p of this.players.values()) {
       if (p.dead || (p.keys <= 0 && p.potions <= 0)) continue;
+      if (p.amulets?.invis > 0) continue; // invisibility: the thief can't sense you either
       const d = Math.hypot(p.x - m.x, p.y - m.y);
       if (d < td) { td = d; target = p; }
     }
-    if (!target) return; // nothing worth stealing right now
+    if (!target) return; // nothing worth stealing right now (or nobody it can perceive)
     const dx = target.x - m.x, dy = target.y - m.y;
     const dist = Math.hypot(dx, dy) || 0.001;
     if (dist < 0.8) {
+      if (target.amulets?.repulse > 0) return; // repulsiveness amulet: the thief can't touch you to steal
       if (target.potions > 0) { target.potions--; m.stolen = 'potion'; }
       else { target.keys--; m.stolen = 'key'; }
       this.onEvent({ type: 'steal', pid: target.id, item: m.stolen });
@@ -458,20 +726,43 @@ export class Sim {
     m.dir = dirIndex(dx, dy);
   }
 
+  /** Invisibility amulet: a monster with nobody it can target (its only nearby player is
+   *  invisible) doesn't just freeze like it would when simply out of wakeRange — it wanders in a
+   *  slowly-changing random direction instead, per the "monsters ignore you" arcade parity spec. */
+  wander(m, def, dt) {
+    if (m.wanderDir == null || Math.random() < 0.02) m.wanderDir = Math.random() * Math.PI * 2;
+    const speed = (def.speed || 2) * 0.4;
+    this.moveEntity(m, Math.cos(m.wanderDir) * speed * dt, Math.sin(m.wanderDir) * speed * dt, 'monster');
+  }
+
   stepMonsters(dt) {
     const list = [...this.monsters.values()];
     for (const m of list) {
       const def = MONSTERS[m.type];
       m.cd = Math.max(0, m.cd - dt); m.shotCd = Math.max(0, m.shotCd - dt);
+      // Pressure plates trigger for monsters too, not just heroes (#11's acceptance criteria).
+      const underMonster = this.tile(Math.floor(m.x), Math.floor(m.y));
+      if (TRAP_PLATES[underMonster] != null) this.triggerPlate(underMonster);
+      // Stun tile (#12): a monster is frozen exactly like a hero — see triggerStun() — skipping all
+      // AI/movement below (including a lobber's/thief's own step functions) for the duration.
+      const monsterStunned = (m.stunTicks || 0) > 0;
+      if (monsterStunned) m.stunTicks--;
+      if (m.stunImmuneTicks > 0) m.stunImmuneTicks--;
+      if (underMonster === T.STUN_TILE) this.triggerStun(m, false);
+      if (monsterStunned) continue;
       if (m.type === 'sorcerer') this.stepSorcererBlink(m, def, dt);
       if (m.type === 'lobber') { this.stepLobber(m, def, dt); continue; }
       if (m.type === 'thief') { this.stepThief(m, def, dt); continue; }
-      const target = this.nearestPlayer(m.x, m.y, def.wakeRange);
-      if (!target) continue;
+      const target = this.nearestPlayer(m.x, m.y, def.wakeRange, { skipInvisible: true });
+      if (!target) {
+        if (this.nearestPlayer(m.x, m.y, def.wakeRange)) this.wander(m, def, dt);
+        continue;
+      }
       const dx = target.x - m.x, dy = target.y - m.y;
       const dist = Math.hypot(dx, dy) || 0.001;
-      // contact
-      if (dist < 0.8) {
+      // contact — the repulsiveness amulet makes the target untouchable regardless of distance
+      // (stepRepulsion() also actively pushes monsters away from that player each tick)
+      if (dist < 0.8 && !(target.amulets?.repulse > 0)) {
         if (def.touchKills) {
           this.hurtPlayer(target, def.damage, m.type);
           this.monsters.delete(m.id);
@@ -551,11 +842,17 @@ export class Sim {
         const t = Math.min(1, s.elapsed / s.flight);
         s.x = s.x0 + (s.tx - s.x0) * t; s.y = s.y0 + (s.ty - s.y0) * t;
         if (s.elapsed >= s.flight) {
-          for (const p of this.players.values()) {
-            if (p.dead) continue;
-            if (Math.hypot(p.x - s.tx, p.y - s.ty) <= 0.8) this.hurtPlayer(p, s.dmg, 'lobber');
+          // Force field (#12): even a lobber's over-the-walls arc can't land through one — it fizzles
+          // on the field instead of damaging whoever's standing there.
+          if (this.tile(Math.floor(s.tx), Math.floor(s.ty)) === T.FORCE_FIELD) {
+            this.onEvent({ type: 'spark', x: s.tx, y: s.ty });
+          } else {
+            for (const p of this.players.values()) {
+              if (p.dead) continue;
+              if (Math.hypot(p.x - s.tx, p.y - s.ty) <= 0.8) this.hurtPlayer(p, s.dmg, 'lobber');
+            }
+            this.onEvent({ type: 'lob_land', x: s.tx, y: s.ty });
           }
-          this.onEvent({ type: 'lob_land', x: s.tx, y: s.ty });
           this.shots.delete(s.id);
         }
         continue;
@@ -580,11 +877,13 @@ export class Sim {
       const steps = 2; // sub-step so fast shots don't tunnel through 1-tile walls
       let done = false;
       for (let k = 0; k < steps && !done; k++) {
+        const px = s.x, py = s.y; // pre-substep position, for reflect's axis-of-impact check below
         s.x += s.vx * dt / steps; s.y += s.vy * dt / steps;
         const tx = Math.floor(s.x), ty = Math.floor(s.y);
         const c = this.tile(tx, ty);
         if (s.hostile) {
-          if (c === T.WALL || c === T.DOOR || c === T.TRAP || GENERATOR_TILES.has(c)) { done = true; break; }
+          if (c === T.FORCE_FIELD) { this.onEvent({ type: 'spark', x: s.x, y: s.y }); done = true; break; }
+          if (this.isSolidFor(c, 'shot')) { done = true; break; }
           for (const p of this.players.values()) {
             if (p.dead) continue;
             if (Math.abs(p.x - s.x) < HALF + 0.15 && Math.abs(p.y - s.y) < HALF + 0.15) { this.hurtPlayer(p, s.dmg, 'fireball'); done = true; break; }
@@ -593,21 +892,44 @@ export class Sim {
         }
         const owner = this.players.get(s.owner);
         if (GENERATOR_TILES.has(c)) { const g = this.generators.get(`${tx},${ty}`); if (g) this.damageGenerator(g, s.dmg, owner); done = true; break; }
-        if (c === T.WALL || c === T.DOOR || c === T.TRAP) { done = true; break; }
+        // Force field (#12): absorbs the shot outright (no reflect-amulet bounce off it — it's a
+        // field, not a wall) with a spark instead of the usual silent stop.
+        if (c === T.FORCE_FIELD) { this.onEvent({ type: 'spark', x: s.x, y: s.y }); done = true; break; }
+        if (c === T.WALL || c === T.DOOR || c === T.TRAP || GROUP_WALLS.has(c) || TIMED_WALLS.has(c)) {
+          // Reflective shots amulet: bounce off a wall once (mirror the axis that was actually
+          // blocked, so a shot hitting a wall square-on bounces straight back, and one clipping a
+          // corner bounces diagonally) instead of dying here.
+          if (s.reflect && !s.bounced) {
+            const hitX = this.isSolidFor(this.tile(Math.floor(s.x), Math.floor(py)), 'shot');
+            const hitY = this.isSolidFor(this.tile(Math.floor(px), Math.floor(s.y)), 'shot');
+            if (hitX) s.vx = -s.vx;
+            if (hitY || (!hitX && !hitY)) s.vy = -s.vy;
+            s.bounced = true;
+            s.x = px; s.y = py; // undo this substep's move so the shot isn't left embedded in the wall
+            s.dir = dirIndex(s.vx, s.vy);
+            continue;
+          }
+          done = true; break;
+        }
         if (c === T.FOOD || c === T.CIDER) { this.setTile(tx, ty, T.FLOOR); if (owner) this.onEvent({ type: 'food_shot', pid: s.owner, x: tx, y: ty }); done = true; break; }
         if (c === T.POISON_FOOD) { this.setTile(tx, ty, T.FLOOR); done = true; break; } // harmless — no penalty for shooting the poison
         if (c === T.POTION) { this.setTile(tx, ty, T.FLOOR); if (owner) this.usePotion({ ...owner, x: tx + 0.5, y: ty + 0.5, id: owner.id }, 1, 4, true); done = true; break; }
         for (const m of this.monsters.values()) {
           if (Math.abs(m.x - s.x) < HALF + 0.15 && Math.abs(m.y - s.y) < HALF + 0.15) {
             if (m.type === 'sorcerer' && m.visible === false) continue; // shot passes through while blinked out
-            done = true;
-            if (MONSTERS[m.type].immune) { this.onEvent({ type: 'sound', name: 'clank', x: m.x, y: m.y }); break; }
+            // Super shots amulet: pierce straight through instead of stopping, damaging every
+            // monster it passes exactly once (the `hit` set below keeps a slow-moving shot from
+            // re-damaging the same monster across several sub-steps/ticks while still overlapping it).
+            if (s.pierce) { s.hit = s.hit || new Set(); if (s.hit.has(m.id)) continue; s.hit.add(m.id); }
+            else done = true;
+            if (MONSTERS[m.type].immune) { this.onEvent({ type: 'sound', name: 'clank', x: m.x, y: m.y }); if (s.pierce) continue; break; }
             m.hp -= s.dmg;
             if (m.hp <= 0) this.killMonster(m, owner); else this.onEvent({ type: 'sound', name: 'hit', mtype: m.type, x: m.x, y: m.y });
             // splash (Hero Builder fireball-style weapons): also damage OTHER monsters near the
             // impact point for `s.splash` fraction of the shot's damage — a single hit can't
             // double-dip the primary target through this.
             if (s.splash > 0) this.applySplash(m, s.dmg * s.splash, owner);
+            if (s.pierce) continue;
             break;
           }
         }
@@ -629,13 +951,47 @@ export class Sim {
   }
 
   // ---------- network view ----------
+  /** Compact per-player boost-pip string for the snapshot's `p` array: each stacked run-boost
+   *  contributes its BOOST_LETTER repeated once per stack (e.g. speed x2 + armor x1 -> "VVA") —
+   *  see client/game.js's HUD boost pips. Empty string when there are no run-boosts. */
+  encodeBoosts(runBoosts) {
+    if (!runBoosts) return '';
+    let out = '';
+    for (const stat of Object.keys(BOOST_EFFECT)) {
+      const n = runBoosts[stat] || 0;
+      if (n > 0) out += BOOST_LETTER[stat].repeat(n);
+    }
+    return out;
+  }
+  /** Compact per-player amulet string for the snapshot's `p` array: each active amulet contributes
+   *  its AMULET_LETTER plus its remaining whole seconds, zero-padded to 2 digits (e.g. invis with
+   *  12.4s left + reflect with 5s left -> "I12R05") — see client/game.js's HUD countdown. Empty
+   *  string when nothing is active. */
+  encodeAmulets(amulets) {
+    if (!amulets) return '';
+    let out = '';
+    for (const kind of Object.keys(AMULET_LETTER)) {
+      const left = amulets[kind];
+      if (left > 0) out += AMULET_LETTER[kind] + String(Math.min(99, Math.ceil(left))).padStart(2, '0');
+    }
+    return out;
+  }
   snapshot() {
     const r2 = (v) => Math.round(v * 100) / 100;
     return {
       t: 's', tick: Math.round(this.time * 20), lt: Math.round(this.levelTime),
-      p: [...this.players.values()].map((p) => [p.id, r2(p.x), r2(p.y), p.dir, Math.round(p.hp), p.keys, p.potions, p.score, p.dead ? 1 : 0]),
-      // 6th element: 1 while a sorcerer is blinked invisible (client draws it at 20% alpha); omitted otherwise.
-      m: [...this.monsters.values()].map((m) => [m.id, MONSTERS[m.type].snapKey, r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined]),
+      // 10th element: compact run-boost pip string (encodeBoosts). 11th: compact active-amulet
+      // string with remaining seconds (encodeAmulets). 12th (#12): remaining stun ticks (0 when not
+      // stunned) — the client renders stun stars while it's positive. See README's "Amulets and
+      // boosts" and "Environmental hazards" sections.
+      p: [...this.players.values()].map((p) => [
+        p.id, r2(p.x), r2(p.y), p.dir, Math.round(p.hp), p.keys, p.potions, p.score, p.dead ? 1 : 0,
+        this.encodeBoosts(p.runBoosts), this.encodeAmulets(p.amulets), p.stunTicks || 0,
+      ]),
+      // 6th element: 1 while a sorcerer is blinked invisible (client draws it at 20% alpha); omitted
+      // otherwise. 7th (#12): remaining stun ticks when a monster is frozen on a stun tile; omitted
+      // (falls back to 0/falsy) otherwise.
+      m: [...this.monsters.values()].map((m) => [m.id, MONSTERS[m.type].snapKey, r2(m.x), r2(m.y), m.dir, m.visible === false ? 1 : undefined, m.stunTicks > 0 ? m.stunTicks : undefined]),
       g: [...this.generators.values()].map((g) => [g.x, g.y, g.hp]),
       // 6th element on an arc (lobber) shot: flight progress 0..1, for the client's growing/shrinking scale.
       // 7th element (player shots only): owner pid — a custom hero's shotKey ('c') is shared by
@@ -645,6 +1001,13 @@ export class Sim {
         const type = s.hostile ? (s.arc ? 'a' : 'd') : (s.shotKey || CLASSES[s.cls]?.shotKey || s.cls[0]);
         return [s.id, r2(s.x), r2(s.y), s.dir, type, s.arc ? r2(Math.min(1, s.elapsed / s.flight)) : undefined, s.hostile ? undefined : s.owner];
       }),
+      // Timed walls (#11): [x, y, wholeSecondsLeft] — cheap (a level has at most a handful) and
+      // lets the client pulse them more urgently as their timer runs down.
+      tw: this.timedWalls.map((t) => [t.x, t.y, Math.max(0, Math.ceil(t.remaining))]),
+      // It tag mode (#13): the currently-tagged player's pid, or undefined when nobody is It —
+      // only one player is ever tagged at a time, so a single top-level field is enough (no need
+      // to fold it into the per-player `p` array). See client/game.js's ring/crown + HUD banner.
+      it: this.itPid ?? undefined,
     };
   }
   playerInfo() {

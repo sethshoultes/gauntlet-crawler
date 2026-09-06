@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- PWA (#33): installable manifest, home-screen metadata, SW registration + install/update UI -->
+<link rel="manifest" href="/manifest.webmanifest" />
+<meta name="theme-color" content="#0b0b12" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+<script type="module" src="/pwa.js"></script>
 <title>Gauntlet Crawler — Trailer</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 8 8%27 shape-rendering=%27crispEdges%27%3E%3Crect width=%278%27 height=%278%27 fill=%27%23000%27/%3E%3Crect x=%272%27 y=%270%27 width=%274%27 height=%273%27 fill=%27%23e8c39e%27/%3E%3Crect x=%271%27 y=%273%27 width=%276%27 height=%273%27 fill=%27%23e03c31%27/%3E%3Crect x=%272%27 y=%276%27 width=%272%27 height=%272%27 fill=%27%23000%27/%3E%3C/svg%3E" />
 <meta property="og:title" content="Gauntlet Crawler — Trailer" />
@@ -16,8 +23,8 @@
   #player-wrap { width: 100%; max-width: 960px; }
   video { display: block; width: 100%; height: auto; background: #000; border: 4px solid var(--line, #333); box-sizing: border-box; }
   .links { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; justify-content: center; }
-  .links a.button { display: inline-block; padding: 10px 20px; background: var(--yellow, #f2c400); color: #000; font-weight: bold; text-decoration: none; letter-spacing: 1px; }
-  .links a { color: var(--muted, #8e8ca0); }
+  .links a.button { display: inline-flex; align-items: center; min-height: 44px; padding: 10px 20px; background: var(--yellow, #f2c400); color: #000; font-weight: bold; text-decoration: none; letter-spacing: 1px; box-sizing: border-box; }
+  .links a { color: var(--muted, #8e8ca0); display: inline-flex; align-items: center; min-height: 44px; padding: 4px 2px; box-sizing: border-box; }
 </style>
 </head>
 <body>
