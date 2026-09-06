@@ -672,9 +672,10 @@ async function main() {
           await page.waitForFunction((name) => (document.querySelector('#pub')?.textContent || '').includes(name), levelName, { timeout: 10_000 });
         } catch (err) {
           if (err?.name !== 'TimeoutError') throw err;
-          // textContent() resolves to null for a detached/empty node — normalise so the diagnostic
-          // itself can never throw and hide the real failure.
-          const pubText = (await page.locator('#pub').textContent().catch(() => null)) ?? '<unreadable>';
+          // A synchronous DOM read, not a locator: a locator's textContent() would wait out its own
+          // default timeout if #pub were detached, unbounding this "within 10s" failure; and it
+          // normalises a missing/empty node so the diagnostic itself can never throw.
+          const pubText = await page.evaluate(() => document.querySelector('#pub')?.textContent ?? '<missing>').catch(() => '<unreadable>');
           throw new Error(`level-${spec.label}: published level "${levelName}" did not appear in the community browse list within 10s (#pub="${pubText.trim().slice(0, 200)}")`);
         }
       } finally { await ctx.close().catch(() => {}); }
