@@ -312,7 +312,7 @@ function leaveGame(reason) {
   $('#lobby').style.display = ''; $('#touch').classList.remove('on');
   document.body.classList.remove('gc-playing'); // touch/scroll hygiene (#31), see client/style.css
   document.body.classList.remove('gc-menu-open'); // close the mobile Leave/chat panel (#42) if it was open
-  $('#hud-menu')?.setAttribute('aria-expanded', 'false');
+  { const mb = $('#hud-menu'); if (mb) setMenuState(mb, false); }
   if (document.fullscreenElement) exitFullscreenQuietly(); // don't leave a run stuck in fullscreen
   releaseWakeLock();
   if (reason) toast('Left the dungeon', reason);
@@ -910,7 +910,7 @@ function layoutGame() {
     // matches it (the button itself is about to be hidden by the `menuBtn.hidden = !mobile` above
     // regardless, but its state shouldn't be stale for whenever it's shown again either).
     document.body.classList.remove('gc-menu-open');
-    if (menuBtn) menuBtn.setAttribute('aria-expanded', 'false');
+    if (menuBtn) setMenuState(menuBtn, false);
     return;
   }
 
@@ -952,7 +952,11 @@ function layoutGame() {
   // whatever's actually left — always >= this minimum, usually quite a bit more on anything but the
   // shortest phones. Irrelevant in overlay mode: the pad there is a fixed-size CSS overlay (below),
   // not sized from any reserved band, so nothing needs reserving from the canvas fit at all.
-  const controlsH = touchShown && !overlayControls ? CONTROLS_MIN_H : 0;
+  // Reserved whenever the band grid is active, not only when the controls are visible: the grid's
+  // `ctrl` row exists regardless (a narrow fine-pointer window hides #touch but still has the row),
+  // so fitting the canvas as if that row were absent would push the log/controls rows under the
+  // container's overflow:hidden.
+  const controlsH = overlayControls ? 0 : CONTROLS_MIN_H;
   // In overlay mode #log no longer claims its own grid row (client/style.css) — it floats over the
   // top of the canvas instead (translucent, 2 lines) — so the canvas fit shouldn't reserve room
   // for it there; only in the normal band layout does logH still need subtracting.
@@ -1015,10 +1019,17 @@ if (fsBtn) {
     });
   }
 }
+/** Keep the toggle's accessible name in step with its state: "Open menu" when closed, "Close menu"
+ *  when open, so a screen reader announces the action the next press performs. */
+function setMenuState(btn, open) {
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+  btn.title = open ? 'Close menu' : 'Menu';
+}
 if (menuBtn) {
   menuBtn.onclick = () => {
     const open = document.body.classList.toggle('gc-menu-open');
-    menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    setMenuState(menuBtn, open);
   };
 }
 
