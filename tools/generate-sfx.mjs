@@ -70,7 +70,7 @@ no pre-rendered clip, so this is optional. To generate real clips:
   2. Run:
        ELEVENLABS_API_KEY=sk-... node tools/generate-sfx.mjs
 
-Requires ffmpeg (any recent version on PATH, with a Vorbis or Opus encoder) to convert ElevenLabs'
+Requires ffmpeg (any recent version on PATH, with a libvorbis or libopus encoder) to convert ElevenLabs'
 mp3 output into the mono Ogg clips the game requests -- without it, no clips are written and the
 synth fallback covers every effect.
 

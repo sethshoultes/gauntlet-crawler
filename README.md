@@ -575,8 +575,8 @@ node tools/generate-voice.mjs [id ...]  # omit ids to (re)generate every line
 ```
 
 It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
-additionally down-samples each clip to 8kHz mono Ogg (Vorbis or Opus, whichever encoder this
-ffmpeg build has — see `tools/lib/ffmpeg.mjs`'s `detectOggEncoder()` — a cheap-DAC "bit-crush" pass
+additionally down-samples each clip to 8kHz mono Ogg (`libvorbis` or `libopus`, whichever encoder
+this ffmpeg build has — see `tools/lib/ffmpeg.mjs`'s `detectOggEncoder()` — a cheap-DAC "bit-crush" pass
 that matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing
 the manifest. Generated clips are not committed to the repo (see `.gitignore`) — only
 `client/audio/voice/manifest.json` is, shipping empty so a fresh checkout always falls back to
@@ -602,8 +602,8 @@ endpoint (not text-to-speech — this is short one-shot audio from a text prompt
 for each id in `client/sfx-lines.json`, then runs the result through `ffmpeg`: down to mono 16kHz,
 leading silence trimmed (`silenceremove`), and loudness-normalized (`loudnorm`) so every clip plays
 back at a consistent level regardless of how loud the raw render came out — before writing
-`client/audio/sfx/<id>.ogg` and refreshing the manifest. Requires `ffmpeg` on `PATH` with a Vorbis
-or Opus encoder (same `tools/lib/ffmpeg.mjs` detection the voice pipeline uses); without one, no
+`client/audio/sfx/<id>.ogg` and refreshing the manifest. Requires `ffmpeg` on `PATH` with a
+`libvorbis` or `libopus` encoder (same `tools/lib/ffmpeg.mjs` detection the voice pipeline uses); without one, no
 clips are produced — the script logs that generation was skipped, rewrites the manifest from
 whatever clips already exist on disk, and still exits 0, since a checkout without a usable ffmpeg
 encoder should keep working from the clips already committed rather than fail the run. An id whose entry has

@@ -175,7 +175,7 @@ export function sfx(name) {
     // sfx(name) can use it.
     // Own-property check: the manifest is parsed JSON, so a name like "__proto__" would otherwise
     // resolve through the prototype chain to a truthy non-entry.
-    const entry = sfxManifest && Object.hasOwn(sfxManifest, name) ? sfxManifest[name] : null;
+    const entry = sfxManifest && Object.prototype.hasOwnProperty.call(sfxManifest, name) ? sfxManifest[name] : null;
     if (entry && typeof entry.file === 'string' && !sfxBuffers.has(name) && !sfxBufferPromises.has(name)) {
       loadSfxBuffer(name, entry.file);
     }
