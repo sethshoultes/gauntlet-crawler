@@ -21,8 +21,11 @@ function listEncoders() {
     p.stdout.setEncoding('utf8');
     p.stdout.on('data', (d) => { out += d; });
     p.on('error', () => resolve(''));
-    // 'close' (not 'exit') so stdout has fully drained before we parse the encoder list.
-    p.on('close', () => resolve(out));
+    // 'close' (not 'exit') so stdout has fully drained before we parse the encoder list. A
+    // non-zero exit means ffmpeg couldn't enumerate its encoders correctly -- treat whatever
+    // partial stdout it produced as an unreadable listing rather than parsing it, so a broken
+    // `-encoders` invocation can't produce a false-positive encoder detection.
+    p.on('close', (code) => resolve(code === 0 ? out : ''));
   });
 }
 
