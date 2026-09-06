@@ -40,10 +40,10 @@ export function shouldHandle(request) {
   return !isNetworkOnly(request);
 }
 
-// Extensions the server fingerprints with `?v=<ASSET_VERSION>` (server/assets.js's
-// isVersionableUrl/isVersionableSpecifier) — .js, .css, and the web app manifest. Defined once
-// here, not duplicated on the server, so "which URLs get a version suffix, and what that suffix
-// looks like" can never drift out of sync between the two sides of this cache-busting scheme.
+// Extensions the server fingerprints with `?v=<ASSET_VERSION>` — .js, .css, and the web app
+// manifest. server/assets.js imports versionedUrl() below rather than keeping its own copy of this
+// rule, so "which URLs get a version suffix, and what that suffix looks like" is defined exactly
+// once and can never drift out of sync between the two sides of this cache-busting scheme.
 const VERSIONABLE_EXT_RE = /\.(js|css|webmanifest)$/i;
 
 /**

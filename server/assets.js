@@ -56,8 +56,12 @@ export function computeAssetVersion(dirs) {
   entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const hash = crypto.createHash('sha1');
   for (const { key, abs } of entries) {
-    hash.update(key);
-    hash.update(fs.readFileSync(abs));
+    // Length-prefix and NUL-delimit each (path, bytes) pair so the concatenated stream is
+    // unambiguous: without separators, different path/content splits could hash identically.
+    const bytes = fs.readFileSync(abs);
+    hash.update(`${key.length}:${key}\0${bytes.length}:`);
+    hash.update(bytes);
+    hash.update('\0');
   }
   return hash.digest('hex').slice(0, 12);
 }
