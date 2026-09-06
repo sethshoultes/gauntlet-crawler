@@ -103,7 +103,17 @@
   #hud .pp.low .hpbar i { background: var(--red); }
   #hud .pp-nums { display: flex; gap: 8px; font-size: 12px; white-space: nowrap; }
   @keyframes blink { 50% { opacity: .3; } }
+  /* .hud-head (#42) wraps #hud-lvl + #hud-time so client/game.js's renderHud() can keep them
+     adjacent for the mobile header row (client/style.css's "body.gc-playing" block turns this
+     into a flex row #fs-toggle/#hud-menu visually sit beside) without disturbing their *desktop*
+     positions, which predate this wrapper: #hud-lvl at the very top of the sidebar, #hud-time
+     pinned to its bottom (`margin-top: auto` inside #hud's own flex column). `display: contents`
+     here promotes both spans to be direct flex items of #hud itself, same as before this wrapper
+     existed, so `order` on #hud-time (irrelevant once mobile's non-contents rule below applies)
+     is what actually pushes it after every .pp card. */
+  #hud .hud-head { display: contents; }
   #hud .lvl { color: var(--yellow); text-align: center; text-transform: uppercase; letter-spacing: 1px; }
+  #hud-time { color: var(--muted); font-size: 11px; text-align: center; margin-top: auto; order: 9999; }
   #log { width: 100%; max-width: 1188px; height: 96px; overflow-y: auto; background: #000; border: 2px solid var(--line); padding: 6px; font-size: 12px; }
   #log .n { color: var(--yellow); } #log .c b { color: var(--blue); }
   .bar { width: 100%; max-width: 1188px; display: flex; gap: 8px; align-items: center; }
@@ -124,14 +134,20 @@
     user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
   .touch.on.touch-force { display: flex; }
   @media (pointer: coarse) { .touch.on { display: flex; } }
-  .input-dpad { display: grid; grid-template-columns: repeat(3, clamp(56px, 25vw, 84px)); grid-template-rows: repeat(3, clamp(56px, 25vw, 84px));
+  /* Cell/button sizes read a CSS custom property client/game.js sets from the controls band's own
+     *measured* leftover height (client/layout.js's `controlsAvailH`, #42) — never from raw vw,
+     so a cramped band can only ever shrink the buttons, never let them overflow it. The var()
+     fallback (the original vw-based clamp()) is what actually applies in the landscape-phone
+     "overlay" layout below, where there's no reserved band to measure (client/game.js removes the
+     custom properties entirely in that mode rather than setting them to something meaningless). */
+  .input-dpad { display: grid; grid-template-columns: repeat(3, var(--dpad-cell, clamp(56px, 25vw, 84px))); grid-template-rows: repeat(3, var(--dpad-cell, clamp(56px, 25vw, 84px)));
     gap: 6px; pointer-events: auto; }
   .input-dpad, .input-actions { touch-action: none; }
-  .input-dir { padding: 0; font-size: clamp(18px, 8vw, 30px); line-height: 1; opacity: .85; border-radius: 8px; }
+  .input-dir { padding: 0; font-size: clamp(14px, 8vw, 30px); line-height: 1; opacity: .85; border-radius: 8px; }
   .input-dir-mid { visibility: hidden; pointer-events: none; }
-  .input-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; pointer-events: auto; }
-  .input-fire, .input-potion { width: 22vw; height: 22vw; max-width: 84px; max-height: 84px; border-radius: 50%;
-    font-size: clamp(18px, 7vw, 28px); padding: 0; align-self: flex-end; }
+  .input-actions { display: flex; flex-direction: column; align-items: stretch; gap: 6px; pointer-events: auto; }
+  .input-fire, .input-potion { width: var(--fire-size, min(22vw, 84px)); height: var(--fire-size, min(22vw, 84px)); border-radius: 50%;
+    font-size: clamp(14px, 7vw, 28px); padding: 0; align-self: flex-end; }
   .input-autofire { font-size: 11px; padding: 8px 10px; white-space: nowrap; }
   .input-autofire.on { background: var(--green); color: #000; border-color: var(--green); font-weight: bold; }
 
@@ -142,11 +158,20 @@
      included, off the right edge of the screen entirely (unreachable by touch; caught by
      test/e2e-mobile.mjs's gameplay scenario on an iPhone SE). Shrinking the vw factors and letting
      the auto-fire label wrap onto two lines instead of forcing its own width is enough for the two
-     columns to actually fit side by side at this width. */
+     columns to actually fit side by side at this width. Only matters as a *fallback* now (#42):
+     when --dpad-cell/--fire-size are set (the normal in-band case) this media query changes
+     nothing, since the var() already wins over its own fallback clamp() regardless of width. */
   @media (max-width: 360px) {
-    .input-dpad { grid-template-columns: repeat(3, clamp(48px, 20vw, 84px)); grid-template-rows: repeat(3, clamp(48px, 20vw, 84px)); }
-    .input-fire, .input-potion { width: 20vw; height: 20vw; }
-    .input-autofire { font-size: 10px; padding: 6px 4px; white-space: normal; width: 20vw; max-width: 84px; text-align: center; }
+    .input-dpad { grid-template-columns: repeat(3, var(--dpad-cell, clamp(48px, 20vw, 84px))); grid-template-rows: repeat(3, var(--dpad-cell, clamp(48px, 20vw, 84px))); }
+    .input-fire, .input-potion { width: var(--fire-size, 20vw); height: var(--fire-size, 20vw); }
+    .input-autofire { font-size: 10px; padding: 6px 4px; white-space: normal; max-width: 84px; text-align: center; }
+  }
+
+  /* Controls band mode (portrait phones, tall-enough landscape — see client/style.css's
+     "gc-controls-overlay" class for the short-landscape exception): the auto-fire toggle becomes
+     the "small pill under fire" the #42 spec calls for, rather than a full-width button. */
+  body.gc-playing:not(.gc-controls-overlay) .input-autofire {
+    font-size: 9px; padding: 3px 8px; border-radius: 12px; align-self: center; min-height: 0;
   }
 
   /* ---- lobby / hero-picker / room-settings mobile layout (#32) ---- */
@@ -261,10 +286,17 @@
         <div class="cv-wrap">
           <canvas id="cv" width="640" height="480" class="pixel"></canvas>
           <canvas id="scene-cutscene" width="640" height="480" class="pixel" hidden></canvas>
-          <!-- Fullscreen toggle + short-viewport rotate hint (#31) — client/game.js shows/hides
-               and wires both; hidden by default so a browser with no Fullscreen API (iOS Safari)
-               never shows a dead button. -->
+          <!-- Fullscreen + mobile menu toggles, short-viewport rotate hint (#31, reworked by #42)
+               — client/game.js shows/hides and wires both buttons. #fs-toggle stays hidden by
+               default so a browser with no Fullscreen API (iOS Safari) never shows a dead button;
+               #hud-menu stays hidden until layoutGame() decides the compact mobile layout is
+               active (it's how a phone reaches Leave/Chat once the site nav and the always-on
+               chat bar are hidden during play — see client/style.css's "body.gc-playing" block).
+               Both are positioned over the canvas on desktop (unchanged from #31) but pinned to
+               the top-right of the viewport on mobile, forming the right side of the HUD's thin
+               header row (client/game.js's renderHud() renders the left side: level + timer). -->
           <button type="button" id="fs-toggle" class="fs-toggle" title="Fullscreen" aria-label="Toggle fullscreen" hidden>⛶</button>
+          <button type="button" id="hud-menu" class="fs-toggle hud-menu" title="Menu" aria-label="Open menu" aria-expanded="false" hidden>☰</button>
           <div id="rotate-hint" class="rotate-hint" hidden>
             <span>Rotate for a bigger view</span>
             <button type="button" id="rotate-hint-dismiss" aria-label="Dismiss">✕</button>
@@ -274,6 +306,13 @@
       </div>
     </div>
     <div id="log"></div>
+    <!-- Touch d-pad, fire, auto-fire toggle and potion button (#15) built entirely by
+         client/input.js. A sibling of #log/#hud/.cv-wrap (not a page-level element, as it was
+         before #42) so it's (a) inside the #session subtree that fullscreen requests, staying
+         visible/usable in fullscreen instead of vanishing along with the HUD and log, and (b) a
+         grid item of #session's own layout on mobile (see client/style.css), sized to whatever
+         the controls-band grid track actually leaves rather than raw vw units. -->
+    <div class="touch" id="touch"></div>
     <div class="bar">
       <input id="chat" placeholder="Press T to chat… Enter to send, Esc to cancel" />
       <button id="leave" class="danger">Leave</button>
@@ -281,8 +320,6 @@
     <div class="help">Move <kbd>WASD</kbd> · Fire <kbd>Space</kbd> · Potion <kbd>Q</kbd> · Continue <kbd>Enter</kbd> · Chat <kbd>T</kbd> · Sound <kbd>M</kbd> · Narrator <kbd>N</kbd></div>
   </section>
 </main>
-<!-- Touch d-pad, fire, auto-fire toggle and potion button (#15) are built entirely by client/input.js. -->
-<div class="touch" id="touch"></div>
 <footer>Gauntlet Crawler &mdash; a love letter to 1985. Not affiliated with Atari.</footer>
 <script type="module" src="/highscore.js"></script>
 <script type="module" src="/game.js"></script>
