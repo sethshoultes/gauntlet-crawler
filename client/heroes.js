@@ -33,8 +33,11 @@ const HB = {
 // awaits between unhiding #builder and calling newHero() (true today, but an easy invariant for a
 // future edit to break); awaiting this promise instead depends on nothing but boot()'s own
 // contract, so it stays correct even if that internal ordering changes.
-let resolveHbReady;
-window.__hb = { pixels: () => HB.pixels.slice(), ready: new Promise((res) => { resolveHbReady = res; }) };
+// Settles exactly once: resolves when boot() finished picking its branch, rejects with boot()'s
+// error if it threw first, so a harness awaiting `ready` fails with the real cause instead of
+// racing ahead on a half-initialised page.
+let settleHbReady;
+window.__hb = { pixels: () => HB.pixels.slice(), ready: new Promise((res, rej) => { settleHbReady = { res, rej }; }) };
 
 function requirementText(requires) {
   if (!requires) return 'Unlocked';
@@ -363,8 +366,11 @@ async function boot() {
     renderWeapons(); renderTraits();
     newHero();
     loadMine(); loadGallery();
+  } catch (e) {
+    settleHbReady?.rej(e); settleHbReady = null;
+    throw e;
   } finally {
-    resolveHbReady();
+    settleHbReady?.res(); settleHbReady = null; // no-op after a rejection, and on the re-boot after login
   }
 }
 $('#guest-login').onclick = () => authModal().then((ok) => ok && boot());

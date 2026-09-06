@@ -12,7 +12,7 @@ import { shouldHandle, versionedUrl, PRECACHE_URLS } from './sw-rules.js';
 // Bump this whenever the precached shell changes for a reason *other* than the asset fingerprint
 // below, so activate() drops the previous cache instead of serving stale assets forever. Plain
 // string constant — there's no build step to stamp one in.
-const SW_VERSION = 'v12';
+const SW_VERSION = 'v13';
 
 // Cache-busting (#38): server/index.js replaces this literal token with its running
 // ASSET_VERSION every time it serves /sw.js — see serveStatic()'s special-case for this one path.
