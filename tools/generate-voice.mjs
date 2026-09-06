@@ -20,7 +20,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { hasFfmpeg, detectOggEncoder, runFfmpeg } from './lib/ffmpeg.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const LINES_PATH = path.join(ROOT, 'client', 'voice-lines.json');
@@ -31,42 +31,12 @@ const MANIFEST_PATH = path.join(OUT_DIR, 'manifest.json');
 // works — override with ELEVENLABS_VOICE_ID to use a different one.
 const DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'; // "Rachel" — ElevenLabs' documented default demo voice
 
-function hasFfmpeg() {
-  return new Promise((resolve) => {
-    const p = spawn('ffmpeg', ['-version'], { stdio: 'ignore' });
-    p.on('error', () => resolve(false));
-    p.on('close', (code) => resolve(code === 0));
-  });
-}
-
-/** Crude "bit-crush": ffmpeg down to an 8kHz mono Ogg (Opus or Vorbis, whichever encoder ffmpeg provides) file — a cheap, lossy sample rate
- *  that gives generated speech a chunkier, lower-fidelity arcade-narrator character. */
-// Pick whichever Ogg-capable encoder this ffmpeg build ships: libopus is the common one on macOS
-// (Homebrew builds often omit libvorbis); the built-in experimental vorbis encoder is the last resort.
-let oggEncoderArgs = null;
-async function detectOggEncoder() {
-  if (oggEncoderArgs) return oggEncoderArgs;
-  const list = await new Promise((resolve) => {
-    const p = spawn('ffmpeg', ['-hide_banner', '-encoders'], { stdio: ['ignore', 'pipe', 'ignore'] });
-    let out = ''; p.stdout.on('data', (d) => { out += d; });
-    p.on('close', () => resolve(out)); p.on('error', () => resolve(''));
-  });
-  if (/\blibopus\b/.test(list)) oggEncoderArgs = ['-c:a', 'libopus', '-b:a', '24k'];
-  else if (/\blibvorbis\b/.test(list)) oggEncoderArgs = ['-c:a', 'libvorbis'];
-  else oggEncoderArgs = ['-c:a', 'vorbis', '-strict', '-2'];
-  return oggEncoderArgs;
-}
-
-async function crushToOgg(inputPath, outputPath) {
-  const enc = await detectOggEncoder();
-  // 8 kHz mono is the "bit-crush": it mimics the narrow band of a 1985 speech chip.
-  return new Promise((resolve, reject) => {
-    let err = '';
-    const p = spawn('ffmpeg', ['-y', '-i', inputPath, '-ar', '8000', '-ac', '1', ...enc, outputPath], { stdio: ['ignore', 'ignore', 'pipe'] });
-    p.stderr.on('data', (d) => { err += d; });
-    p.on('error', reject);
-    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}:\n${err.trim().split('\n').slice(-10).join('\n')}`))));
-  });
+/** Crude "bit-crush": ffmpeg down to an 8kHz mono Ogg file — a cheap, lossy sample rate that
+ *  gives generated speech a chunkier, lower-fidelity arcade-narrator character. Uses whichever
+ *  Ogg-compatible encoder (Vorbis preferred, Opus as a fallback) this ffmpeg build actually has —
+ *  see tools/lib/ffmpeg.mjs's detectOggEncoder(). */
+async function crushToOgg(inputPath, outputPath, encoderArgs) {
+  await runFfmpeg(['-y', '-i', inputPath, '-ar', '8000', '-ac', '1', ...encoderArgs, outputPath]);
 }
 
 async function synthesize(voiceId, apiKey, text) {
@@ -115,8 +85,11 @@ async function main() {
 
   const voiceId = process.env.ELEVENLABS_VOICE_ID || DEFAULT_VOICE_ID;
   await fs.mkdir(OUT_DIR, { recursive: true });
-  const canCrush = await hasFfmpeg();
-  if (!canCrush) console.log('ffmpeg not found on PATH — clips will be written as plain .mp3 (no bit-crush pass).');
+  const ffmpegPresent = await hasFfmpeg();
+  const encoderArgs = ffmpegPresent ? await detectOggEncoder() : null;
+  const canCrush = !!encoderArgs;
+  if (!ffmpegPresent) console.log('ffmpeg not found on PATH — clips will be written as plain .mp3 (no bit-crush pass).');
+  else if (!canCrush) console.log('ffmpeg has no usable Ogg encoder (libopus/libvorbis) — clips will be written as plain .mp3 (no bit-crush pass).');
 
   for (const id of ids) {
     const text = lines[id];
@@ -129,11 +102,11 @@ async function main() {
         // Always remove the temp file, even when the crush step itself fails (bad codec, corrupt
         // input): otherwise a partial failure leaves stray `.raw.mp3` artifacts in OUT_DIR.
         try {
-          await crushToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`));
+          await crushToOgg(tmpPath, path.join(OUT_DIR, `${id}.ogg`), encoderArgs);
         } finally {
           await fs.rm(tmpPath, { force: true });
         }
-        console.log('ok (.ogg, bit-crushed)');
+        console.log(`ok (.ogg, bit-crushed, ${encoderArgs[1]})`);
       } else {
         await fs.writeFile(path.join(OUT_DIR, `${id}.mp3`), mp3);
         console.log('ok (.mp3)');

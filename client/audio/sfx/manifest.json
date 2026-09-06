@@ -1,0 +1,174 @@
+{
+  "shoot": {
+    "file": "shoot.ogg",
+    "seconds": 0.3
+  },
+  "hit": {
+    "file": "hit.ogg",
+    "seconds": 0.3
+  },
+  "kill": {
+    "file": "kill.ogg",
+    "seconds": 0.6
+  },
+  "boom": {
+    "file": "boom.ogg",
+    "seconds": 1
+  },
+  "coin": {
+    "file": "coin.ogg",
+    "seconds": 0.5
+  },
+  "key": {
+    "file": "key.ogg",
+    "seconds": 0.4
+  },
+  "eat": {
+    "file": "eat.ogg",
+    "seconds": 0.4
+  },
+  "pick": {
+    "file": "pick.ogg",
+    "seconds": 0.3
+  },
+  "door": {
+    "file": "door.ogg",
+    "seconds": 0.8
+  },
+  "potion": {
+    "file": "potion.ogg",
+    "seconds": 1.2
+  },
+  "teleport": {
+    "file": "teleport.ogg",
+    "seconds": 1
+  },
+  "death": {
+    "file": "death.ogg",
+    "seconds": 1.2
+  },
+  "bad": {
+    "file": "bad.ogg",
+    "seconds": 0.5
+  },
+  "poison": {
+    "file": "poison.ogg",
+    "seconds": 0.6
+  },
+  "fireball": {
+    "file": "fireball.ogg",
+    "seconds": 0.4
+  },
+  "spawn": {
+    "file": "spawn.ogg",
+    "seconds": 0.3
+  },
+  "level": {
+    "file": "level.ogg",
+    "seconds": 1.2
+  },
+  "clear": {
+    "file": "clear.ogg",
+    "seconds": 1.3
+  },
+  "wave": {
+    "file": "wave.ogg",
+    "seconds": 0.9
+  },
+  "ach": {
+    "file": "ach.ogg",
+    "seconds": 0.9
+  },
+  "rankup": {
+    "file": "rankup.ogg",
+    "seconds": 1
+  },
+  "chest": {
+    "file": "chest.ogg",
+    "seconds": 0.6
+  },
+  "victory": {
+    "file": "victory.ogg",
+    "seconds": 1.8
+  },
+  "gameover": {
+    "file": "gameover.ogg",
+    "seconds": 1.8
+  },
+  "shoot_warrior": {
+    "file": "shoot_warrior.ogg",
+    "seconds": 0.3
+  },
+  "shoot_valkyrie": {
+    "file": "shoot_valkyrie.ogg",
+    "seconds": 0.3
+  },
+  "shoot_wizard": {
+    "file": "shoot_wizard.ogg",
+    "seconds": 0.5
+  },
+  "shoot_elf": {
+    "file": "shoot_elf.ogg",
+    "seconds": 0.25
+  },
+  "shoot_paladin": {
+    "file": "shoot_paladin.ogg",
+    "seconds": 0.3
+  },
+  "shoot_ranger": {
+    "file": "shoot_ranger.ogg",
+    "seconds": 0.15
+  },
+  "shoot_necromancer": {
+    "file": "shoot_necromancer.ogg",
+    "seconds": 0.6
+  },
+  "hit_ghost": {
+    "file": "hit_ghost.ogg",
+    "seconds": 0.25
+  },
+  "hit_grunt": {
+    "file": "hit_grunt.ogg",
+    "seconds": 0.3
+  },
+  "hit_demon": {
+    "file": "hit_demon.ogg",
+    "seconds": 0.35
+  },
+  "hit_sorcerer": {
+    "file": "hit_sorcerer.ogg",
+    "seconds": 0.25
+  },
+  "kill_ghost": {
+    "file": "kill_ghost.ogg",
+    "seconds": 0.3
+  },
+  "kill_grunt": {
+    "file": "kill_grunt.ogg",
+    "seconds": 0.4
+  },
+  "kill_demon": {
+    "file": "kill_demon.ogg",
+    "seconds": 0.6
+  },
+  "kill_death": {
+    "file": "kill_death.ogg",
+    "seconds": 1.2
+  },
+  "kill_lobber": {
+    "file": "kill_lobber.ogg",
+    "seconds": 0.3
+  },
+  "kill_sorcerer": {
+    "file": "kill_sorcerer.ogg",
+    "seconds": 0.2
+  },
+  "kill_thief": {
+    "file": "kill_thief.ogg",
+    "seconds": 0.25
+  },
+  "magic": {
+    "file": "potion.ogg",
+    "seconds": 1.2
+  }
+}

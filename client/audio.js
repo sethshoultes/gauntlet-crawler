@@ -3,7 +3,7 @@
 // bus, for a grittier 1985-arcade feel. Exposes a small master/SFX/voice volume mixer persisted
 // to localStorage (mirrored from server-saved prefs for logged-in users via common.js's
 // loadPrefs(), same pattern as the existing gc_mute/gc_narrate keys) and the `M`-key mute toggle.
-// Everything here is synthesized at runtime — no audio assets are shipped.
+// Effects play from the pre-rendered clips in client/audio/sfx/ (see manifest.json) when one exists and fall back to the synthesizer otherwise.
 const VOL_KEYS = { master: 'gc_vol_master', sfx: 'gc_vol_sfx', voice: 'gc_vol_voice' };
 
 function readVol(key) {
@@ -20,7 +20,7 @@ function readMuted() {
 const vol = { master: readVol(VOL_KEYS.master), sfx: readVol(VOL_KEYS.sfx), voice: readVol(VOL_KEYS.voice) };
 let muted = readMuted();
 
-let AC = null, masterGain = null, sfxBus = null, crusher = null;
+let AC = null, masterGain = null, sfxBus = null, sfxClipBus = null, crusher = null;
 
 /** A quantizing curve: rounds the waveform down to a small number of amplitude steps, the
  *  classic cheap-DAC "crunch" of 1985 arcade sound chips. */
@@ -38,13 +38,18 @@ function build() {
   if (AC) return AC;
   try { AC = new (window.AudioContext || window.webkitAudioContext)(); }
   catch { return null; }
-  masterGain = AC.createGain(); masterGain.gain.value = vol.master;
+  masterGain = AC.createGain(); masterGain.gain.value = muted ? 0 : vol.master;
   masterGain.connect(AC.destination);
   crusher = AC.createWaveShaper();
   crusher.curve = makeCrusherCurve(14);
   crusher.oversample = '2x';
   sfxBus = AC.createGain(); sfxBus.gain.value = vol.sfx;
   sfxBus.connect(crusher).connect(masterGain);
+  // Pre-rendered sfx clips (see loadSfxBuffer()/playBuffer() below) are already retro-sounding
+  // out of the ElevenLabs+ffmpeg pipeline, so they get their own gain node straight to
+  // masterGain -- same sfx-volume level as sfxBus, just skipping the bit-crusher bus.
+  sfxClipBus = AC.createGain(); sfxClipBus.gain.value = vol.sfx;
+  sfxClipBus.connect(masterGain);
   return AC;
 }
 function ac() { return build(); }
@@ -55,6 +60,112 @@ export function initAudio() {
   const resume = () => { const a = build(); if (a && a.state === 'suspended') a.resume(); };
   window.addEventListener('pointerdown', resume, { once: true });
   window.addEventListener('keydown', resume, { once: true });
+  loadSfxManifest(); // kick off the manifest fetch now; never awaited, never blocks gameplay
+}
+
+// ---------- pre-rendered sfx clips (#20 clip pipeline; see tools/generate-sfx.mjs) ----------
+// client/audio.js's synth engine above remains the always-available fallback: sfx(name) plays a
+// pre-rendered clip when one has been generated and decoded, otherwise falls straight through to
+// the WebAudio synth switch below, exactly as before this pipeline existed.
+// A manifest entry's `file` must look like this -- a plain basename, no directory separators, no
+// ".." traversal, no query/hash -- before it's ever used to build a fetch URL (see sfx() below).
+const SFX_FILE_RE = /^[a-zA-Z0-9_-]+\.ogg$/;
+let sfxManifest = null; // null until the fetch below resolves to a real (possibly empty) object;
+                         // reset back to null on a fetch/parse failure too (see the .catch below)
+                         // rather than left at a permanent {}, so sfxManifest === null unambiguously
+                         // means "not currently loaded" -- either never attempted or the last
+                         // attempt failed -- which sfx()'s lazy kick-off below uses to retry.
+let sfxManifestPromise = null;
+function loadSfxManifest() {
+  if (!sfxManifestPromise) {
+    sfxManifestPromise = fetch('/audio/sfx/manifest.json')
+      .then((r) => {
+        if (r.ok) return r.json();
+        // A 404 (no manifest published yet) is a legitimate "no clips" state, tolerated as {}.
+        // Any other non-OK status (a 5xx, say) is a transient server-side failure, not a real
+        // answer -- reject so the .catch below treats it the same as a network-level failure and
+        // retries, instead of caching an empty manifest for the rest of the session.
+        if (r.status === 404) return {};
+        throw new Error(`sfx manifest fetch ${r.status}`);
+      })
+      .then((m) => { sfxManifest = (m && typeof m === 'object' && !Array.isArray(m)) ? m : {}; return sfxManifest; })
+      .catch(() => {
+        // A transient failure here (offline at page load, a flaky network blip, malformed JSON)
+        // shouldn't disable pre-rendered clip playback for the rest of the session: clear both
+        // the manifest and the in-flight promise so a later sfx() call retries the fetch instead
+        // of being stuck with an empty manifest until a full page reload.
+        sfxManifest = null;
+        sfxManifestPromise = null;
+        return null;
+      });
+  }
+  return sfxManifestPromise;
+}
+
+const sfxBuffers = new Map(); // manifest file -> decoded AudioBuffer (or null once a fetch/decode
+                               // attempt has failed for it), filled in lazily on first request.
+                               // Keyed by file rather than sfx id, so aliased ids that share one
+                               // manifest file (e.g. "magic" -> "potion.ogg") reuse the same
+                               // decoded buffer instead of fetching+decoding the identical bytes
+                               // twice. A Map (rather than a plain object) so a file name that
+                               // happened to collide with "__proto__" couldn't cause trouble.
+const sfxBufferPromises = new Map(); // manifest file -> in-flight decode Promise, so a burst of
+                                      // requests for ids sharing a file (or the same id) before
+                                      // the first decode finishes doesn't fire off duplicate fetches
+/** Lazily fetch + decode one clip the first time its manifest file is actually requested (never
+ *  eagerly for every clip in the manifest). On a *definitive* failure -- a non-OK HTTP status (the
+ *  file genuinely isn't there) or decodeAudioData() rejecting (corrupt/undecodable) -- records
+ *  `null` in sfxBuffers for this file (permanently for the session) so sfx(name) falls through to
+ *  the synth without ever retrying a fetch that can't succeed. A *transient* failure (fetch()
+ *  itself rejecting -- offline, DNS, a dropped connection) is NOT cached, so a later sfx() call
+ *  retries once connectivity returns instead of being stuck with no clip until a page reload. */
+/** decodeAudioData() has had a Promise-returning form since ~2014, but its original signature
+ *  (still valid everywhere, including browsers that never added the Promise form) takes explicit
+ *  success/error callbacks -- so pass them ourselves rather than relying on a return value that a
+ *  callback-only implementation would resolve as `undefined` (which loadSfxBuffer() below would
+ *  then cache in sfxBuffers as if it were a real decode, permanently disabling that clip). */
+function decodeAudioData(a, arrayBuffer) {
+  return new Promise((resolve, reject) => {
+    a.decodeAudioData(arrayBuffer, resolve, (err) => {
+      // Wrap in a fresh Error (always extensible, unlike the DOMException the browser passed in,
+      // which some runtimes could hand back frozen/sealed) so `definitive` reliably sticks --
+      // see loadSfxBuffer() below: a corrupt/undecodable file won't decode any differently on a
+      // retry, unlike a network-level failure fetching its bytes, so this must always be cached.
+      const wrapped = new Error((err && err.message) || 'decodeAudioData failed');
+      wrapped.definitive = true;
+      wrapped.cause = err;
+      reject(wrapped);
+    });
+  });
+}
+function loadSfxBuffer(file) {
+  const a = ac();
+  if (!a) return Promise.resolve(null);
+  const p = fetch(`/audio/sfx/${file}`)
+    .then((r) => (r.ok
+      ? r.arrayBuffer()
+      // A bad HTTP status is definitive: the server answered, and it isn't there.
+      : Promise.reject(Object.assign(new Error(`sfx fetch ${r.status}`), { definitive: true }))))
+    .then((buf) => decodeAudioData(a, buf))
+    .then((decoded) => { sfxBuffers.set(file, decoded); return decoded; })
+    .catch((err) => {
+      if (err && err.definitive) sfxBuffers.set(file, null);
+      return null;
+    })
+    .finally(() => { sfxBufferPromises.delete(file); });
+  sfxBufferPromises.set(file, p);
+  return p;
+}
+function playBuffer(buffer) {
+  const a = ac(); if (!a || muted || !sfxClipBus) return;
+  const src = a.createBufferSource();
+  src.buffer = buffer;
+  src.connect(sfxClipBus);
+  src.start();
+  // Debug-only counter (mirrors window.__gc in client/game.js) so smoke/e2e tooling can confirm a
+  // pre-rendered clip actually decoded and played, without this module needing to know anything
+  // about the game's own debug object.
+  try { window.__gcSfxClipsPlayed = (window.__gcSfxClipsPlayed || 0) + 1; } catch {}
 }
 
 const muteListeners = new Set();
@@ -64,6 +175,10 @@ export function onMuteChange(fn) { muteListeners.add(fn); return () => muteListe
 
 export function setMuted(v) {
   muted = !!v;
+  // Drive masterGain directly (rather than just gating new sounds) so already-playing WebAudio
+  // output -- both the synth engine and in-flight pre-rendered clip BufferSources started in
+  // playBuffer() -- is silenced the instant mute is toggled on, not only once it finishes.
+  if (masterGain) masterGain.gain.value = muted ? 0 : vol.master;
   try { localStorage.setItem('gc_mute', muted ? '1' : '0'); } catch {}
   muteListeners.forEach((fn) => { try { fn(muted); } catch {} });
 }
@@ -99,13 +214,41 @@ function noise(dur, gain = 0.08, opts = {}) {
 }
 function chord(freqs, dur, type, gain, gap = 0) { freqs.forEach((f, i) => setTimeout(() => tone(f, dur, type, gain), i * gap)); }
 
-const sfxLast = {};
+const sfxLast = new Map();
 /** Play a named sound effect (rate-limited per name so a burst of identical events in one frame
  *  doesn't distort into a buzz). See README's "Sound" section for the full catalogue. */
 export function sfx(name) {
   const now = performance.now();
-  if (sfxLast[name] && now - sfxLast[name] < 40) return;
-  sfxLast[name] = now;
+  if (sfxLast.has(name) && now - sfxLast.get(name) < 40) return;
+  sfxLast.set(name, now);
+
+  if (!muted) {
+    // initAudio() kicks off the first manifest fetch, but if that attempt (or any later one)
+    // failed, loadSfxManifest() resets sfxManifest to null -- retry it lazily here so a transient
+    // failure doesn't disable clip playback for the rest of the session (loadSfxManifest() itself
+    // dedupes against a second attempt while one is already in flight).
+    if (sfxManifest === null) loadSfxManifest();
+    // Own-property check: the manifest is parsed JSON, so a name like "__proto__" would otherwise
+    // resolve through the prototype chain to a truthy non-entry.
+    const entry = sfxManifest && Object.prototype.hasOwnProperty.call(sfxManifest, name) ? sfxManifest[name] : null;
+    // entry.file comes from a fetched JSON manifest, so it's untrusted input, not just an internal
+    // id -- restrict it to a plain "<id>.ogg" basename (no slashes, no "..", no query/hash) before
+    // ever using it to build a fetch URL, so a malformed/compromised manifest can't point the
+    // client at an arbitrary same-origin path.
+    const file = entry && typeof entry.file === 'string' && SFX_FILE_RE.test(entry.file) ? entry.file : null;
+    if (file) {
+      const buf = sfxBuffers.get(file);
+      if (buf) { playBuffer(buf); return; }
+      // Manifest not resolved yet, this file has never been attempted, or a previous fetch/decode
+      // attempt for it failed (sfxBuffers.get(file) === null, which is falsy above but IS present
+      // in the map, so the has() check below skips retrying it): fall through to the synth below
+      // for *this* call. If the file hasn't been attempted yet, kick off decoding it in the
+      // background (deduped via sfxBufferPromises, keyed by file so aliased ids like "magic" and
+      // "potion" share one in-flight fetch too) so the *next* call to sfx(name) -- for this id or
+      // any other id sharing the same file -- can use it.
+      if (!sfxBuffers.has(file) && !sfxBufferPromises.has(file)) loadSfxBuffer(file);
+    }
+  }
   switch (name) {
     // ---- generic ----
     case 'shoot': tone(880, 0.06, 'square', 0.04, -400); break;

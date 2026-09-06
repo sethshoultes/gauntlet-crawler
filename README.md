@@ -573,12 +573,17 @@ HUD layout, safe areas, orientation, fullscreen and wake lock.
 
 ### Sound
 
-Every sound effect is synthesized at runtime with the Web Audio API — no audio assets ship with
-the game. `client/audio.js` is the whole engine: `initAudio()` arms the context to resume on the
-first click/keypress (autoplay policy), `sfx(name)` plays one named effect, and `setMuted(bool)`
-backs the `M` key. Square/triangle/noise
-oscillators feed a small **bit-crusher** (a quantizing `WaveShaperNode`, no `ScriptProcessor`/
-`AudioWorklet` needed) on the shared SFX bus for a grittier, lower-fidelity 1985-arcade character.
+Every sound effect has a synthesized Web Audio fallback, and most also have a pre-rendered
+**arcade clip**. `client/audio.js` is the whole engine: `initAudio()` arms the context to resume
+on the first click/keypress (autoplay policy) and kicks off a one-time fetch of
+`/audio/sfx/manifest.json`; `sfx(name)` plays one named effect (a pre-rendered clip, lazily
+fetched and `decodeAudioData()`-decoded into an `AudioBuffer` the first time that id is requested,
+then cached and replayed instantly from then on), or falls straight through to the WebAudio synth
+switch when no clip exists yet; `setMuted(bool)` backs the `M` key. The synth path's square/
+triangle/noise oscillators feed a small **bit-crusher** (a quantizing `WaveShaperNode`, no
+`ScriptProcessor`/`AudioWorklet` needed) on the shared SFX bus for a grittier, lower-fidelity
+1985-arcade character; pre-rendered clips skip the bit-crusher (they're already retro out of the
+generation pipeline) and instead go straight to a sibling gain node at the same SFX volume.
 
 The catalogue covers a shot per weapon (axe whirr, sword slash, fireball whoosh, arrow twang,
 hammer thud, dagger tick, skull wail), a hit/death pair per monster (ghost pop, grunt grunt, demon
@@ -587,6 +592,23 @@ crumble, doors, keys, food/cider, poison (a sour, wavering tone), potions, telep
 amulets (a magical shimmer) and permanent boosts (a brighter fanfare), a stun-tile zap and a
 force-field spark (#12), the wave banner, level fanfare, victory/game-over stingers, rank-ups and
 achievements.
+
+`client/sfx-lines.json` is the source of truth mapping every effect id to an ElevenLabs
+[sound-generation](https://elevenlabs.io/docs/api-reference/sound-generation) prompt ("short 8-bit
+arcade whoosh, square wave, retro game sound effect, mono, dry" style phrasing) and a nominal clip
+length; `client/audio/sfx/manifest.json` lists which ids currently have a rendered clip under
+`client/audio/sfx/`. `test/sfx.test.js` greps `client/audio.js` for every `case 'id':` in the
+`sfx(name)` switch and fails if an id is missing from `sfx-lines.json`, and checks that every
+manifest entry's file exists, is non-empty, and is a real Ogg container. See
+[Development](#development) below for how to (re)generate clips with `tools/generate-sfx.mjs` —
+the same ElevenLabs pipeline as the narrator voice below, factored into a shared
+`tools/lib/ffmpeg.mjs` (ffmpeg-presence and Ogg-encoder detection) used by both scripts. Sound
+generation bills roughly 200 characters per clip; the 42 clips shipped and committed under
+`client/audio/sfx/` (`magic` is a zero-cost alias of `potion` — the two share a synth case in
+`client/audio.js`, so it reuses `potion`'s clip instead of spending quota twice) fit comfortably in
+a creator-tier account's quota and total under 400 KB on disk. `sfx-lines.json` also lists a
+handful of newer effect ids (`amulet`, `boost`, `stun`, `spark`) with no clip generated yet, so they
+still fall back to the synth engine until someone runs `tools/generate-sfx.mjs` for them.
 
 The **master / SFX / narrator-voice** mixer lives in Settings (see below) and persists to
 `localStorage` (`gc_vol_master`, `gc_vol_sfx`, `gc_vol_voice`, `gc_mute`) so it works for guests
@@ -901,7 +923,7 @@ client/            static browser app (no build step)
   layout.js               pure canvas-fit math for the mobile game screen (#31)
 test/               node:test unit suites, plus smoke.mjs, e2e.mjs, e2e-features.mjs (#35) and
                     e2e-mobile.mjs (device emulation, #34) — the latter two share helpers/e2e.mjs
-tools/              tools/generate-voice.mjs — narrator voice clip generation
+tools/              tools/generate-voice.mjs / generate-sfx.mjs — ElevenLabs clip pipelines, sharing tools/lib/ffmpeg.mjs
 deploy/             Hetzner/Docker deployment scripts and Caddy config
 ```
 
@@ -989,12 +1011,43 @@ ELEVENLABS_API_KEY=sk-... ELEVENLABS_VOICE_ID=voice_id_here ELEVENLABS_MODEL_ID=
 ```
 
 It calls the ElevenLabs REST text-to-speech API over `fetch`, and if `ffmpeg` is on `PATH` it
-additionally down-samples each clip to 8kHz mono Ogg (Opus when ffmpeg has libopus, else Vorbis; a cheap-DAC "bit-crush" pass that
-matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing the
-manifest. The repo ships all 13 clips already generated and committed under
+additionally down-samples each clip to 8kHz mono Ogg (`libvorbis` or `libopus`, whichever encoder
+this ffmpeg build has — see `tools/lib/ffmpeg.mjs`'s `detectOggEncoder()` — a cheap-DAC "bit-crush" pass
+that matches the arcade-narrator feel) before writing `client/audio/voice/<id>.ogg` and refreshing
+the manifest. The repo ships 13 clips already generated and committed under
 `client/audio/voice/` (see [Narrator voice](#narrator-voice) above), so a fresh checkout doesn't
 need to run this script at all — re-run it only to regenerate a clip (e.g. after editing its text
-in `client/voice-lines.json`) or to pick a different voice.
+in `client/voice-lines.json`), to pick a different voice, or to generate the remaining rare/conditional
+lines that still fall back to `speechSynthesis`.
+
+**Generating arcade sound-effect clips**: the game works out of the box via the synthesized WebAudio
+engine (see [Sound](#sound) above), but this repo ships a full set of pre-rendered clips already —
+unlike the narrator voice above, `client/audio/sfx/*.ogg` **is** committed, so a fresh checkout
+gets the real arcade sounds with no ElevenLabs account needed. To regenerate one or more clips
+(only worth doing if a clip is clearly unusable — wrong sound, too long, too quiet):
+
+```bash
+# no key set: prints setup instructions and exits 0 (the game already works via the synth)
+node tools/generate-sfx.mjs
+
+# with an ElevenLabs account (creator-tier quota comfortably covers the whole catalogue):
+ELEVENLABS_API_KEY=sk-...        \
+node tools/generate-sfx.mjs [id ...]   # omit ids to (re)generate every effect in sfx-lines.json
+```
+
+It calls ElevenLabs' [sound-generation](https://elevenlabs.io/docs/api-reference/sound-generation)
+endpoint (not text-to-speech — this is short one-shot audio from a text prompt, not spoken words)
+for each id in `client/sfx-lines.json`, then runs the result through `ffmpeg`: down to mono 16kHz,
+leading silence trimmed (`silenceremove`), and loudness-normalized (`loudnorm`) so every clip plays
+back at a consistent level regardless of how loud the raw render came out — before writing
+`client/audio/sfx/<id>.ogg` and refreshing the manifest. Requires `ffmpeg` on `PATH` with a
+`libvorbis` or `libopus` encoder (same `tools/lib/ffmpeg.mjs` detection the voice pipeline uses); without one, no
+clips are produced — the script logs that generation was skipped, rewrites the manifest from
+whatever clips already exist on disk, and still exits 0, since a checkout without a usable ffmpeg
+encoder should keep working from the clips already committed rather than fail the run. An id whose entry has
+an `"alias"` field (currently just `"magic"`, aliasing `"potion"` — the two share a synth case in
+`client/audio.js`) is never sent to the API; it's resolved to its target's already-generated file
+when the manifest is rewritten, so semantically-identical effects don't cost quota twice.
 
 ## Deployment
 
@@ -1132,13 +1185,14 @@ II's arcade parity: amulets and permanent boosts (#10), pressure-plate wall grou
 (#11), acid puddles/stun tiles/force fields (#12), and It tag mode plus mystery treasure rooms
 (#13).
 
-Sound synthesis (#20), pre-rendered narrator voice lines (#19), optional opt-in AI narrator
-commentary (#18), the mobile touch layout/gamepad support (#15), the responsive game screen (#31),
-and the original-style attract mode / three-initial high-score entry (#14) are also implemented
-(see [Sound](#sound), [Narrator voice](#narrator-voice), [AI Narrator](#ai-narrator-18), "Mobile and
-gamepad", [Mobile](#mobile-31), and [Cutscenes and attract mode](#cutscenes-and-attract-mode) /
-[High scores](#high-scores-14) above) even though all six issues are still open on the tracker
-pending someone closing them out.
+Sound synthesis (#20) — now including the full pre-rendered arcade sfx catalogue, with the
+synthesized WebAudio engine kept as a fallback for any effect without a clip — pre-rendered
+narrator voice lines (#19), optional opt-in AI narrator commentary (#18), the mobile touch
+layout/gamepad support (#15), the responsive game screen (#31), and the original-style attract mode
+/ three-initial high-score entry (#14) are also implemented (see [Sound](#sound), [Narrator
+voice](#narrator-voice), [AI Narrator](#ai-narrator-18), "Mobile and gamepad", [Mobile](#mobile-31),
+and [Cutscenes and attract mode](#cutscenes-and-attract-mode) / [High scores](#high-scores-14)
+above) even though all six issues are still open on the tracker pending someone closing them out.
 
 The installable PWA shell — manifest, home-screen icons, offline app-shell caching (#33) — is also
 implemented; see [Install as an app](#install-as-an-app) above.
@@ -1154,4 +1208,12 @@ Not affiliated with Atari. Gauntlet is a trademark of its respective owners; thi
 
 Built as a fan tribute to the 1985 Atari Games arcade classic *Gauntlet*, with every sprite, sound
 and voice line original to this project (see [Sound](#sound) and [Narrator voice](#narrator-voice)
-above) — no assets from the original game are used.
+above) — no assets from the original game are used. Pre-rendered sound effects and narrator voice
+clips are generated with [ElevenLabs](https://elevenlabs.io) (sound-generation and text-to-speech,
+respectively); generating either catalogue from scratch costs a small amount of ElevenLabs quota
+(see [Development](#development) above), which is why both the sfx clips and the 13 shipped
+narrator voice clips are committed to the repo — a fresh checkout needs no ElevenLabs account to
+hear real arcade sounds and narration. Only the intermediate raw ElevenLabs output (`.mp3`/
+`.raw.mp3`) is git-ignored; any narrator line or effect id with no committed clip yet falls back to
+the browser's `speechSynthesis` or the synth engine respectively until someone runs
+`tools/generate-voice.mjs` / `tools/generate-sfx.mjs` for it.
