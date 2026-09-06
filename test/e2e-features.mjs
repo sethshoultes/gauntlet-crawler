@@ -349,8 +349,8 @@ async function main() {
       localWs.send(JSON.stringify({ t: 'join_local', slot: 1, name: 'LocalBuddy', cls: 'elf' }));
       await new Promise((r) => setTimeout(r, 300));
 
-      await pageA.waitForFunction(() => (document.querySelector('#rs-roster')?.textContent || '').includes('LocalBuddy'), { timeout: 5_000 });
-      await pageA.waitForFunction(() => (document.querySelector('#rs-roster')?.textContent || '').includes('LocalHost'), { timeout: 5_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#rs-roster')?.textContent || '').includes('LocalBuddy'), undefined, { timeout: 5_000 });
+      await pageA.waitForFunction(() => (document.querySelector('#rs-roster')?.textContent || '').includes('LocalHost'), undefined, { timeout: 5_000 });
 
       await pageA.check('#rs-itmode');
       await pageA.click('#rs-ready');
@@ -360,8 +360,8 @@ async function main() {
       await pageA.waitForSelector('#game.on', { timeout: 15_000 });
       await pageB.waitForSelector('#game.on', { timeout: 15_000 });
 
-      await pageA.waitForFunction(() => document.querySelectorAll('#hud .pp').length === 4, { timeout: 10_000 });
-      await pageA.waitForFunction(() => document.querySelectorAll('#hud .pp.it').length === 1, { timeout: 8_000 });
+      await pageA.waitForFunction(() => document.querySelectorAll('#hud .pp').length === 4, undefined, { timeout: 10_000 });
+      await pageA.waitForFunction(() => document.querySelectorAll('#hud .pp.it').length === 1, undefined, { timeout: 8_000 });
     });
 
     await scenario('14. Reconnect: reloading browser B mid-run resumes the same player', async () => {
@@ -403,7 +403,7 @@ async function main() {
         };
         const before = await genCountFromStatus();
         await pageE.click('#remix');
-        await pageE.waitForFunction(() => (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('procedural') || (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('remix'), { timeout: 20_000 });
+        await pageE.waitForFunction(() => (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('procedural') || (document.querySelector('#remix-note')?.textContent || '').toLowerCase().includes('remix'), undefined, { timeout: 20_000 });
         if (!(await pageE.locator('#undoRemix').isVisible())) throw new Error('undo button should appear after Remix');
         const afterRemix = await genCountFromStatus();
 
@@ -438,9 +438,15 @@ async function main() {
         await pageF.evaluate((t) => localStorage.setItem('gc_token', t), token);
         await pageF.goto(`${baseUrl}/heroes.html?nosw=1`, { waitUntil: 'load' });
         await pageF.waitForSelector('#builder:not([hidden])', { timeout: 10_000 });
-        // Wait for the page's own boot to finish (client/heroes.js exposes window.__hb.ready) so its
-        // async /api/ai/status note cannot land mid-scenario and be mistaken for the result.
-        await pageF.evaluate(() => window.__hb?.ready ?? null);
+        // Wait for the page's boot to finish (client/heroes.js exposes window.__hb.ready, which
+        // rejects if boot failed). Bounded and non-optional: a missing __hb or a hung boot fails
+        // here with a clear message instead of silently continuing. Note boot() fires the
+        // /api/ai/status note fetch without awaiting it, so the real guard against that note being
+        // mistaken for the result is the #hname wait below, not this.
+        await pageF.evaluate(() => Promise.race([
+          window.__hb.ready,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('window.__hb.ready did not settle within 10s')), 10_000)),
+        ]));
         await pageF.fill('#ai-prompt', 'A shadowy archer who lives on treasure');
         await pageF.click('#ai-gen');
         // The observable that matters is the form being populated, not the note text: the boot's
@@ -449,7 +455,7 @@ async function main() {
         const heroName = await pageF.inputValue('#hname');
         if (!heroName) throw new Error('AI assist (fallback preset) did not populate a hero name');
         await pageF.click('#save-btn');
-        await pageF.waitForFunction(() => (document.querySelector('#save-status')?.textContent || '') === 'Saved.', { timeout: 10_000 });
+        await pageF.waitForFunction(() => (document.querySelector('#save-status')?.textContent || '') === 'Saved.', undefined, { timeout: 10_000 });
       } finally {
         await ctxF.close().catch(() => {});
       }
@@ -474,7 +480,7 @@ async function main() {
         await pageG.uncheck('#p-narrator');
         await pageG.fill('#p-volume', '0');
         await pageG.click('#save-prefs');
-        await pageG.waitForFunction(() => (document.querySelector('#prefs-msg')?.textContent || '') === 'Saved.', { timeout: 10_000 });
+        await pageG.waitForFunction(() => (document.querySelector('#prefs-msg')?.textContent || '') === 'Saved.', undefined, { timeout: 10_000 });
         await pageG.reload({ waitUntil: 'load' });
         await pageG.waitForSelector('#mine:not([style*="display: none"])', { timeout: 10_000 });
         if (await pageG.isChecked('#p-narrator')) throw new Error('narrator preference did not round-trip as off after a reload');
@@ -484,7 +490,7 @@ async function main() {
         await pageG.fill('#cur-pw', su.pass);
         await pageG.fill('#new-pw', 'Password456');
         await pageG.click('#change-pw');
-        await pageG.waitForFunction(() => (document.querySelector('#msg')?.textContent || '').includes('Password changed'), { timeout: 10_000 });
+        await pageG.waitForFunction(() => (document.querySelector('#msg')?.textContent || '').includes('Password changed'), undefined, { timeout: 10_000 });
 
         // data export -> a downloaded JSON file named after the account
         const downloadPromise = pageG.waitForEvent('download', { timeout: 10_000 });
@@ -496,7 +502,7 @@ async function main() {
         pageG.once('dialog', (d) => d.accept());
         await pageG.fill('#del-pw', 'Password456');
         await pageG.click('#delete-account');
-        await pageG.waitForFunction(() => (document.querySelector('#msg')?.textContent || '').includes('deleted'), { timeout: 10_000 });
+        await pageG.waitForFunction(() => (document.querySelector('#msg')?.textContent || '').includes('deleted'), undefined, { timeout: 10_000 });
 
         const loginAfterDelete = await fetch(`${baseUrl}/api/login`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
