@@ -38,7 +38,7 @@ function build() {
   if (AC) return AC;
   try { AC = new (window.AudioContext || window.webkitAudioContext)(); }
   catch { return null; }
-  masterGain = AC.createGain(); masterGain.gain.value = vol.master;
+  masterGain = AC.createGain(); masterGain.gain.value = muted ? 0 : vol.master;
   masterGain.connect(AC.destination);
   crusher = AC.createWaveShaper();
   crusher.curve = makeCrusherCurve(14);
@@ -121,6 +121,10 @@ export function onMuteChange(fn) { muteListeners.add(fn); return () => muteListe
 
 export function setMuted(v) {
   muted = !!v;
+  // Drive masterGain directly (rather than just gating new sounds) so already-playing WebAudio
+  // output -- both the synth engine and in-flight pre-rendered clip BufferSources started in
+  // playBuffer() -- is silenced the instant mute is toggled on, not only once it finishes.
+  if (masterGain) masterGain.gain.value = muted ? 0 : vol.master;
   try { localStorage.setItem('gc_mute', muted ? '1' : '0'); } catch {}
   muteListeners.forEach((fn) => { try { fn(muted); } catch {} });
 }
