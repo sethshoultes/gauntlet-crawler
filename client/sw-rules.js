@@ -75,7 +75,7 @@ export const PRECACHE_URLS = [
   '/layout.js', '/paint-path.js', '/pixelsprite.js', '/settings.js', '/sprites.js', '/voice.js',
   '/shared/achievements.js', '/shared/chests.js', '/shared/constants.js', '/shared/hero-builder.js',
   '/shared/level.js', '/shared/procgen.js', '/shared/progression.js', '/shared/rng.js', '/shared/unlocks.js',
-  '/audio/voice/manifest.json',
+  '/audio/voice/manifest.json', '/audio/sfx/manifest.json',
   '/media/title-backdrop.webp', '/media/title-card.webp',
   '/icons/icon-192.png', '/icons/icon-512.png', '/icons/icon-512-maskable.png', '/icons/apple-touch-icon.png',
 ];
