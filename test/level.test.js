@@ -39,6 +39,139 @@ test('detects unreachable exit and doors without keys', () => {
   assert.deepEqual(validateLevel({ rows: withKey }), []);
 });
 
+// #48: exitReachable() used to treat every door as passable the instant a key existed *anywhere*
+// in the level. These minimal grids pin the key-aware replacement — doors are search state, and
+// opening a door cluster (see server/game/sim.js dissolveGroup) actually spends one of the keys
+// collected in the region reachable so far.
+test('a key sealed with no gap in its vault is never reachable, so the exit is not either', () => {
+  const rows = [
+    '############',
+    '#S.........#',
+    '#....####..#',
+    '#....#K.#..#',
+    '#....####..#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(!exitReachable(parseLevel({ rows })), 'the only key is walled off with no gap, so the door can never open');
+});
+
+test('a key reachable only through the one door it opens is useless — the exit stays sealed', () => {
+  const rows = [
+    '############',
+    '#S.........#',
+    '#..........#',
+    '######D#####',
+    '#....K.....#',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(!exitReachable(parseLevel({ rows })), 'the key sits behind the very door it would open');
+});
+
+test('one key and one door guarding the exit: reachable', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })));
+});
+
+test('a decoy door: the key must be spent on the door that actually leads to the exit', () => {
+  // Start room has two doors: one (left) leads to a dead-end vault, the other (right) leads to the
+  // exit. Only one key exists, reachable before either door. The search must find the branch where
+  // the single key is spent on the *right* door, even though the left one is tried too.
+  const rows = [
+    '################',
+    '#S.....K.......#',
+    '######D#D#######',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.......#',
+    '#......#.....E.#',
+    '################',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })), 'search must try opening the door that actually reaches the exit');
+});
+
+test('two doors in series but only one key: sealed', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(!exitReachable(parseLevel({ rows })), 'one key can only open one of the two doors gating the exit');
+});
+
+test('two doors in series with two keys: reachable', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '######D#####',
+    '#....K.....#',
+    '#..........#',
+    '######D#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })));
+});
+
+test('a 2-tile connected door cluster costs a single key, same as dissolveGroup', () => {
+  const rows = [
+    '############',
+    '#S....K....#',
+    '#..........#',
+    '#####DD#####',
+    '#..........#',
+    '#.........E#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '#..........#',
+    '############',
+  ];
+  assert.ok(exitReachable(parseLevel({ rows })), 'the whole DD cluster opens for one key, like Sim#dissolveGroup');
+});
+
 test('the new monster/item glyphs are accepted, and the skip-exit (8) counts as an exit', () => {
   const rows = LEVEL1.rows.slice();
   // Antechamber row 6 has a stretch of floor around the '2' grunt; swap in the new glyphs.
