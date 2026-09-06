@@ -37,7 +37,9 @@ test('manifest.webmanifest parses and has the fields an installability check nee
     assert.match(icon.src, /^\/icons\/.+\.png$/, `icon src should be an /icons/*.png path, got ${icon.src}`);
     assert.match(icon.sizes, /^\d+x\d+$/);
     assert.equal(icon.type, 'image/png');
-    const onDisk = path.join(CLIENT_DIR, icon.src);
+    // path.join() would keep CLIENT_DIR even with the leading slash (unlike path.resolve()), but
+    // stripping it makes the intent unmistakable: the manifest path is relative to client/.
+    const onDisk = path.join(CLIENT_DIR, icon.src.replace(/^\//, ''));
     assert.ok(fs.existsSync(onDisk), `manifest references ${icon.src} but it doesn't exist on disk`);
     sizesSeen.add(icon.sizes);
   }
